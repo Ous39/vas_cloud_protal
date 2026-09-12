@@ -1,0 +1,14 @@
+# Secrets — never commit real credentials
+.env
+.env.*.local
+*.pem
+*.key
+
+# Raw data exports — contain live subscriber/billing PII, must never enter version control
+database/source_dump/
+database/init/10_hera_production_dump.sql
+*_backup.sql
+
+# OS / editor
+.DS_Store
+Thumbs.db
