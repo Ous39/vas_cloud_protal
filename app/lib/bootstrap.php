@@ -233,6 +233,10 @@ function table_exists(string $schema,string $table): bool { return in_array($tab
 function columns(string $schema,string $table): array { $st=pdo($schema)->prepare('SELECT COLUMN_NAME AS name, COLUMN_TYPE AS type, DATA_TYPE AS data_type, IS_NULLABLE AS nullable, COLUMN_KEY AS ckey, EXTRA AS extra, COLUMN_DEFAULT AS def FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? ORDER BY ORDINAL_POSITION'); $st->execute([$schema,$table]); return $st->fetchAll(); }
 function primary_columns(string $schema,string $table): array { $cols=columns($schema,$table); $pk=array_values(array_map(fn($c)=>$c['name'], array_filter($cols, fn($c)=>$c['ckey']==='PRI'))); if (!$pk && $cols) $pk=[$cols[0]['name']]; return $pk; }
 function table_count(string $schema,string $table): int { try { return (int)pdo($schema)->query('SELECT COUNT(*) c FROM '.ident($table))->fetch()['c']; } catch(Throwable $e) { return 0; } }
+// Estimate only (InnoDB's cached statistics, no table scan) — safe to call once per table on every
+// dashboard/listing page load even for huge tables (subscription: ~89M rows, audit_log: ~227M rows,
+// neither has a supporting index for a cheap exact COUNT(*)).
+function approx_table_count(string $schema,string $table): int { try { $st=pdo($schema)->prepare('SELECT TABLE_ROWS c FROM information_schema.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?'); $st->execute([$schema,$table]); $r=$st->fetch(); return $r?(int)$r['c']:0; } catch(Throwable $e) { return 0; } }
 function build_pk_where(string $schema,string $table,array $rowOrGet,array &$params): string { $parts=[]; foreach(primary_columns($schema,$table) as $pk){ if(!array_key_exists($pk,$rowOrGet)) throw new RuntimeException('Missing primary key '.$pk); $parts[]=ident($pk).'=?'; $params[]=$rowOrGet[$pk]; } return implode(' AND ',$parts); }
 function fetch_record(string $schema,string $table,array $keys): ?array { $params=[]; $where=build_pk_where($schema,$table,$keys,$params); $st=pdo($schema)->prepare('SELECT * FROM '.ident($table).' WHERE '.$where.' LIMIT 1'); $st->execute($params); return $st->fetch() ?: null; }
 function row_key_query(string $schema,string $table,array $row): string { $pairs=[]; foreach(primary_columns($schema,$table) as $pk) $pairs[$pk]=$row[$pk]??''; return http_build_query($pairs); }
@@ -383,6 +387,125 @@ function export_audit_log(string $schema, array $f, int $limit = 20000): array {
     $q = 'SELECT '.AUDIT_LOG_SELECT_COLS.' FROM '.ident(AUDIT_LOG_TABLE).' WHERE '.$where.' ORDER BY create_date DESC LIMIT '.(int)$limit;
     $st = pdo($schema)->prepare($q); $st->execute($params);
     return $st->fetchAll();
+}
+
+// ===================== Subscriptions search =====================
+// subscription has ~89M rows and NO index beyond the primary key (id) — not even on
+// subscriber_msisdn or date. An unrestricted browse or date-only range would force a full table
+// scan, so a search here always requires an exact MSISDN or Transaction ID.
+// A real fix needs a DBA-run `CREATE INDEX ... ON subscription (subscriber_msisdn, date)` —
+// see database/migrations/2026-09-17_MANUAL_add_subscription_index.sql.
+function subscription_filters_from_request(array $q): array {
+    $msisdn = trim((string)($q['msisdn'] ?? ''));
+    $txn = trim((string)($q['transaction_id'] ?? ''));
+    if ($msisdn === '' && $txn === '') throw new RuntimeException('Enter an MSISDN or Transaction ID — subscription has no supporting index, so an unrestricted search would scan ~89M rows.');
+    return [
+        'msisdn' => $msisdn,
+        'transaction_id' => $txn,
+        'subscription_type' => trim((string)($q['subscription_type'] ?? '')),
+        'channel' => trim((string)($q['channel'] ?? '')),
+        'date_from' => trim((string)($q['date_from'] ?? '')),
+        'date_to' => trim((string)($q['date_to'] ?? '')),
+    ];
+}
+function subscription_where(array $f, array &$params): string {
+    $where = [];
+    if ($f['msisdn'] !== '') { $where[] = 'subscriber_msisdn = ?'; $params[] = $f['msisdn']; }
+    if ($f['transaction_id'] !== '') { $where[] = 'transaction_id = ?'; $params[] = $f['transaction_id']; }
+    if ($f['subscription_type'] !== '') { $where[] = 'subscription_type = ?'; $params[] = $f['subscription_type']; }
+    if ($f['channel'] !== '') { $where[] = 'channel = ?'; $params[] = $f['channel']; }
+    if ($f['date_from'] !== '') { $where[] = 'date >= ?'; $params[] = $f['date_from'].' 00:00:00'; }
+    if ($f['date_to'] !== '') { $where[] = 'date <= ?'; $params[] = $f['date_to'].' 23:59:59'; }
+    return implode(' AND ', $where);
+}
+function search_subscriptions(string $schema, array $f, int $page, int $perPage): array {
+    $params = []; $where = subscription_where($f, $params);
+    $db = pdo($schema);
+    $count = $db->prepare('SELECT COUNT(*) c FROM subscription WHERE '.$where); $count->execute($params);
+    $total = (int)$count->fetch()['c'];
+    $offset = max(0, ($page-1)*$perPage);
+    $st = $db->prepare('SELECT * FROM subscription WHERE '.$where.' ORDER BY date DESC LIMIT '.(int)$perPage.' OFFSET '.(int)$offset);
+    $st->execute($params);
+    return ['rows' => $st->fetchAll(), 'total' => $total];
+}
+function export_subscriptions(string $schema, array $f, int $limit = 10000): array {
+    $params = []; $where = subscription_where($f, $params);
+    $st = pdo($schema)->prepare('SELECT * FROM subscription WHERE '.$where.' ORDER BY date DESC LIMIT '.(int)$limit);
+    $st->execute($params);
+    return $st->fetchAll();
+}
+function subscription_status(array $row): array {
+    $now = time();
+    $check = function ($expiry) use ($now) {
+        if ($expiry === null || $expiry === '') return 'n/a';
+        $ts = strtotime((string)$expiry);
+        if ($ts === false) return 'unknown';
+        return $ts >= $now ? 'active' : 'expired';
+    };
+    return ['data' => $check($row['data_expiry'] ?? null), 'sms' => $check($row['sms_expiry'] ?? null), 'minutes' => $check($row['minutes_expiry'] ?? null)];
+}
+
+// ===================== Operational dashboard + alerts =====================
+// All of these are bounded to short, recent create_date windows so they only ever touch one or two
+// audit_log partitions, never a full-table scan of a 200M+ row table.
+
+function dashboard_kpis(string $schema): array {
+    $out = ['tx_today'=>0, 'tx_today_success'=>0, 'tx_today_failed'=>0, 'offers_active'=>0, 'offers_inactive'=>0, 'subscription_rows_est'=>0];
+    if (table_exists($schema, AUDIT_LOG_TABLE)) {
+        $db = pdo($schema);
+        $st = $db->query("SELECT COUNT(*) total, SUM(CASE WHEN UPPER(result_status)='SUCCESS' THEN 1 ELSE 0 END) ok FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= CURDATE()");
+        $r = $st->fetch();
+        $out['tx_today'] = (int)($r['total'] ?? 0);
+        $out['tx_today_success'] = (int)($r['ok'] ?? 0);
+        $out['tx_today_failed'] = $out['tx_today'] - $out['tx_today_success'];
+    }
+    if (table_exists($schema, 'vas_offers')) {
+        $st = pdo($schema)->query("SELECT SUM(status='active') active, SUM(status!='active' OR status IS NULL) inactive FROM ".ident('vas_offers'));
+        $r = $st->fetch();
+        $out['offers_active'] = (int)($r['active'] ?? 0);
+        $out['offers_inactive'] = (int)($r['inactive'] ?? 0);
+    }
+    if (table_exists($schema, 'subscription')) $out['subscription_rows_est'] = approx_table_count($schema, 'subscription');
+    return $out;
+}
+
+function top_vendors_today(string $schema, int $limit = 6): array {
+    if (!table_exists($schema, AUDIT_LOG_TABLE)) return [];
+    $st = pdo($schema)->prepare("SELECT vendor_entity_name, COUNT(*) total, SUM(CASE WHEN UPPER(result_status)!='SUCCESS' THEN 1 ELSE 0 END) failed FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= CURDATE() GROUP BY vendor_entity_name ORDER BY total DESC LIMIT ?");
+    $st->bindValue(1, $limit, PDO::PARAM_INT); $st->execute();
+    return $st->fetchAll();
+}
+
+const ALERT_FAILURE_RATE_THRESHOLD = 0.20;
+const ALERT_FAILURE_MIN_SAMPLE = 20;
+const ALERT_VENDOR_SILENCE_MIN_BASELINE = 5;
+
+function compute_alerts(string $schema): array {
+    $alerts = [];
+    if (!table_exists($schema, AUDIT_LOG_TABLE)) return $alerts;
+    $db = pdo($schema);
+
+    $st = $db->query("SELECT COUNT(*) total, SUM(CASE WHEN UPPER(result_status)!='SUCCESS' THEN 1 ELSE 0 END) failed FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL 1 HOUR");
+    $r = $st->fetch(); $total = (int)($r['total'] ?? 0); $failed = (int)($r['failed'] ?? 0);
+    if ($total >= ALERT_FAILURE_MIN_SAMPLE) {
+        $rate = $failed / $total;
+        if ($rate > ALERT_FAILURE_RATE_THRESHOLD) {
+            $alerts[] = ['level'=>'danger', 'message'=>sprintf('High failure rate in the last hour: %d of %d transactions failed (%.0f%%).', $failed, $total, $rate*100)];
+        }
+    }
+
+    $st = $db->query("SELECT vendor_entity_name, COUNT(*) c FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL 1 HOUR - INTERVAL 1 DAY AND create_date < NOW() - INTERVAL 1 DAY GROUP BY vendor_entity_name HAVING c >= ".ALERT_VENDOR_SILENCE_MIN_BASELINE);
+    $baseline = array_column($st->fetchAll(), 'c', 'vendor_entity_name');
+    if ($baseline) {
+        $st = $db->query("SELECT DISTINCT vendor_entity_name FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL 1 HOUR");
+        $activeNow = array_column($st->fetchAll(), 'vendor_entity_name');
+        foreach ($baseline as $vendor => $count) {
+            if (!in_array($vendor, $activeNow, true)) {
+                $alerts[] = ['level'=>'warning', 'message'=>sprintf('%s sent %d transactions in this hour yesterday but none in the last hour — may be down.', $vendor, $count)];
+            }
+        }
+    }
+    return $alerts;
 }
 
 ensure_portal_runtime_schema();
