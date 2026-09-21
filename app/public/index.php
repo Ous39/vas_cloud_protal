@@ -1,27 +1,73 @@
 <?php
 declare(strict_types=1);
 require __DIR__ . '/../lib/bootstrap.php';
+function asset_version(): string { static $v=null; if($v===null) $v=(string)(@filemtime(__DIR__.'/style.css') ?: time()); return $v; }
 try { verify_csrf(); } catch(Throwable $e){ flash('danger',$e->getMessage()); redirect('?'); }
 $page=$_GET['page'] ?? 'dashboard';
 if ($page==='switch_schema' && isset($_GET['schema'])) { set_current_schema($_GET['schema']); redirect($_SERVER['HTTP_REFERER'] ?? '?'); }
 if ($page==='logout') { logout(); redirect('?page=login'); }
 if ($page==='login') {
     if ($_SERVER['REQUEST_METHOD']==='POST') { if(login_attempt($_POST['username']??'', $_POST['password']??'')) redirect('?page=dashboard'); flash('danger','Invalid username or password.'); }
-    ?><!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Login - VAS Cloud</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"><link href="style.css" rel="stylesheet"></head><body class="login-page"><div class="login-wrap"><div class="brand-panel"><div class="brand-mark">VAS</div><h1>VAS Cloud Control Center</h1><p>Secure operations portal for HeraProduction and HeraTesting.</p><ul><li>Controlled testing-to-production workflows</li><li>Audit trail and role-based access</li><li>Advanced search, reporting and SQL tools</li></ul></div><form method="post" class="login-card"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><h2>Welcome back</h2><p class="text-muted">Sign in to manage VAS operations.</p><?php foreach(flashes() as $f):?><div class="alert alert-<?=e($f['type'])?>"><?=e($f['msg'])?></div><?php endforeach;?><label>Username</label><input class="form-control" name="username" autofocus autocomplete="username"><label>Password</label><input class="form-control" name="password" type="password" autocomplete="current-password"><button class="btn btn-primary w-100 mt-3">Sign in</button></form></div></body></html><?php exit;
+    ?><!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Login - VAS Cloud</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"><link href="style.css?v=<?=e(asset_version())?>" rel="stylesheet"></head><body class="login-page"><main><form method="post" class="login-card"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><div class="login-card-header"><img src="comium_logo.png" alt="Comium"><h2>VAS Cloud</h2><p class="mb-0">Sign in to manage VAS operations</p></div><div class="login-card-body"><?php foreach(flashes() as $f):?><div class="alert alert-<?=e($f['type'])?>"><?=e($f['msg'])?></div><?php endforeach;?><label class="form-label">Username</label><input class="form-control mb-3" name="username" autofocus autocomplete="username"><label class="form-label">Password</label><input class="form-control mb-3" name="password" type="password" autocomplete="current-password"><button class="btn btn-custom w-100">Sign in</button></div></form></main></body></html><?php exit;
 }
 require_login();
 
-function layout_start(string $title): void { $u=user(); $schema=current_schema(); ?>
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title><?=e($title)?> - VAS Cloud</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"><link href="style.css" rel="stylesheet"></head><body><aside class="sidebar"><div class="sidebar-brand"><div class="logo">VC</div><div><h4>VAS Cloud</h4><span>Control Center</span></div></div><nav class="nav flex-column">
-<?php $items=[['dashboard','fa-gauge','Dashboard'],['monitoring','fa-heart-pulse','Monitoring'],['subscriptions','fa-user-check','Subscriptions'],['offers','fa-tags','Offer Management'],['esim','fa-sim-card','eSIM Profiles'],['sales','fa-file-invoice-dollar','Sales & Invoices'],['friends_family','fa-user-group','Friends & Family'],['voting','fa-square-poll-vertical','Voting Service'],['ussd_ivr','fa-mobile-screen-button','USSD & IVR'],['integrations','fa-plug-circle-check','Integrations'],['tables','fa-database','Database Tables'],['investigate','fa-headset','Complaint Investigation'],['alerts','fa-triangle-exclamation','Alerts'],['sql','fa-code','SQL Console'],['reports','fa-chart-line','Reports'],['projects','fa-diagram-project','Projects'],['shortcodes','fa-hashtag','Short Codes'],['api_keys','fa-key','Partner API Keys'],['audit','fa-shield-halved','Audit Trail'],['users','fa-users-gear','Users']]; foreach($items as $it): if(in_array($it[0],['sql'])&&!can('run_sql')) continue; if($it[0]==='users'&&!can('manage_users')) continue; if($it[0]==='audit'&&!can('view_audit')) continue; if($it[0]==='api_keys'&&!can('manage_api_keys')) continue; if(in_array($it[0],['investigate','reports','alerts','monitoring'],true)&&!can('view_reports')) continue; if(in_array($it[0],['subscriptions','offers','esim','sales','friends_family','voting','ussd_ivr','integrations'],true)&&!can('view_tables')) continue; ?><a class="nav-link <?=($_GET['page']??'dashboard')===$it[0]?'active':''?>" href="?page=<?=$it[0]?>"><i class="fa-solid <?=$it[1]?>"></i><?=$it[2]?></a><?php endforeach; ?></nav><div class="env-switch"><span>Environment</span><div class="btn-group w-100"><a class="btn btn-sm <?=$schema==='HeraTesting'?'btn-warning':'btn-outline-light'?>" href="?page=switch_schema&schema=HeraTesting">Testing</a><a class="btn btn-sm <?=$schema==='HeraProduction'?'btn-danger':'btn-outline-light'?>" href="?page=switch_schema&schema=HeraProduction">Production</a></div></div><div class="user-box"><strong><?=e($u['full_name'])?></strong><small><?=e($u['role'])?> • <?=e($u['username'])?></small><a href="?page=logout" class="btn btn-sm btn-light w-100 mt-2">Logout</a></div></aside><main><div class="topbar"><div><h1><?=e($title)?></h1><p><?=e($schema)?> • Request <?=e(request_id())?></p></div><span class="pill <?=$schema==='HeraProduction'?'prod':'test'?>"><?=e($schema)?></span></div><?php foreach(flashes() as $f):?><div class="alert alert-<?=e($f['type'])?> shadow-sm"><?=e($f['msg'])?></div><?php endforeach; ?>
+function nav_can_see(string $page): bool {
+    if ($page==='sql') return can('run_sql');
+    if ($page==='users') return can('manage_users');
+    if ($page==='audit') return can('view_audit');
+    if ($page==='api_keys') return can('manage_api_keys');
+    if (in_array($page,['investigate','reports','alerts','monitoring'],true)) return can('view_reports');
+    if (in_array($page,['subscriptions','offers','esim','sales','friends_family','voting','ussd_ivr','integrations','tables','projects','shortcodes'],true)) return can('view_tables');
+    return true;
+}
+function layout_start(string $title): void {
+    $u=user(); $schema=current_schema(); $current=$_GET['page']??'dashboard';
+    $nav = [
+        ['dashboard','fa-gauge','Dashboard'],
+        ['monitoring','fa-heart-pulse','Monitoring'],
+        ['group','fa-layer-group','Operations',[['subscriptions','fa-user-check','Subscriptions'],['offers','fa-tags','Offer Management'],['esim','fa-sim-card','eSIM Profiles'],['sales','fa-file-invoice-dollar','Sales & Invoices'],['friends_family','fa-user-group','Friends & Family'],['voting','fa-square-poll-vertical','Voting Service']]],
+        ['group','fa-tower-broadcast','Infrastructure',[['ussd_ivr','fa-mobile-screen-button','USSD & IVR'],['integrations','fa-plug-circle-check','Integrations']]],
+        ['group','fa-chart-line','Reports',[['investigate','fa-headset','Complaint Investigation'],['alerts','fa-triangle-exclamation','Alerts'],['reports','fa-chart-line','Reports'],['sql','fa-code','SQL Console']]],
+        ['group','fa-gears','Admin',[['tables','fa-database','Database Tables'],['projects','fa-diagram-project','Projects'],['shortcodes','fa-hashtag','Short Codes'],['api_keys','fa-key','Partner API Keys'],['audit','fa-shield-halved','Audit Trail'],['users','fa-users-gear','Users']]],
+    ];
+    ?>
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title><?=e($title)?> - VAS Cloud</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"><link href="style.css?v=<?=e(asset_version())?>" rel="stylesheet"></head><body>
+<nav class="topnav"><div class="topnav-inner">
+    <a class="topnav-brand" href="?page=dashboard"><img src="comium_logo.png" alt="Comium">VAS Cloud</a>
+    <div class="topnav-links">
+    <?php foreach($nav as $item):
+        if ($item[0]==='group') {
+            [, $icon, $label, $children] = $item;
+            $children = array_values(array_filter($children, fn($c)=>nav_can_see($c[0])));
+            if (!$children) continue;
+            $groupActive = in_array($current, array_column($children,0), true);
+    ?>
+        <details class="topnav-group"<?=$groupActive?' open':''?>><summary><i class="fa-solid <?=$icon?>"></i><?=e($label)?> <i class="fa-solid fa-chevron-down" style="font-size:.7rem;"></i></summary>
+            <div class="topnav-menu"><?php foreach($children as $c):?><a class="<?=$current===$c[0]?'active':''?>" href="?page=<?=$c[0]?>"><i class="fa-solid <?=$c[1]?>"></i><?=e($c[2])?></a><?php endforeach;?></div>
+        </details>
+    <?php } else {
+            if (!nav_can_see($item[0])) continue;
+    ?>
+        <a class="<?=$current===$item[0]?'active':''?>" href="?page=<?=$item[0]?>"><i class="fa-solid <?=$item[1]?>"></i><?=e($item[2])?></a>
+    <?php } endforeach; ?>
+    </div>
+    <div class="topnav-side">
+        <div class="env-pill-group btn-group"><a class="<?=$schema==='HeraTesting'?'on-test':''?>" href="?page=switch_schema&schema=HeraTesting">Testing</a><a class="<?=$schema==='HeraProduction'?'on-prod':''?>" href="?page=switch_schema&schema=HeraProduction">Production</a></div>
+        <div class="user-chip"><strong><?=e($u['full_name'])?></strong><small><?=e($u['role'])?> • <?=e($u['username'])?></small><a href="?page=logout" class="btn btn-sm btn-light">Logout</a></div>
+    </div>
+</div></nav>
+<main><div class="topbar"><div><h1><?=e($title)?></h1><p><?=e($schema)?> • Request <?=e(request_id())?></p></div><span class="pill <?=$schema==='HeraProduction'?'prod':'test'?>"><?=e($schema)?></span></div><?php foreach(flashes() as $f):?><div class="alert alert-<?=e($f['type'])?> shadow-sm"><?=e($f['msg'])?></div><?php endforeach; ?>
 <?php }
-function layout_end(): void { ?></main><script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script><script nonce="<?=e(csp_nonce())?>">
+function layout_end(): void { ?></main><footer>&copy; <?=date('Y')?> Comium VAS Cloud. All rights reserved.</footer><script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script><script nonce="<?=e(csp_nonce())?>">
 function addFilter(){const box=document.getElementById('filters'); const tpl=document.getElementById('filter-template').innerHTML; box.insertAdjacentHTML('beforeend',tpl);}
 function confirmAction(msg){return confirm(msg||'Please confirm before saving this operation.');}
 // CSP blocks inline onclick/onsubmit attributes even with a script nonce (nonces only cover <script>
 // tags), so every interactive hook is wired here instead of inline in the markup.
 document.getElementById('add-filter-btn')?.addEventListener('click', addFilter);
 document.querySelectorAll('form[data-confirm]').forEach(f => f.addEventListener('submit', e => { if (!confirmAction(f.dataset.confirm)) e.preventDefault(); }));
+// Close an open nav dropdown when clicking outside it.
+document.addEventListener('click', e => { document.querySelectorAll('.topnav-group[open]').forEach(d => { if (!d.contains(e.target)) d.removeAttribute('open'); }); });
 </script></body></html><?php }
 function render_form(string $schema,string $table,array $values=[],string $mode='add',array $keys=[]): void { $cols=editable_columns($schema,$table,$mode==='duplicate'); ?><div class="form-grid"><?php foreach($cols as $c): $name=$c['name']; if($mode==='duplicate' && is_auto_col($c)) continue; ?><div class="field"><label><?=e($name)?> <small><?=e($c['type'])?></small></label><?php $val=$values[$name]??''; if(str_contains(strtolower($c['type']),'text') || str_contains(strtolower($c['type']),'blob')): ?><textarea name="data[<?=e($name)?>]" class="form-control" rows="3"><?=e($val)?></textarea><?php else: ?><input name="data[<?=e($name)?>]" class="form-control" value="<?=e($val)?>"><?php endif;?></div><?php endforeach;?></div><?php foreach($keys as $k=>$v):?><input type="hidden" name="keys[<?=e($k)?>]" value="<?=e($v)?>"><?php endforeach; }
 

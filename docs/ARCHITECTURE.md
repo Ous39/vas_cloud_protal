@@ -6,6 +6,20 @@
 - **db**: MySQL 8 database server.
 - **phpmyadmin**: browser database administration.
 
+## Branding / UI
+
+The visual design (red `#ff4d4d` Comium theme, top navbar with logo, card/table styling, footer)
+follows the reference at `Ous39/VASCloud` (branch `VAS_Cloud`) — a separate Spring Boot SMS
+campaign tool built for the same brand. Only the look and feel was adopted, not the tech stack or
+feature set: this app keeps its full page set (19 pages vs. their 6), organized into dropdown nav
+groups (Operations, Infrastructure, Reports, Admin) since a flat navbar doesn't scale to that many
+pages. `Dashboard` and `Monitoring` stay as standalone top-level links by request. The nav
+structure and per-item permission gating live in `layout_start()` / `nav_can_see()` in
+`app/public/index.php`; the color tokens and component styles are in `app/public/style.css`.
+The Comium logo (`app/public/comium_logo.png`) was copied from that reference repo.
+The stylesheet link carries a `?v=<filemtime>` cache-buster (`asset_version()`) so a CSS change
+takes effect on the next request instead of being served stale from a browser's HTTP cache.
+
 ## Schemas
 
 - `HeraProduction`: live/production VAS operational database.
