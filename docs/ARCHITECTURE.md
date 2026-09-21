@@ -22,21 +22,29 @@
   Today's transaction counts are read from `audit_log` filtered to `channel IN ('USSD')` /
   `('IVR')`, which is real data already flowing through the system (USSD already appears as an
   audit_log channel value in this environment).
-- **SMSC** (`?page=smsc`): **a configuration registry only** (`vas_portal.smsc_connections`) — name,
-  host/port, system ID, bind type, status, notes. It does not bind to a real SMPP endpoint or poll
-  delivery receipts; there is no such capability in this app, and no SMSC/SMS log data source exists
-  anywhere in this database today (confirmed: `audit_log` has never recorded a channel value of
-  `SMS` or `SMSC` in this environment). The SMS activity numbers on this page and on Monitoring read
-  from `audit_log` the same way USSD/IVR do, so they'll show real numbers automatically the moment
-  an upstream system starts logging SMS traffic there (or the schema below gets a dedicated log
-  table) — until then they correctly read zero rather than fabricating activity.
+- **Integrations** (`?page=integrations`, `vas_portal.integrations`): a single registry for every
+  external system this platform connects to — SMSC, USSD gateway, IVR platform, monitoring
+  endpoints, or anything added later (`service_type` is an enum you extend, not a fixed list).
+  "Test" runs a **real live check**, not a simulated one: an HTTP request (with the configured
+  auth header) to `base_url` + `health_check_path` for `protocol=http`, or a raw `fsockopen()`
+  TCP connect for `protocol=tcp` (e.g. an SMPP bind port) — latency, HTTP/error status, and a
+  timestamp are recorded on every check (`test_integration()` in `bootstrap.php`). Credentials
+  (bearer token / API key / basic auth) are stored AES-256-CBC encrypted
+  (`encrypt_secret()`/`decrypt_secret()`, key in `APP_ENCRYPTION_KEY` or a random one generated
+  into `vas_portal.app_secrets` on first use) because, unlike a login password, a health check
+  has to actually send this value on the wire — it can't be one-way hashed like `portal_users`.
+  There is still no full SMPP client (bind/submit_sm/deliver_sm PDU handling) — the TCP check only
+  proves the port is reachable, which is exactly what it's for.
 - **Monitoring** (`?page=monitoring`): a single cross-service snapshot — DB table count, USSD/IVR/SMS
-  activity today, live agent queue, active SMSC links, and the same alerts shown on the dashboard.
+  activity today, live agent queue by status, every registered integration with its live status
+  (UP/DOWN, latency, when last checked), and the same alerts shown on the dashboard.
 
 ### Adding another service module
 
 The pattern used for every module above (Subscriptions, Offers, eSIM, Sales, Friends & Family,
-Voting, USSD/IVR, SMSC) is the same each time — follow it for anything new:
+Voting, USSD/IVR routing, Integrations) is the same each time — follow it for anything new. For a
+new *external system* specifically, register it in Integrations rather than building a bespoke
+connection-config page — that's exactly what Integrations is for.
 
 1. **Find or create the data.** Check if HeraProduction/HeraTesting already has a table for it
    (`table_names()` / `columns()` in `app/lib/bootstrap.php` will tell you). If genuinely nothing

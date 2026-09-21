@@ -106,19 +106,44 @@ function ensure_portal_runtime_schema(): void {
 
         $db->exec("INSERT IGNORE INTO role_permissions(role_name, permission_key) VALUES ('admin','manage_api_keys')");
 
-        $db->exec("CREATE TABLE IF NOT EXISTS smsc_connections (
+        $db->exec("CREATE TABLE IF NOT EXISTS app_secrets (
+            name VARCHAR(80) NOT NULL PRIMARY KEY,
+            value TEXT NOT NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+        $db->exec("CREATE TABLE IF NOT EXISTS integrations (
             id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-            name VARCHAR(120) NOT NULL,
+            service_type ENUM('smsc','ussd','ivr','monitoring','other') NOT NULL DEFAULT 'other',
+            name VARCHAR(150) NOT NULL,
+            protocol ENUM('http','tcp') NOT NULL DEFAULT 'http',
             host VARCHAR(255) NULL,
             port INT NULL,
-            system_id VARCHAR(120) NULL,
-            bind_type ENUM('TX','RX','TRX') NOT NULL DEFAULT 'TRX',
+            base_url VARCHAR(500) NULL,
+            health_check_path VARCHAR(255) NULL,
+            auth_type ENUM('none','basic','bearer','api_key') NOT NULL DEFAULT 'none',
+            auth_credential_enc TEXT NULL,
             status ENUM('active','inactive','testing') NOT NULL DEFAULT 'testing',
+            last_check_at DATETIME NULL,
+            last_check_ok TINYINT(1) NULL,
+            last_check_latency_ms INT NULL,
+            last_check_message VARCHAR(500) NULL,
             notes TEXT NULL,
+            created_by VARCHAR(80) NULL,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
-            INDEX idx_smsc_status (status)
+            INDEX idx_integration_type_status (service_type, status)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+        // One-time migration of the old smsc-only registry into the unified integrations table.
+        if ($columnExists('smsc_connections', 'id')) {
+            $safeExecEarly2 = function (string $sql) use ($db): void { try { $db->exec($sql); } catch (Throwable $e) {} };
+            $safeExecEarly2("INSERT INTO integrations(service_type,name,protocol,host,port,auth_type,status,notes,created_at)
+                SELECT 'smsc', s.name, 'tcp', s.host, s.port, 'none', s.status,
+                       TRIM(BOTH ' | ' FROM CONCAT_WS(' | ', s.notes, CONCAT('system_id=', COALESCE(s.system_id,''), ' bind=', COALESCE(s.bind_type,'')))),
+                       s.created_at
+                FROM smsc_connections s
+                WHERE NOT EXISTS (SELECT 1 FROM integrations i WHERE i.name = s.name AND i.service_type = 'smsc')");
+        }
 
         $db->exec("CREATE TABLE IF NOT EXISTS saved_queries (
             id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -661,32 +686,130 @@ function channel_activity_today(string $schema, array $channels): array {
     return ['total' => $total, 'success' => $ok, 'failed' => $total - $ok];
 }
 
-// ===================== SMSC =====================
-// No SMSC/SMS log data source exists anywhere in this database today (no smsc_* tables, and
-// audit_log has never recorded a channel='SMS' transaction in this environment — confirmed via
-// `SELECT DISTINCT channel FROM audit_log`). smsc_connections is a configuration/registry surface
-// only — it does not bind to a real SMPP endpoint or poll delivery receipts. If/when SMS delivery
-// events start landing in audit_log (or a dedicated SMSC log table), smsc_activity_today() below
-// is already wired to show them via the same bounded query as everything else.
-function list_smsc_connections(): array {
-    return portal_pdo()->query('SELECT * FROM smsc_connections ORDER BY name')->fetchAll();
+// ===================== Integrations (unified connection registry for external systems) =====================
+// One place to register and live-check every external system this platform connects to: SMSC, USSD
+// gateway, IVR platform, monitoring/observability endpoints, or anything else. Credentials are
+// encrypted at rest (AES-256-CBC, key in app_secrets or APP_ENCRYPTION_KEY) because — unlike a
+// stored password — a health check actually has to send this value on the wire.
+function app_encryption_key(): string {
+    static $key = null;
+    if ($key !== null) return $key;
+    $env = getenv('APP_ENCRYPTION_KEY');
+    if ($env) { $key = hash('sha256', $env, true); return $key; }
+    $st = portal_pdo()->prepare('SELECT value FROM app_secrets WHERE name=?');
+    $st->execute(['encryption_key']);
+    $row = $st->fetch();
+    if (!$row) {
+        portal_pdo()->prepare('INSERT IGNORE INTO app_secrets(name,value) VALUES(?,?)')->execute(['encryption_key', base64_encode(random_bytes(32))]);
+        $st->execute(['encryption_key']); $row = $st->fetch();
+    }
+    $key = base64_decode($row['value']);
+    return $key;
 }
-function save_smsc_connection(array $data, ?int $id = null): void {
-    $payload = [
-        normalize_value($data['name'] ?? ''), normalize_value($data['host'] ?? ''), normalize_value($data['port'] ?? null),
-        normalize_value($data['system_id'] ?? ''), normalize_value($data['bind_type'] ?? 'TRX'), normalize_value($data['status'] ?? 'testing'),
+function encrypt_secret(string $plain): string {
+    if ($plain === '') return '';
+    $iv = random_bytes(16);
+    $cipher = openssl_encrypt($plain, 'aes-256-cbc', app_encryption_key(), OPENSSL_RAW_DATA, $iv);
+    return base64_encode($iv . $cipher);
+}
+function decrypt_secret(?string $encoded): string {
+    if (!$encoded) return '';
+    $raw = base64_decode($encoded, true);
+    if ($raw === false || strlen($raw) < 17) return '';
+    $plain = openssl_decrypt(substr($raw, 16), 'aes-256-cbc', app_encryption_key(), OPENSSL_RAW_DATA, substr($raw, 0, 16));
+    return $plain === false ? '' : $plain;
+}
+
+const INTEGRATION_TYPES = ['smsc', 'ussd', 'ivr', 'monitoring', 'other'];
+
+function list_integrations(?string $type = null): array {
+    $sql = 'SELECT * FROM integrations'; $params = [];
+    if ($type) { $sql .= ' WHERE service_type=?'; $params[] = $type; }
+    $sql .= ' ORDER BY service_type, name';
+    $st = portal_pdo()->prepare($sql); $st->execute($params);
+    return $st->fetchAll();
+}
+function get_integration(int $id): ?array {
+    $st = portal_pdo()->prepare('SELECT * FROM integrations WHERE id=?'); $st->execute([$id]);
+    return $st->fetch() ?: null;
+}
+function save_integration(array $data, ?int $id = null): int {
+    if (!in_array($data['service_type'] ?? '', INTEGRATION_TYPES, true)) throw new RuntimeException('Invalid service type.');
+    $name = trim((string)($data['name'] ?? ''));
+    if ($name === '') throw new RuntimeException('Name is required.');
+    $fields = [
+        $data['service_type'], $name, in_array($data['protocol'] ?? '', ['http', 'tcp'], true) ? $data['protocol'] : 'http',
+        normalize_value($data['host'] ?? ''), normalize_value($data['port'] ?? null),
+        normalize_value($data['base_url'] ?? ''), normalize_value($data['health_check_path'] ?? ''),
+        in_array($data['auth_type'] ?? '', ['none', 'basic', 'bearer', 'api_key'], true) ? $data['auth_type'] : 'none',
+        in_array($data['status'] ?? '', ['active', 'inactive', 'testing'], true) ? $data['status'] : 'testing',
         normalize_value($data['notes'] ?? ''),
     ];
-    if (!$payload[0]) throw new RuntimeException('Name is required.');
+    $credential = trim((string)($data['auth_credential'] ?? ''));
     $db = portal_pdo();
-    if ($id) { $payload[] = $id; $db->prepare('UPDATE smsc_connections SET name=?,host=?,port=?,system_id=?,bind_type=?,status=?,notes=?,updated_at=NOW() WHERE id=?')->execute($payload); }
-    else { $db->prepare('INSERT INTO smsc_connections(name,host,port,system_id,bind_type,status,notes) VALUES(?,?,?,?,?,?,?)')->execute($payload); }
-    audit('save_smsc_connection', null, 'smsc_connections', (string)$id, json_encode($data));
+    if ($id) {
+        if ($credential !== '') {
+            $db->prepare('UPDATE integrations SET service_type=?,name=?,protocol=?,host=?,port=?,base_url=?,health_check_path=?,auth_type=?,status=?,notes=?,auth_credential_enc=? WHERE id=?')
+               ->execute([...$fields, encrypt_secret($credential), $id]);
+        } else {
+            $db->prepare('UPDATE integrations SET service_type=?,name=?,protocol=?,host=?,port=?,base_url=?,health_check_path=?,auth_type=?,status=?,notes=? WHERE id=?')
+               ->execute([...$fields, $id]);
+        }
+    } else {
+        $db->prepare('INSERT INTO integrations(service_type,name,protocol,host,port,base_url,health_check_path,auth_type,status,notes,auth_credential_enc,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
+           ->execute([...$fields, $credential !== '' ? encrypt_secret($credential) : null, user()['username'] ?? null]);
+        $id = (int)$db->lastInsertId();
+    }
+    audit('save_integration', null, 'integrations', (string)$id, json_encode(['name' => $name, 'type' => $data['service_type']]));
+    return $id;
+}
+function test_integration(int $id): array {
+    $row = get_integration($id) ?: throw new RuntimeException('Integration not found.');
+    $start = microtime(true);
+    $ok = false; $message = '';
+    if ($row['protocol'] === 'tcp') {
+        $host = (string)$row['host']; $port = (int)$row['port'];
+        if ($host === '' || $port <= 0) { $message = 'Host and port are required for a TCP check.'; }
+        else {
+            $conn = @fsockopen($host, $port, $errno, $errstr, 5);
+            if ($conn) { $ok = true; $message = 'TCP connect succeeded.'; fclose($conn); }
+            else { $message = "TCP connect failed: $errstr (errno $errno)"; }
+        }
+    } else {
+        $url = trim((string)$row['base_url']);
+        if ($url === '' && $row['host']) $url = 'http://'.$row['host'].($row['port'] ? ':'.$row['port'] : '');
+        if (trim((string)$row['health_check_path']) !== '') $url = rtrim($url, '/').'/'.ltrim($row['health_check_path'], '/');
+        if ($url === '') { $message = 'Base URL or host is required for an HTTP check.'; }
+        elseif (!extension_loaded('curl')) { $message = 'PHP curl extension is not available.'; }
+        else {
+            $headers = [];
+            if ($row['auth_type'] !== 'none' && $row['auth_credential_enc']) {
+                $cred = decrypt_secret($row['auth_credential_enc']);
+                if ($row['auth_type'] === 'bearer') $headers[] = 'Authorization: Bearer '.$cred;
+                elseif ($row['auth_type'] === 'api_key') $headers[] = 'X-Api-Key: '.$cred;
+                elseif ($row['auth_type'] === 'basic') $headers[] = 'Authorization: Basic '.base64_encode($cred);
+            }
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 5, CURLOPT_CONNECTTIMEOUT => 5, CURLOPT_HTTPHEADER => $headers]);
+            curl_exec($ch);
+            $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $err = curl_error($ch);
+            curl_close($ch);
+            if ($err) { $message = "HTTP request failed: $err"; }
+            else { $ok = $httpCode >= 200 && $httpCode < 400; $message = "HTTP $httpCode"; }
+        }
+    }
+    $latency = (int)round((microtime(true) - $start) * 1000);
+    portal_pdo()->prepare('UPDATE integrations SET last_check_at=NOW(), last_check_ok=?, last_check_latency_ms=?, last_check_message=? WHERE id=?')
+        ->execute([$ok ? 1 : 0, $latency, $message, $id]);
+    audit('test_integration', null, 'integrations', (string)$id, "$message ({$latency}ms)");
+    return ['ok' => $ok, 'latency_ms' => $latency, 'message' => $message];
 }
 function smsc_activity_today(string $schema): array { return channel_activity_today($schema, ['SMS', 'SMSC']); }
 
 // ===================== Unified Monitoring =====================
 function monitoring_snapshot(string $schema): array {
+    $integrations = list_integrations();
     return [
         'db_tables' => count(table_names($schema)),
         'ussd' => channel_activity_today($schema, ['USSD']),
@@ -694,7 +817,9 @@ function monitoring_snapshot(string $schema): array {
         'sms' => smsc_activity_today($schema),
         'agent_queue_total' => table_exists($schema, 'agent_queue') ? (int)(pdo($schema)->query('SELECT COUNT(*) c FROM agent_queue')->fetch()['c'] ?? 0) : 0,
         'agent_queue_by_status' => table_exists($schema, 'agent_queue') ? pdo($schema)->query('SELECT status, COUNT(*) c FROM agent_queue GROUP BY status ORDER BY c DESC')->fetchAll() : [],
-        'smsc_connections_active' => (int)(portal_pdo()->query("SELECT COUNT(*) c FROM smsc_connections WHERE status='active'")->fetch()['c'] ?? 0),
+        'integrations' => $integrations,
+        'integrations_active' => count(array_filter($integrations, fn($i) => $i['status'] === 'active')),
+        'integrations_down' => count(array_filter($integrations, fn($i) => $i['status'] === 'active' && $i['last_check_ok'] !== null && (int)$i['last_check_ok'] === 0)),
         'alerts' => compute_alerts($schema),
     ];
 }

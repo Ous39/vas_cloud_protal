@@ -1,5 +1,6 @@
 FROM php:8.2-apache
-RUN docker-php-ext-install mysqli pdo pdo_mysql && a2enmod rewrite headers expires
+RUN apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev && rm -rf /var/lib/apt/lists/*
+RUN docker-php-ext-install mysqli pdo pdo_mysql curl && a2enmod rewrite headers expires
 COPY app/public/ /var/www/html/
 COPY app/config/ /var/www/config/
 COPY app/lib/ /var/www/lib/

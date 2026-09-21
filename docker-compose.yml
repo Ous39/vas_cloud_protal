@@ -37,6 +37,7 @@ services:
       PORTAL_DB: vas_portal
       DEFAULT_SCHEMA: ${DEFAULT_SCHEMA:-HeraTesting}
       APP_TZ: ${APP_TIMEZONE:-UTC}
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-}
     ports:
       - "${APP_PORT:-8090}:80"
     networks:
