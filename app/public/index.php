@@ -13,7 +13,7 @@ require_login();
 
 function layout_start(string $title): void { $u=user(); $schema=current_schema(); ?>
 <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title><?=e($title)?> - VAS Cloud</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"><link href="style.css" rel="stylesheet"></head><body><aside class="sidebar"><div class="sidebar-brand"><div class="logo">VC</div><div><h4>VAS Cloud</h4><span>Control Center</span></div></div><nav class="nav flex-column">
-<?php $items=[['dashboard','fa-gauge','Dashboard'],['subscriptions','fa-user-check','Subscriptions'],['offers','fa-tags','Offer Management'],['tables','fa-database','Database Tables'],['investigate','fa-headset','Complaint Investigation'],['alerts','fa-triangle-exclamation','Alerts'],['sql','fa-code','SQL Console'],['reports','fa-chart-line','Reports'],['projects','fa-diagram-project','Projects'],['shortcodes','fa-hashtag','Short Codes'],['audit','fa-shield-halved','Audit Trail'],['users','fa-users-gear','Users']]; foreach($items as $it): if(in_array($it[0],['sql'])&&!can('run_sql')) continue; if($it[0]==='users'&&!can('manage_users')) continue; if($it[0]==='audit'&&!can('view_audit')) continue; if(in_array($it[0],['investigate','reports','alerts'],true)&&!can('view_reports')) continue; if(in_array($it[0],['subscriptions','offers'],true)&&!can('view_tables')) continue; ?><a class="nav-link <?=($_GET['page']??'dashboard')===$it[0]?'active':''?>" href="?page=<?=$it[0]?>"><i class="fa-solid <?=$it[1]?>"></i><?=$it[2]?></a><?php endforeach; ?></nav><div class="env-switch"><span>Environment</span><div class="btn-group w-100"><a class="btn btn-sm <?=$schema==='HeraTesting'?'btn-warning':'btn-outline-light'?>" href="?page=switch_schema&schema=HeraTesting">Testing</a><a class="btn btn-sm <?=$schema==='HeraProduction'?'btn-danger':'btn-outline-light'?>" href="?page=switch_schema&schema=HeraProduction">Production</a></div></div><div class="user-box"><strong><?=e($u['full_name'])?></strong><small><?=e($u['role'])?> • <?=e($u['username'])?></small><a href="?page=logout" class="btn btn-sm btn-light w-100 mt-2">Logout</a></div></aside><main><div class="topbar"><div><h1><?=e($title)?></h1><p><?=e($schema)?> • Request <?=e(request_id())?></p></div><span class="pill <?=$schema==='HeraProduction'?'prod':'test'?>"><?=e($schema)?></span></div><?php foreach(flashes() as $f):?><div class="alert alert-<?=e($f['type'])?> shadow-sm"><?=e($f['msg'])?></div><?php endforeach; ?>
+<?php $items=[['dashboard','fa-gauge','Dashboard'],['subscriptions','fa-user-check','Subscriptions'],['offers','fa-tags','Offer Management'],['esim','fa-sim-card','eSIM Profiles'],['sales','fa-file-invoice-dollar','Sales & Invoices'],['friends_family','fa-user-group','Friends & Family'],['voting','fa-square-poll-vertical','Voting Service'],['tables','fa-database','Database Tables'],['investigate','fa-headset','Complaint Investigation'],['alerts','fa-triangle-exclamation','Alerts'],['sql','fa-code','SQL Console'],['reports','fa-chart-line','Reports'],['projects','fa-diagram-project','Projects'],['shortcodes','fa-hashtag','Short Codes'],['api_keys','fa-key','Partner API Keys'],['audit','fa-shield-halved','Audit Trail'],['users','fa-users-gear','Users']]; foreach($items as $it): if(in_array($it[0],['sql'])&&!can('run_sql')) continue; if($it[0]==='users'&&!can('manage_users')) continue; if($it[0]==='audit'&&!can('view_audit')) continue; if($it[0]==='api_keys'&&!can('manage_api_keys')) continue; if(in_array($it[0],['investigate','reports','alerts'],true)&&!can('view_reports')) continue; if(in_array($it[0],['subscriptions','offers','esim','sales','friends_family','voting'],true)&&!can('view_tables')) continue; ?><a class="nav-link <?=($_GET['page']??'dashboard')===$it[0]?'active':''?>" href="?page=<?=$it[0]?>"><i class="fa-solid <?=$it[1]?>"></i><?=$it[2]?></a><?php endforeach; ?></nav><div class="env-switch"><span>Environment</span><div class="btn-group w-100"><a class="btn btn-sm <?=$schema==='HeraTesting'?'btn-warning':'btn-outline-light'?>" href="?page=switch_schema&schema=HeraTesting">Testing</a><a class="btn btn-sm <?=$schema==='HeraProduction'?'btn-danger':'btn-outline-light'?>" href="?page=switch_schema&schema=HeraProduction">Production</a></div></div><div class="user-box"><strong><?=e($u['full_name'])?></strong><small><?=e($u['role'])?> • <?=e($u['username'])?></small><a href="?page=logout" class="btn btn-sm btn-light w-100 mt-2">Logout</a></div></aside><main><div class="topbar"><div><h1><?=e($title)?></h1><p><?=e($schema)?> • Request <?=e(request_id())?></p></div><span class="pill <?=$schema==='HeraProduction'?'prod':'test'?>"><?=e($schema)?></span></div><?php foreach(flashes() as $f):?><div class="alert alert-<?=e($f['type'])?> shadow-sm"><?=e($f['msg'])?></div><?php endforeach; ?>
 <?php }
 function layout_end(): void { ?></main><script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script><script nonce="<?=e(csp_nonce())?>">
 function addFilter(){const box=document.getElementById('filters'); const tpl=document.getElementById('filter-template').innerHTML; box.insertAdjacentHTML('beforeend',tpl);}
@@ -231,6 +231,205 @@ if ($page==='alerts') {
         <h3><i class="fa-solid fa-triangle-exclamation me-2"></i>Alerts</h3>
         <p class="text-muted">Computed on page load from <?=e(AUDIT_LOG_TABLE)?> — high failure rate in the last hour, and vendors that were active this time yesterday but silent in the last hour. This is not a push notification; visit this page (or the dashboard) to see current state.</p>
         <?php if(!$alerts):?><div class="alert alert-success mb-0">No active alerts.</div><?php else: foreach($alerts as $a):?><div class="alert alert-<?=e($a['level'])?>"><?=e($a['message'])?></div><?php endforeach; endif;?>
+    </div>
+    <?php layout_end(); exit;
+}
+
+if ($page==='esim') {
+    require_perm('view_tables'); $schema=current_schema();
+    if (!table_exists($schema,'esim_profile')) throw new RuntimeException('esim_profile does not exist in '.$schema);
+    if ($_SERVER['REQUEST_METHOD']==='POST') {
+        $id=(int)($_POST['id']??0);
+        require_perm($id ? 'edit_records' : 'create_records');
+        $token=make_confirmation($id?'update':'insert',['schema'=>$schema,'table'=>'esim_profile','keys'=>['id'=>$id],'data'=>$_POST['data']??[]]);
+        redirect('?page=confirm&token='.$token);
+    }
+    $edit=null; if(isset($_GET['id'])){ $edit=fetch_record($schema,'esim_profile',['id'=>(int)$_GET['id']]); }
+    $filters=[];
+    foreach(['msisdn'=>'msisdn','iccid'=>'iccid','imsi'=>'imsi'] as $qp=>$col) if(trim((string)($_GET[$qp]??''))!=='') $filters[]=['col'=>$col,'op'=>'equals','val'=>trim((string)$_GET[$qp])];
+    if (trim((string)($_GET['status']??''))!=='') $filters[]=['col'=>'status','op'=>'contains','val'=>$_GET['status']];
+    $pageNo=max(1,(int)($_GET['p']??1));
+    $data=list_records($schema,'esim_profile',$filters,$pageNo,25); $data['rows']=array_map('redact_row',$data['rows']);
+    layout_start('eSIM Profiles');
+    ?>
+    <div class="row g-3">
+        <div class="col-lg-4"><div class="cardx"><h3><?= $edit?'Edit Profile':'Add Profile' ?></h3><p class="text-muted">Saving requires confirmation.</p>
+            <form method="post"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="id" value="<?=e($edit['id']??'')?>">
+                <label>Vendor</label><input class="form-control mb-2" name="data[vendor_name]" value="<?=e($edit['vendor_name']??'')?>">
+                <label>ICCID</label><input class="form-control mb-2" name="data[iccid]" value="<?=e($edit['iccid']??'')?>">
+                <label>IMSI</label><input class="form-control mb-2" name="data[imsi]" value="<?=e($edit['imsi']??'')?>">
+                <label>MSISDN</label><input class="form-control mb-2" name="data[msisdn]" value="<?=e($edit['msisdn']??'')?>">
+                <label>QR Code Value</label><input class="form-control mb-2" name="data[qr_code_value]" value="<?=e($edit['qr_code_value']??'')?>">
+                <label>Profile Name</label><input class="form-control mb-2" name="data[profile_names]" value="<?=e($edit['profile_names']??'')?>">
+                <label>SM-DP+ Address</label><input class="form-control mb-2" name="data[smdp_address]" value="<?=e($edit['smdp_address']??'')?>">
+                <label>Matching ID</label><input class="form-control mb-2" name="data[matching_id]" value="<?=e($edit['matching_id']??'')?>">
+                <div class="row g-2">
+                    <div class="col-6"><label>Installation Status</label><input class="form-control mb-2" name="data[installation_status]" value="<?=e($edit['installation_status']??'')?>"></div>
+                    <div class="col-6"><label>Status</label><input class="form-control mb-2" name="data[status]" value="<?=e($edit['status']??'')?>"></div>
+                </div>
+                <label>Availability</label><input class="form-control mb-2" name="data[Availability]" value="<?=e($edit['Availability']??'')?>">
+                <button class="btn btn-primary w-100">Preview & Confirm Save</button>
+                <?php if($edit):?><a class="btn btn-outline-secondary w-100 mt-2" href="?page=esim">Cancel Edit</a><?php endif;?>
+            </form>
+        </div></div>
+        <div class="col-lg-8"><div class="cardx">
+            <div class="d-flex justify-content-between align-items-center"><h3>eSIM Profiles</h3><span class="badge bg-primary"><?=number_format($data['total'])?> profiles</span></div>
+            <form method="get" class="row g-2 mt-1"><input type="hidden" name="page" value="esim">
+                <div class="col-md-3"><input class="form-control" name="msisdn" placeholder="MSISDN" value="<?=e($_GET['msisdn']??'')?>"></div>
+                <div class="col-md-3"><input class="form-control" name="iccid" placeholder="ICCID" value="<?=e($_GET['iccid']??'')?>"></div>
+                <div class="col-md-3"><input class="form-control" name="imsi" placeholder="IMSI" value="<?=e($_GET['imsi']??'')?>"></div>
+                <div class="col-md-3"><input class="form-control" name="status" placeholder="Status contains" value="<?=e($_GET['status']??'')?>"></div>
+                <div class="col-12"><button class="btn btn-outline-primary">Search</button> <a class="btn btn-outline-secondary" href="?page=esim">Reset</a></div>
+            </form>
+            <div class="table-scroll mt-3"><table class="table table-hover table-sm"><thead><tr><th>MSISDN</th><th>ICCID</th><th>Vendor</th><th>Installation</th><th>Status</th><th>Last Connection</th><th></th></tr></thead><tbody>
+            <?php foreach($data['rows'] as $r):?><tr>
+                <td><?=e($r['msisdn'])?></td><td><?=e($r['iccid'])?></td><td><?=e($r['vendor_name'])?></td>
+                <td><?=e($r['installation_status'])?></td><td><?=e($r['status'])?></td><td><?=e($r['last_connection'])?></td>
+                <td><a class="btn btn-sm btn-warning" href="?page=esim&id=<?=e($r['id'])?>">Edit</a></td>
+            </tr><?php endforeach;?>
+            </tbody></table></div>
+            <?php $pages=max(1,(int)ceil($data['total']/25));?>
+            <div class="d-flex justify-content-between"><span>Page <?=$pageNo?> of <?=$pages?></span><div><?php if($pageNo>1):?><a class="btn btn-sm btn-outline-primary" href="?<?=http_build_query(array_merge($_GET,['p'=>$pageNo-1]))?>">Prev</a><?php endif;?> <?php if($pageNo<$pages):?><a class="btn btn-sm btn-outline-primary" href="?<?=http_build_query(array_merge($_GET,['p'=>$pageNo+1]))?>">Next</a><?php endif;?></div></div>
+        </div></div>
+    </div>
+    <?php layout_end(); exit;
+}
+
+if ($page==='sales') {
+    require_perm('view_tables'); $schema=current_schema();
+    $orderNo = trim((string)($_GET['order_no'] ?? ''));
+    $iccid = trim((string)($_GET['iccid'] ?? ''));
+    $order = null; $items = []; $invoices = []; $ordersByIccid = [];
+    if ($orderNo !== '') { $order = find_sales_order($schema, $orderNo); $items = sales_order_items_for($schema, $orderNo); $invoices = sales_invoices_for($schema, $orderNo); }
+    elseif ($iccid !== '') { $ordersByIccid = find_sales_orders_by_iccid($schema, $iccid); }
+    layout_start('Sales & Invoices');
+    ?>
+    <div class="cardx">
+        <h3><i class="fa-solid fa-file-invoice-dollar me-2"></i>Sales Orders & Invoices</h3>
+        <p class="text-muted">Look up an order by Order No. or ICCID to see its line items and linked invoice in one place.</p>
+        <form method="get" class="row g-2"><input type="hidden" name="page" value="sales">
+            <div class="col-md-4"><label>Order No.</label><input class="form-control" name="order_no" value="<?=e($orderNo)?>"></div>
+            <div class="col-md-4"><label>ICCID</label><input class="form-control" name="iccid" value="<?=e($iccid)?>"></div>
+            <div class="col-md-4 d-flex align-items-end"><button class="btn btn-primary w-100">Search</button></div>
+        </form>
+    </div>
+    <?php if ($orderNo !== ''): if (!$order): ?>
+        <div class="alert alert-warning mt-3">No order found with Order No. "<?=e($orderNo)?>".</div>
+    <?php else: ?>
+        <div class="row g-3 mt-1">
+            <div class="col-lg-4"><div class="cardx"><h3>Order <?=e($order['order_no'])?></h3><table class="table table-sm mb-0">
+                <tr><th>Created</th><td><?=e($order['created_at'])?></td></tr>
+                <tr><th>Quantity</th><td><?=e($order['quantity'])?></td></tr>
+                <tr><th>Amount payable</th><td><?=e($order['amount_payable'])?></td></tr>
+                <tr><th>Amount paid</th><td><?=e($order['amount_paid'])?></td></tr>
+                <tr><th>Shipping</th><td><?=e($order['amount_shipping'])?></td></tr>
+                <tr><th>Discount</th><td><?=e($order['discount'])?></td></tr>
+                <tr><th>ICCID</th><td><?=e($order['iccid'])?></td></tr>
+            </table></div></div>
+            <div class="col-lg-4"><div class="cardx"><h3>Line Items</h3><?php if(!$items):?><p class="text-muted mb-0">No line items.</p><?php else:?><table class="table table-sm mb-0"><thead><tr><th>Offer</th><th>Qty</th><th>Fee</th><th>Bundle</th></tr></thead><tbody><?php foreach($items as $it):?><tr><td><?=e($it['offer_id'])?></td><td><?=e($it['quantity'])?></td><td><?=e($it['fee'])?></td><td><?=e($it['bundle_code'])?></td></tr><?php endforeach;?></tbody></table><?php endif;?></div></div>
+            <div class="col-lg-4"><div class="cardx"><h3>Invoices</h3><?php if(!$invoices):?><p class="text-muted mb-0">No invoice on file.</p><?php else:?><table class="table table-sm mb-0"><thead><tr><th>Invoice No.</th><th>Status</th><th>Created</th></tr></thead><tbody><?php foreach($invoices as $inv):?><tr><td><?=e($inv['invoice_no'])?></td><td><?=e($inv['status'])?></td><td><?=e($inv['created_at'])?></td></tr><?php endforeach;?></tbody></table><?php endif;?></div></div>
+        </div>
+    <?php endif; elseif ($iccid !== ''): ?>
+        <div class="cardx mt-3"><h3>Orders for ICCID <?=e($iccid)?></h3><?php if(!$ordersByIccid):?><p class="text-muted mb-0">No orders found.</p><?php else:?><table class="table table-hover table-sm"><thead><tr><th>Order No.</th><th>Created</th><th>Qty</th><th>Amount Payable</th><th></th></tr></thead><tbody><?php foreach($ordersByIccid as $o):?><tr><td><?=e($o['order_no'])?></td><td><?=e($o['created_at'])?></td><td><?=e($o['quantity'])?></td><td><?=e($o['amount_payable'])?></td><td><a class="btn btn-sm btn-outline-primary" href="?page=sales&order_no=<?=urlencode((string)$o['order_no'])?>">View</a></td></tr><?php endforeach;?></tbody></table><?php endif;?></div>
+    <?php endif; layout_end(); exit;
+}
+
+if ($page==='friends_family') {
+    require_perm('view_tables'); $schema=current_schema();
+    if (!table_exists($schema,'unique_number_subscription')) throw new RuntimeException('unique_number_subscription does not exist in '.$schema);
+    if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action']??'')==='toggle') {
+        require_perm('edit_records');
+        $id=(int)($_POST['id']??0);
+        $row=fetch_record($schema,'unique_number_subscription',['id'=>$id]) ?: throw new RuntimeException('Record not found');
+        $newVal = ($row['active']??'')==='1' ? '0' : '1';
+        $token=make_confirmation('update',['schema'=>$schema,'table'=>'unique_number_subscription','keys'=>['id'=>$id],'data'=>['active'=>$newVal]]);
+        redirect('?page=confirm&token='.$token);
+    }
+    $filters=[];
+    foreach(['msisdn'=>'msisdn','friend_number'=>'friend_number','transaction_id'=>'transaction_id'] as $qp=>$col) if(trim((string)($_GET[$qp]??''))!=='') $filters[]=['col'=>$col,'op'=>'contains','val'=>trim((string)$_GET[$qp])];
+    $pageNo=max(1,(int)($_GET['p']??1));
+    $data=list_records($schema,'unique_number_subscription',$filters,$pageNo,25);
+    layout_start('Friends & Family');
+    ?>
+    <div class="cardx">
+        <h3><i class="fa-solid fa-user-group me-2"></i>Friends & Family Numbers</h3>
+        <form method="get" class="row g-2"><input type="hidden" name="page" value="friends_family">
+            <div class="col-md-3"><input class="form-control" name="msisdn" placeholder="MSISDN" value="<?=e($_GET['msisdn']??'')?>"></div>
+            <div class="col-md-3"><input class="form-control" name="friend_number" placeholder="Friend number" value="<?=e($_GET['friend_number']??'')?>"></div>
+            <div class="col-md-3"><input class="form-control" name="transaction_id" placeholder="Transaction ID" value="<?=e($_GET['transaction_id']??'')?>"></div>
+            <div class="col-md-3"><button class="btn btn-outline-primary w-100">Search</button></div>
+        </form>
+    </div>
+    <div class="cardx table-card mt-3">
+        <p class="text-muted px-3 pt-3 mb-0"><?=number_format($data['total'])?> matching records</p>
+        <div class="table-scroll"><table class="table table-hover table-sm"><thead><tr><th>Date</th><th>MSISDN</th><th>Friend Number</th><th>Offer Code</th><th>Expiry</th><th>Active</th><?php if(can('edit_records')):?><th></th><?php endif;?></tr></thead><tbody>
+        <?php foreach($data['rows'] as $r):?><tr>
+            <td><?=e($r['date'])?></td><td><?=e($r['msisdn'])?></td><td><?=e($r['friend_number'])?></td><td><?=e($r['offer_code'])?></td><td><?=e($r['expiry'])?></td>
+            <td><span class="badge <?=$r['active']==='1'?'bg-success':'bg-secondary'?>"><?=$r['active']==='1'?'Active':'Inactive'?></span></td>
+            <?php if(can('edit_records')):?><td><form method="post" data-confirm="Toggle this number's active status?"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="action" value="toggle"><input type="hidden" name="id" value="<?=e($r['id'])?>"><button class="btn btn-sm btn-outline-dark">Toggle</button></form></td><?php endif;?>
+        </tr><?php endforeach;?>
+        </tbody></table></div>
+        <?php $pages=max(1,(int)ceil($data['total']/25));?>
+        <div class="p-3 d-flex justify-content-between"><span>Page <?=$pageNo?> of <?=$pages?></span><div><?php if($pageNo>1):?><a class="btn btn-sm btn-outline-primary" href="?<?=http_build_query(array_merge($_GET,['p'=>$pageNo-1]))?>">Prev</a><?php endif;?> <?php if($pageNo<$pages):?><a class="btn btn-sm btn-outline-primary" href="?<?=http_build_query(array_merge($_GET,['p'=>$pageNo+1]))?>">Next</a><?php endif;?></div></div>
+    </div>
+    <?php layout_end(); exit;
+}
+
+if ($page==='voting') {
+    require_perm('view_tables'); $schema=current_schema();
+    if ($_SERVER['REQUEST_METHOD']==='POST') {
+        $id=(int)($_POST['id']??0);
+        require_perm($id ? 'edit_records' : 'create_records');
+        $token=make_confirmation($id?'update':'insert',['schema'=>$schema,'table'=>'voting_contestant','keys'=>['id'=>$id],'data'=>$_POST['data']??[]]);
+        redirect('?page=confirm&token='.$token);
+    }
+    $edit=null; if(isset($_GET['id'])){ $edit=fetch_record($schema,'voting_contestant',['id'=>(int)$_GET['id']]); }
+    $tally = voting_tally($schema);
+    $contestants = table_exists($schema,'voting_contestant') ? pdo($schema)->query('SELECT * FROM voting_contestant ORDER BY number')->fetchAll() : [];
+    layout_start('Voting Service');
+    ?>
+    <div class="row g-3">
+        <div class="col-lg-4"><div class="cardx"><h3><?= $edit?'Edit Contestant':'Add Contestant' ?></h3>
+            <form method="post"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="id" value="<?=e($edit['id']??'')?>">
+                <label>Name</label><input class="form-control mb-2" name="data[name]" value="<?=e($edit['name']??'')?>">
+                <label>Number (vote code)</label><input class="form-control mb-2" name="data[number]" value="<?=e($edit['number']??'')?>">
+                <label>Status</label><input class="form-control mb-2" name="data[status]" value="<?=e($edit['status']??'active')?>">
+                <button class="btn btn-primary w-100">Preview & Confirm Save</button>
+                <?php if($edit):?><a class="btn btn-outline-secondary w-100 mt-2" href="?page=voting">Cancel Edit</a><?php endif;?>
+            </form>
+        </div>
+        <div class="cardx mt-3"><h3>Contestants</h3><table class="table table-sm mb-0"><thead><tr><th>#</th><th>Name</th><th>Status</th><th></th></tr></thead><tbody><?php foreach($contestants as $c):?><tr><td><?=e($c['number'])?></td><td><?=e($c['name'])?></td><td><?=e($c['status'])?></td><td><a class="btn btn-sm btn-warning" href="?page=voting&id=<?=e($c['id'])?>">Edit</a></td></tr><?php endforeach;?></tbody></table></div>
+        </div>
+        <div class="col-lg-8"><div class="cardx"><h3>Live Tally</h3><?php if(!$tally):?><p class="text-muted mb-0">No votes recorded.</p><?php else:?><table class="table table-hover"><thead><tr><th>Vote Code</th><th>Contestant</th><th>Votes</th></tr></thead><tbody><?php foreach($tally as $t):?><tr><td><?=e($t['content'])?></td><td><?=e($t['contestant']??'Unknown')?></td><td><strong><?=number_format($t['votes'])?></strong></td></tr><?php endforeach;?></tbody></table><?php endif;?></div></div>
+    </div>
+    <?php layout_end(); exit;
+}
+
+if ($page==='api_keys') {
+    require_perm('manage_api_keys');
+    $newKey=null;
+    if ($_SERVER['REQUEST_METHOD']==='POST') {
+        if (($_POST['do']??'')==='create') { $newKey=create_api_key(trim($_POST['label']??'') ?: 'Unnamed'); flash('warning','New key created — copy it now, it will not be shown again.'); }
+        elseif (($_POST['do']??'')==='revoke') { revoke_api_key((int)$_POST['id']); flash('info','Key revoked.'); }
+    }
+    $keys=list_api_keys();
+    layout_start('Partner API Keys');
+    ?>
+    <div class="row g-3">
+        <div class="col-lg-4"><div class="cardx"><h3>Create API Key</h3><p class="text-muted">Read-only access for partner integrations (e.g. the mobile app or USSD gateway) to <code>api.php</code>.</p>
+            <form method="post" data-confirm="Create a new API key?"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="create">
+                <label>Label</label><input class="form-control mb-2" name="label" placeholder="e.g. GNM Mobile App">
+                <button class="btn btn-primary w-100">Create Key</button>
+            </form>
+            <?php if($newKey):?><div class="alert alert-warning mt-3"><strong>Copy this key now</strong> — it will not be shown again:<br><code style="word-break:break-all;"><?=e($newKey)?></code></div><?php endif;?>
+        </div></div>
+        <div class="col-lg-8"><div class="cardx"><h3>Keys</h3><table class="table table-sm"><thead><tr><th>Label</th><th>Status</th><th>Created by</th><th>Created</th><th>Last used</th><th></th></tr></thead><tbody>
+        <?php foreach($keys as $k):?><tr>
+            <td><?=e($k['label'])?></td><td><span class="badge <?=$k['status']==='active'?'bg-success':'bg-secondary'?>"><?=e($k['status'])?></span></td>
+            <td><?=e($k['created_by'])?></td><td><?=e($k['created_at'])?></td><td><?=e($k['last_used_at']??'never')?></td>
+            <td><?php if($k['status']==='active'):?><form method="post" data-confirm="Revoke this API key? Integrations using it will stop working immediately."><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="revoke"><input type="hidden" name="id" value="<?=e($k['id'])?>"><button class="btn btn-sm btn-outline-danger">Revoke</button></form><?php endif;?></td>
+        </tr><?php endforeach;?>
+        </tbody></table></div></div>
     </div>
     <?php layout_end(); exit;
 }
