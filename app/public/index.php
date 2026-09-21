@@ -13,7 +13,7 @@ require_login();
 
 function layout_start(string $title): void { $u=user(); $schema=current_schema(); ?>
 <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title><?=e($title)?> - VAS Cloud</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"><link href="style.css" rel="stylesheet"></head><body><aside class="sidebar"><div class="sidebar-brand"><div class="logo">VC</div><div><h4>VAS Cloud</h4><span>Control Center</span></div></div><nav class="nav flex-column">
-<?php $items=[['dashboard','fa-gauge','Dashboard'],['subscriptions','fa-user-check','Subscriptions'],['offers','fa-tags','Offer Management'],['esim','fa-sim-card','eSIM Profiles'],['sales','fa-file-invoice-dollar','Sales & Invoices'],['friends_family','fa-user-group','Friends & Family'],['voting','fa-square-poll-vertical','Voting Service'],['tables','fa-database','Database Tables'],['investigate','fa-headset','Complaint Investigation'],['alerts','fa-triangle-exclamation','Alerts'],['sql','fa-code','SQL Console'],['reports','fa-chart-line','Reports'],['projects','fa-diagram-project','Projects'],['shortcodes','fa-hashtag','Short Codes'],['api_keys','fa-key','Partner API Keys'],['audit','fa-shield-halved','Audit Trail'],['users','fa-users-gear','Users']]; foreach($items as $it): if(in_array($it[0],['sql'])&&!can('run_sql')) continue; if($it[0]==='users'&&!can('manage_users')) continue; if($it[0]==='audit'&&!can('view_audit')) continue; if($it[0]==='api_keys'&&!can('manage_api_keys')) continue; if(in_array($it[0],['investigate','reports','alerts'],true)&&!can('view_reports')) continue; if(in_array($it[0],['subscriptions','offers','esim','sales','friends_family','voting'],true)&&!can('view_tables')) continue; ?><a class="nav-link <?=($_GET['page']??'dashboard')===$it[0]?'active':''?>" href="?page=<?=$it[0]?>"><i class="fa-solid <?=$it[1]?>"></i><?=$it[2]?></a><?php endforeach; ?></nav><div class="env-switch"><span>Environment</span><div class="btn-group w-100"><a class="btn btn-sm <?=$schema==='HeraTesting'?'btn-warning':'btn-outline-light'?>" href="?page=switch_schema&schema=HeraTesting">Testing</a><a class="btn btn-sm <?=$schema==='HeraProduction'?'btn-danger':'btn-outline-light'?>" href="?page=switch_schema&schema=HeraProduction">Production</a></div></div><div class="user-box"><strong><?=e($u['full_name'])?></strong><small><?=e($u['role'])?> • <?=e($u['username'])?></small><a href="?page=logout" class="btn btn-sm btn-light w-100 mt-2">Logout</a></div></aside><main><div class="topbar"><div><h1><?=e($title)?></h1><p><?=e($schema)?> • Request <?=e(request_id())?></p></div><span class="pill <?=$schema==='HeraProduction'?'prod':'test'?>"><?=e($schema)?></span></div><?php foreach(flashes() as $f):?><div class="alert alert-<?=e($f['type'])?> shadow-sm"><?=e($f['msg'])?></div><?php endforeach; ?>
+<?php $items=[['dashboard','fa-gauge','Dashboard'],['monitoring','fa-heart-pulse','Monitoring'],['subscriptions','fa-user-check','Subscriptions'],['offers','fa-tags','Offer Management'],['esim','fa-sim-card','eSIM Profiles'],['sales','fa-file-invoice-dollar','Sales & Invoices'],['friends_family','fa-user-group','Friends & Family'],['voting','fa-square-poll-vertical','Voting Service'],['ussd_ivr','fa-mobile-screen-button','USSD & IVR'],['smsc','fa-comment-sms','SMSC'],['tables','fa-database','Database Tables'],['investigate','fa-headset','Complaint Investigation'],['alerts','fa-triangle-exclamation','Alerts'],['sql','fa-code','SQL Console'],['reports','fa-chart-line','Reports'],['projects','fa-diagram-project','Projects'],['shortcodes','fa-hashtag','Short Codes'],['api_keys','fa-key','Partner API Keys'],['audit','fa-shield-halved','Audit Trail'],['users','fa-users-gear','Users']]; foreach($items as $it): if(in_array($it[0],['sql'])&&!can('run_sql')) continue; if($it[0]==='users'&&!can('manage_users')) continue; if($it[0]==='audit'&&!can('view_audit')) continue; if($it[0]==='api_keys'&&!can('manage_api_keys')) continue; if(in_array($it[0],['investigate','reports','alerts','monitoring'],true)&&!can('view_reports')) continue; if(in_array($it[0],['subscriptions','offers','esim','sales','friends_family','voting','ussd_ivr','smsc'],true)&&!can('view_tables')) continue; ?><a class="nav-link <?=($_GET['page']??'dashboard')===$it[0]?'active':''?>" href="?page=<?=$it[0]?>"><i class="fa-solid <?=$it[1]?>"></i><?=$it[2]?></a><?php endforeach; ?></nav><div class="env-switch"><span>Environment</span><div class="btn-group w-100"><a class="btn btn-sm <?=$schema==='HeraTesting'?'btn-warning':'btn-outline-light'?>" href="?page=switch_schema&schema=HeraTesting">Testing</a><a class="btn btn-sm <?=$schema==='HeraProduction'?'btn-danger':'btn-outline-light'?>" href="?page=switch_schema&schema=HeraProduction">Production</a></div></div><div class="user-box"><strong><?=e($u['full_name'])?></strong><small><?=e($u['role'])?> • <?=e($u['username'])?></small><a href="?page=logout" class="btn btn-sm btn-light w-100 mt-2">Logout</a></div></aside><main><div class="topbar"><div><h1><?=e($title)?></h1><p><?=e($schema)?> • Request <?=e(request_id())?></p></div><span class="pill <?=$schema==='HeraProduction'?'prod':'test'?>"><?=e($schema)?></span></div><?php foreach(flashes() as $f):?><div class="alert alert-<?=e($f['type'])?> shadow-sm"><?=e($f['msg'])?></div><?php endforeach; ?>
 <?php }
 function layout_end(): void { ?></main><script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script><script nonce="<?=e(csp_nonce())?>">
 function addFilter(){const box=document.getElementById('filters'); const tpl=document.getElementById('filter-template').innerHTML; box.insertAdjacentHTML('beforeend',tpl);}
@@ -431,6 +431,112 @@ if ($page==='api_keys') {
         </tr><?php endforeach;?>
         </tbody></table></div></div>
     </div>
+    <?php layout_end(); exit;
+}
+
+if ($page==='ussd_ivr') {
+    require_perm('view_tables'); $schema=current_schema();
+    if (!table_exists($schema,'channel_service_code')) throw new RuntimeException('channel_service_code does not exist in '.$schema);
+    if ($_SERVER['REQUEST_METHOD']==='POST') {
+        $id=(int)($_POST['id']??0);
+        require_perm($id ? 'edit_records' : 'create_records');
+        $token=make_confirmation($id?'update':'insert',['schema'=>$schema,'table'=>'channel_service_code','keys'=>['id'=>$id],'data'=>$_POST['data']??[]]);
+        redirect('?page=confirm&token='.$token);
+    }
+    $edit=null; if(isset($_GET['id'])){ $edit=fetch_record($schema,'channel_service_code',['id'=>(int)$_GET['id']]); }
+    $typeFilter = in_array($_GET['type']??'', ['USSD','IVR'], true) ? $_GET['type'] : null;
+    $routes = channel_route_activity($schema, $typeFilter);
+    $queue = agent_queue_snapshot($schema);
+    $ussdToday = channel_activity_today($schema, ['USSD']);
+    $ivrToday = channel_activity_today($schema, ['IVR']);
+    layout_start('USSD & IVR');
+    ?>
+    <div class="metric-grid">
+        <div class="metric"><span>USSD Transactions Today</span><strong><?=number_format($ussdToday['total'])?></strong></div>
+        <div class="metric"><span>USSD Failed Today</span><strong><?=number_format($ussdToday['failed'])?></strong></div>
+        <div class="metric"><span>IVR Transactions Today</span><strong><?=number_format($ivrToday['total'])?></strong></div>
+        <div class="metric"><span>IVR Failed Today</span><strong><?=number_format($ivrToday['failed'])?></strong></div>
+    </div>
+    <p class="text-muted mt-2">Counted from <?=e(AUDIT_LOG_TABLE)?> where channel = USSD/IVR. Channel registration/ownership (short codes, providers) lives on the <a href="?page=shortcodes">Short Codes</a> page; this page is the operational routing and live-queue view.</p>
+    <div class="row g-3 mt-1">
+        <div class="col-lg-5"><div class="cardx"><h3><?= $edit?'Edit Route':'Add Route' ?></h3><p class="text-muted">Maps a short code + service code to the offer it triggers. Saving requires confirmation.</p>
+            <form method="post"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="id" value="<?=e($edit['id']??'')?>">
+                <label>Type</label><select class="form-select mb-2" name="data[type]"><?php foreach(['USSD','IVR'] as $v):?><option value="<?=e($v)?>" <?=($edit['type']??'USSD')===$v?'selected':''?>><?=e($v)?></option><?php endforeach;?></select>
+                <label>Short Code</label><input class="form-control mb-2" name="data[shortcode]" value="<?=e($edit['shortcode']??'')?>" placeholder="*123#">
+                <label>Service Code</label><input class="form-control mb-2" name="data[service_code]" value="<?=e($edit['service_code']??'')?>">
+                <label>Offer Code</label><input class="form-control mb-2" name="data[offer_code]" value="<?=e($edit['offer_code']??'')?>">
+                <label>Status</label><input class="form-control mb-2" name="data[status]" value="<?=e($edit['status']??'active')?>">
+                <button class="btn btn-primary w-100">Preview & Confirm Save</button>
+                <?php if($edit):?><a class="btn btn-outline-secondary w-100 mt-2" href="?page=ussd_ivr">Cancel Edit</a><?php endif;?>
+            </form>
+        </div></div>
+        <div class="col-lg-7"><div class="cardx">
+            <div class="d-flex justify-content-between align-items-center"><h3>Routing Table</h3><div class="btn-group btn-group-sm"><a class="btn btn-outline-primary <?=!$typeFilter?'active':''?>" href="?page=ussd_ivr">All</a><a class="btn btn-outline-primary <?=$typeFilter==='USSD'?'active':''?>" href="?page=ussd_ivr&type=USSD">USSD</a><a class="btn btn-outline-primary <?=$typeFilter==='IVR'?'active':''?>" href="?page=ussd_ivr&type=IVR">IVR</a></div></div>
+            <?php if(!$routes):?><p class="text-muted mb-0 mt-2">No routes configured<?=$typeFilter?" for $typeFilter":''?>.</p><?php else:?>
+            <table class="table table-hover table-sm mt-2"><thead><tr><th>Type</th><th>Short Code</th><th>Service Code</th><th>Offer Code</th><th>Status</th><th></th></tr></thead><tbody>
+            <?php foreach($routes as $r):?><tr><td><span class="badge bg-dark"><?=e($r['type'])?></span></td><td><?=e($r['shortcode'])?></td><td><?=e($r['service_code'])?></td><td><?=e($r['offer_code'])?></td><td><?=e($r['status'])?></td><td><a class="btn btn-sm btn-warning" href="?page=ussd_ivr&id=<?=e($r['id'])?>">Edit</a></td></tr><?php endforeach;?>
+            </tbody></table><?php endif;?>
+        </div>
+        <div class="cardx mt-3"><h3>Live Agent Queue</h3><p class="text-muted">Current USSD/IVR sessions held in <code>agent_queue</code>.</p>
+            <?php if(!$queue):?><p class="text-muted mb-0">Queue is empty.</p><?php else:?><table class="table table-sm mb-0"><thead><tr><th>MSISDN</th><th>Service Code</th><th>Status</th></tr></thead><tbody><?php foreach($queue as $q):?><tr><td><?=e($q['msisdn'])?></td><td><?=e($q['service_code'])?></td><td><span class="badge bg-info text-dark"><?=e($q['status'])?></span></td></tr><?php endforeach;?></tbody></table><?php endif;?>
+        </div></div>
+    </div>
+    <?php layout_end(); exit;
+}
+
+if ($page==='smsc') {
+    require_perm('view_tables'); $schema=current_schema();
+    if ($_SERVER['REQUEST_METHOD']==='POST') {
+        require_perm(!empty($_POST['id']) ? 'edit_records' : 'create_records');
+        save_smsc_connection($_POST['data']??[], !empty($_POST['id'])?(int)$_POST['id']:null);
+        flash('success','SMSC connection saved.');
+        redirect('?page=smsc');
+    }
+    $edit=null; if(isset($_GET['id'])){ $st=portal_pdo()->prepare('SELECT * FROM smsc_connections WHERE id=?'); $st->execute([(int)$_GET['id']]); $edit=$st->fetch(); }
+    $connections=list_smsc_connections();
+    $smsToday = smsc_activity_today($schema);
+    layout_start('SMSC');
+    ?>
+    <div class="alert alert-info">This is a connection <strong>registry</strong> — it tracks SMPP bind configuration and status for reference. It does not itself bind to an SMSC or poll delivery receipts. SMS transaction activity below reflects <?=e(AUDIT_LOG_TABLE)?> entries with channel SMS/SMSC — none exist in this environment yet, so it will read zero until an upstream system starts logging SMS traffic there (or in a dedicated log table).</div>
+    <div class="metric-grid"><div class="metric"><span>SMS Transactions Today</span><strong><?=number_format($smsToday['total'])?></strong></div><div class="metric"><span>SMS Failed Today</span><strong><?=number_format($smsToday['failed'])?></strong></div><div class="metric"><span>Active Connections</span><strong><?=count(array_filter($connections, fn($c)=>$c['status']==='active'))?></strong></div></div>
+    <div class="row g-3 mt-1">
+        <div class="col-lg-5"><div class="cardx"><h3><?= $edit?'Edit Connection':'Add Connection' ?></h3>
+            <form method="post" data-confirm="Confirm saving this SMSC connection?"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="id" value="<?=e($edit['id']??'')?>">
+                <label>Name</label><input class="form-control mb-2" name="data[name]" value="<?=e($edit['name']??'')?>" placeholder="Primary SMSC">
+                <div class="row g-2"><div class="col-8"><label>Host</label><input class="form-control mb-2" name="data[host]" value="<?=e($edit['host']??'')?>"></div><div class="col-4"><label>Port</label><input class="form-control mb-2" name="data[port]" value="<?=e($edit['port']??'')?>"></div></div>
+                <label>System ID</label><input class="form-control mb-2" name="data[system_id]" value="<?=e($edit['system_id']??'')?>">
+                <label>Bind Type</label><select class="form-select mb-2" name="data[bind_type]"><?php foreach(['TX','RX','TRX'] as $v):?><option value="<?=e($v)?>" <?=($edit['bind_type']??'TRX')===$v?'selected':''?>><?=e($v)?></option><?php endforeach;?></select>
+                <label>Status</label><select class="form-select mb-2" name="data[status]"><?php foreach(['active','inactive','testing'] as $v):?><option value="<?=e($v)?>" <?=($edit['status']??'testing')===$v?'selected':''?>><?=e(ucfirst($v))?></option><?php endforeach;?></select>
+                <label>Notes</label><textarea class="form-control mb-2" name="data[notes]" rows="2"><?=e($edit['notes']??'')?></textarea>
+                <button class="btn btn-primary w-100">Save Connection</button>
+                <?php if($edit):?><a class="btn btn-outline-secondary w-100 mt-2" href="?page=smsc">Cancel Edit</a><?php endif;?>
+            </form>
+        </div></div>
+        <div class="col-lg-7"><div class="cardx"><h3>Connections</h3><?php if(!$connections):?><p class="text-muted mb-0">No SMSC connections registered yet.</p><?php else:?><table class="table table-hover table-sm"><thead><tr><th>Name</th><th>Host:Port</th><th>System ID</th><th>Bind</th><th>Status</th><th></th></tr></thead><tbody><?php foreach($connections as $c):?><tr><td><strong><?=e($c['name'])?></strong><?php if($c['notes']):?><div class="text-muted small"><?=e(mb_strimwidth((string)$c['notes'],0,60,'...'))?></div><?php endif;?></td><td><?=e($c['host'])?><?=$c['port']?':'.e($c['port']):''?></td><td><?=e($c['system_id'])?></td><td><?=e($c['bind_type'])?></td><td><span class="badge <?=$c['status']==='active'?'bg-success':($c['status']==='testing'?'bg-warning text-dark':'bg-secondary')?>"><?=e($c['status'])?></span></td><td><a class="btn btn-sm btn-warning" href="?page=smsc&id=<?=e($c['id'])?>">Edit</a></td></tr><?php endforeach;?></tbody></table><?php endif;?></div></div>
+    </div>
+    <?php layout_end(); exit;
+}
+
+if ($page==='monitoring') {
+    require_perm('view_reports'); $schema=current_schema();
+    $snap = monitoring_snapshot($schema);
+    layout_start('Monitoring');
+    ?>
+    <?php if ($snap['alerts']): foreach($snap['alerts'] as $a):?><div class="alert alert-<?=e($a['level'])?> shadow-sm">⚠ <?=e($a['message'])?></div><?php endforeach; endif;?>
+    <div class="metric-grid">
+        <div class="metric"><span>Database Tables</span><strong><?=number_format($snap['db_tables'])?></strong></div>
+        <div class="metric"><span>USSD Today</span><strong><?=number_format($snap['ussd']['total'])?></strong></div>
+        <div class="metric"><span>IVR Today</span><strong><?=number_format($snap['ivr']['total'])?></strong></div>
+        <div class="metric"><span>SMS Today</span><strong><?=number_format($snap['sms']['total'])?></strong></div>
+        <div class="metric"><span>Agent Queue</span><strong><?=number_format($snap['agent_queue_total'])?></strong></div>
+        <div class="metric"><span>Active SMSC Links</span><strong><?=number_format($snap['smsc_connections_active'])?></strong></div>
+    </div>
+    <div class="row g-3 mt-1">
+        <div class="col-lg-4"><div class="cardx"><h3>Database</h3><p class="text-muted mb-2">Row counts, table browser, filtered CSV export.</p><a class="btn btn-outline-primary w-100" href="?page=tables">Open Database Tables</a></div></div>
+        <div class="col-lg-4"><div class="cardx"><h3>USSD & IVR</h3><p class="text-muted mb-2">Routing table and live agent queue.<?php if($snap['agent_queue_by_status']):?><br><?php foreach($snap['agent_queue_by_status'] as $s):?><span class="badge bg-light text-dark border me-1"><?=e($s['status'])?>: <?=e($s['c'])?></span><?php endforeach;?><?php endif;?></p><a class="btn btn-outline-primary w-100" href="?page=ussd_ivr">Open USSD & IVR</a></div></div>
+        <div class="col-lg-4"><div class="cardx"><h3>SMSC</h3><p class="text-muted mb-2">Connection registry and SMS activity (currently no SMS-channel data in this environment).</p><a class="btn btn-outline-primary w-100" href="?page=smsc">Open SMSC</a></div></div>
+    </div>
+    <div class="cardx mt-3"><h3>All Alerts</h3><a class="btn btn-outline-primary btn-sm mb-2" href="?page=alerts">Open Alerts page</a><?php if(!$snap['alerts']):?><p class="text-muted mb-0">No active alerts.</p><?php endif;?></div>
     <?php layout_end(); exit;
 }
 

@@ -106,6 +106,20 @@ function ensure_portal_runtime_schema(): void {
 
         $db->exec("INSERT IGNORE INTO role_permissions(role_name, permission_key) VALUES ('admin','manage_api_keys')");
 
+        $db->exec("CREATE TABLE IF NOT EXISTS smsc_connections (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(120) NOT NULL,
+            host VARCHAR(255) NULL,
+            port INT NULL,
+            system_id VARCHAR(120) NULL,
+            bind_type ENUM('TX','RX','TRX') NOT NULL DEFAULT 'TRX',
+            status ENUM('active','inactive','testing') NOT NULL DEFAULT 'testing',
+            notes TEXT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_smsc_status (status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
         $db->exec("CREATE TABLE IF NOT EXISTS saved_queries (
             id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
             name VARCHAR(150) NOT NULL,
@@ -616,6 +630,73 @@ function authenticate_api_key(string $endpoint): array {
     portal_pdo()->prepare('INSERT INTO api_request_log(key_id,endpoint,ip_address) VALUES(?,?,?)')->execute([$key['id'], $endpoint, client_ip()]);
     portal_pdo()->prepare('UPDATE api_keys SET last_used_at=NOW() WHERE id=?')->execute([$key['id']]);
     return $key;
+}
+
+// ===================== USSD & IVR =====================
+// channel_service_code (routing: shortcode -> service_code -> offer_code, per USSD/IVR) and
+// agent_queue (live session/queue state) are both small operational tables in HeraProduction/
+// HeraTesting — no bounding needed, unlike subscription/audit_log.
+function channel_route_activity(string $schema, ?string $type = null): array {
+    if (!table_exists($schema, 'channel_service_code')) return [];
+    $sql = 'SELECT * FROM channel_service_code';
+    $params = [];
+    if ($type) { $sql .= ' WHERE type = ?'; $params[] = $type; }
+    $sql .= ' ORDER BY shortcode, type';
+    $st = pdo($schema)->prepare($sql); $st->execute($params);
+    return $st->fetchAll();
+}
+function agent_queue_snapshot(string $schema): array {
+    if (!table_exists($schema, 'agent_queue')) return [];
+    return pdo($schema)->query('SELECT * FROM agent_queue ORDER BY id DESC LIMIT 200')->fetchAll();
+}
+// Transaction activity for a given channel set (USSD, IVR, SMS, ...), reusing the same bounded,
+// partition-aware audit_log query the Complaint Investigation report uses.
+function channel_activity_today(string $schema, array $channels): array {
+    if (!table_exists($schema, AUDIT_LOG_TABLE)) return ['total' => 0, 'success' => 0, 'failed' => 0];
+    $placeholders = implode(',', array_fill(0, count($channels), '?'));
+    $st = pdo($schema)->prepare("SELECT COUNT(*) total, SUM(CASE WHEN UPPER(result_status)='SUCCESS' THEN 1 ELSE 0 END) ok FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= CURDATE() AND channel IN ($placeholders)");
+    $st->execute($channels);
+    $r = $st->fetch();
+    $total = (int)($r['total'] ?? 0); $ok = (int)($r['ok'] ?? 0);
+    return ['total' => $total, 'success' => $ok, 'failed' => $total - $ok];
+}
+
+// ===================== SMSC =====================
+// No SMSC/SMS log data source exists anywhere in this database today (no smsc_* tables, and
+// audit_log has never recorded a channel='SMS' transaction in this environment — confirmed via
+// `SELECT DISTINCT channel FROM audit_log`). smsc_connections is a configuration/registry surface
+// only — it does not bind to a real SMPP endpoint or poll delivery receipts. If/when SMS delivery
+// events start landing in audit_log (or a dedicated SMSC log table), smsc_activity_today() below
+// is already wired to show them via the same bounded query as everything else.
+function list_smsc_connections(): array {
+    return portal_pdo()->query('SELECT * FROM smsc_connections ORDER BY name')->fetchAll();
+}
+function save_smsc_connection(array $data, ?int $id = null): void {
+    $payload = [
+        normalize_value($data['name'] ?? ''), normalize_value($data['host'] ?? ''), normalize_value($data['port'] ?? null),
+        normalize_value($data['system_id'] ?? ''), normalize_value($data['bind_type'] ?? 'TRX'), normalize_value($data['status'] ?? 'testing'),
+        normalize_value($data['notes'] ?? ''),
+    ];
+    if (!$payload[0]) throw new RuntimeException('Name is required.');
+    $db = portal_pdo();
+    if ($id) { $payload[] = $id; $db->prepare('UPDATE smsc_connections SET name=?,host=?,port=?,system_id=?,bind_type=?,status=?,notes=?,updated_at=NOW() WHERE id=?')->execute($payload); }
+    else { $db->prepare('INSERT INTO smsc_connections(name,host,port,system_id,bind_type,status,notes) VALUES(?,?,?,?,?,?,?)')->execute($payload); }
+    audit('save_smsc_connection', null, 'smsc_connections', (string)$id, json_encode($data));
+}
+function smsc_activity_today(string $schema): array { return channel_activity_today($schema, ['SMS', 'SMSC']); }
+
+// ===================== Unified Monitoring =====================
+function monitoring_snapshot(string $schema): array {
+    return [
+        'db_tables' => count(table_names($schema)),
+        'ussd' => channel_activity_today($schema, ['USSD']),
+        'ivr' => channel_activity_today($schema, ['IVR']),
+        'sms' => smsc_activity_today($schema),
+        'agent_queue_total' => table_exists($schema, 'agent_queue') ? (int)(pdo($schema)->query('SELECT COUNT(*) c FROM agent_queue')->fetch()['c'] ?? 0) : 0,
+        'agent_queue_by_status' => table_exists($schema, 'agent_queue') ? pdo($schema)->query('SELECT status, COUNT(*) c FROM agent_queue GROUP BY status ORDER BY c DESC')->fetchAll() : [],
+        'smsc_connections_active' => (int)(portal_pdo()->query("SELECT COUNT(*) c FROM smsc_connections WHERE status='active'")->fetch()['c'] ?? 0),
+        'alerts' => compute_alerts($schema),
+    ];
 }
 
 ensure_portal_runtime_schema();

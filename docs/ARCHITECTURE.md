@@ -12,6 +12,61 @@
 - `HeraTesting`: safe testing/staging copy of production data structure.
 - `vas_portal`: portal users, permissions, audit trail, saved queries, projects, short codes and confirmations.
 
+## Infrastructure services (USSD, IVR, SMSC)
+
+- **USSD & IVR** (`?page=ussd_ivr`): the operational routing table lives in `channel_service_code`
+  (HeraProduction/HeraTesting — short code + service code → offer code, per USSD/IVR), plus a live
+  view of `agent_queue` (current sessions). Governance-level channel metadata (short code ownership,
+  provider, status) stays on the existing Short Codes page (`portal_short_codes`, `vas_portal`
+  schema) — this page is the operational counterpart to that registry, not a replacement for it.
+  Today's transaction counts are read from `audit_log` filtered to `channel IN ('USSD')` /
+  `('IVR')`, which is real data already flowing through the system (USSD already appears as an
+  audit_log channel value in this environment).
+- **SMSC** (`?page=smsc`): **a configuration registry only** (`vas_portal.smsc_connections`) — name,
+  host/port, system ID, bind type, status, notes. It does not bind to a real SMPP endpoint or poll
+  delivery receipts; there is no such capability in this app, and no SMSC/SMS log data source exists
+  anywhere in this database today (confirmed: `audit_log` has never recorded a channel value of
+  `SMS` or `SMSC` in this environment). The SMS activity numbers on this page and on Monitoring read
+  from `audit_log` the same way USSD/IVR do, so they'll show real numbers automatically the moment
+  an upstream system starts logging SMS traffic there (or the schema below gets a dedicated log
+  table) — until then they correctly read zero rather than fabricating activity.
+- **Monitoring** (`?page=monitoring`): a single cross-service snapshot — DB table count, USSD/IVR/SMS
+  activity today, live agent queue, active SMSC links, and the same alerts shown on the dashboard.
+
+### Adding another service module
+
+The pattern used for every module above (Subscriptions, Offers, eSIM, Sales, Friends & Family,
+Voting, USSD/IVR, SMSC) is the same each time — follow it for anything new:
+
+1. **Find or create the data.** Check if HeraProduction/HeraTesting already has a table for it
+   (`table_names()` / `columns()` in `app/lib/bootstrap.php` will tell you). If genuinely nothing
+   exists and the service is portal-governance-level config (not live operational data), add a
+   table via `ensure_portal_runtime_schema()` in `bootstrap.php` (self-healing — runs on every
+   request, `CREATE TABLE IF NOT EXISTS`, safe to add to without a manual migration step).
+2. **Check the table's size and indexes before building a search UI.** A small table (hundreds/
+   thousands of rows, like `vas_offers` or `unique_number_subscription`) can be searched freely. A
+   huge one with no supporting index (like `subscription` at ~89M rows, or `audit_log` at ~227M)
+   needs a required exact-match filter or a bounded date range — see `subscription_filters_from_request()`
+   and `audit_log_filters_from_request()` for the pattern, and don't skip this check.
+3. **Write the query functions in `bootstrap.php`**, not inline in `index.php` — a search/list
+   function, and if it's operational (HeraProduction) data being written, route saves through
+   `make_confirmation()` + the `?page=confirm` flow (see the `offers`/`esim`/`ussd_ivr` pages). If
+   it's portal-governance config (like `smsc_connections`, `portal_projects`), a direct save with a
+   `data-confirm` JS prompt is the established alternative (see the `smsc`/`shortcodes` pages) —
+   use judgment on which class the new data belongs to.
+4. **Add the page** in `app/public/index.php` (`if ($page==='your_page') { require_perm(...); ... }`),
+   reusing `layout_start()`/`layout_end()`, `redact_row()` on anything rendered or exported, and the
+   existing pagination/filter helpers (`parse_table_filters()`, `list_records()`) where the module
+   is just filtered search over one table.
+5. **Add the nav entry** in the `$items` array near the top of `layout_start()`, with a permission
+   gate matching the rest (reuse `view_tables`/`edit_records`/`create_records`/`view_reports`, or add
+   a new permission key the same way `view_reports` and `manage_api_keys` were added — seed it in
+   `database/init/00_platform_schema.sql` for fresh installs AND in `ensure_portal_runtime_schema()`
+   for already-provisioned databases).
+6. **Rebuild, redeploy just the app container** (`docker compose build app && docker compose up -d
+   app` — leaves the database untouched), **and verify against the running container** before
+   calling it done.
+
 ## Safety model
 
 - Delete operations are disabled everywhere. Write operations use confirmation tokens stored in `vas_portal.operation_confirmations`. All successful changes are logged in `vas_portal.portal_audit_trail`.
