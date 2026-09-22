@@ -962,8 +962,8 @@ function render_menu_preview(array $tree, int $depth = 0): string {
     $i = 1;
     foreach ($tree as $node) {
         $indent = str_repeat('  ', $depth);
-        $suffix = $node['node_type'] === 'offer' ? ' → purchase '.$node['offer_code']
-            : ($node['node_type'] === 'action' ? ' → '.$node['action_key']
+        $suffix = $node['node_type'] === 'offer' ? ' → purchase '.e($node['offer_code'])
+            : ($node['node_type'] === 'action' ? ' → '.e($node['action_key'])
             : ($node['node_type'] === 'end' ? ' → END' : ''));
         $out .= $indent.($depth===0 ? $i.'. ' : '- ').e($node['prompt_text']).$suffix."\n";
         if ($node['children']) $out .= render_menu_preview($node['children'], $depth + 1);
