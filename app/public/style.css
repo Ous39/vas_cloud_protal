@@ -1,5 +1,9 @@
 :root{--brand:#ff4d4d;--brand-dark:#e03e3e;--bg:#f0f4f8;--card:#fff;--text:#333;--muted:#718096;--line:#e4ebf3;--gold:#ffc107;--shadow:0 4px 10px rgba(0,0,0,.1);--radius:12px}
 *{box-sizing:border-box}
+/* html had no background — only body did. On overscroll/rubber-band scrolling (common on Windows
+   trackpads) the browser shows what's behind the page at the very top/bottom edge, which defaults
+   to black with nothing set here. Setting it on html too closes that gap. */
+html{background:var(--bg)}
 body{margin:0;background:var(--bg);color:var(--text);font-family:'Segoe UI',Arial,sans-serif;display:flex;flex-direction:column;min-height:100vh}
 main{flex:1;padding:22px;max-width:1400px;margin:0 auto;width:100%}
 
