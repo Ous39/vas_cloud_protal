@@ -95,7 +95,7 @@ if ($page==='dashboard') {
         <div class="metric"><span>Subscription Rows (est.)</span><strong><?=number_format($kpis['subscription_rows_est'])?></strong></div>
     </div>
     <div class="row g-3 mt-1">
-        <div class="col-lg-4"><div class="cardx"><h3>Top Vendors Today</h3><?php if(!$topVendors):?><p class="text-muted mb-0">No transactions yet today.</p><?php else:?><table class="table table-sm mb-0"><thead><tr><th>Vendor</th><th>Total</th><th>Failed</th></tr></thead><tbody><?php foreach($topVendors as $v):?><tr><td><?=e($v['vendor_entity_name'])?></td><td><?=number_format((int)$v['total'])?></td><td><?=number_format((int)$v['failed'])?></td></tr><?php endforeach;?></tbody></table><?php endif;?></div></div>
+        <div class="col-lg-4"><div class="cardx"><h3>Top Vendors Today</h3><?php if(!$topVendors):?><p class="text-muted mb-0">No transactions yet today.</p><?php else:?><div class="table-scroll"><table class="table table-sm mb-0"><thead><tr><th>Vendor</th><th>Total</th><th>Failed</th></tr></thead><tbody><?php foreach($topVendors as $v):?><tr><td><?=e($v['vendor_entity_name'])?></td><td><?=number_format((int)$v['total'])?></td><td><?=number_format((int)$v['failed'])?></td></tr><?php endforeach;?></tbody></table></div><?php endif;?></div></div>
         <div class="col-lg-4"><div class="cardx"><h3>Quick Links</h3><div class="d-grid gap-2"><a class="btn btn-outline-primary" href="?page=investigate"><i class="fa fa-headset me-2"></i>Complaint Investigation</a><a class="btn btn-outline-primary" href="?page=subscriptions"><i class="fa fa-user-check me-2"></i>Subscriptions</a><a class="btn btn-outline-primary" href="?page=offers"><i class="fa fa-tags me-2"></i>Offer Management</a><a class="btn btn-outline-primary" href="?page=alerts"><i class="fa fa-triangle-exclamation me-2"></i>Alerts</a></div></div></div>
         <div class="col-lg-4"><div class="cardx"><h3>Safety Rules</h3><p class="text-muted mb-1">Delete is disabled everywhere. HeraProduction is read-only in the SQL Console and cannot be full-table-synced. All writes require confirmation and are audited.</p></div></div>
     </div>
@@ -369,7 +369,7 @@ if ($page==='sales') {
         <div class="alert alert-warning mt-3">No order found with Order No. "<?=e($orderNo)?>".</div>
     <?php else: ?>
         <div class="row g-3 mt-1">
-            <div class="col-lg-4"><div class="cardx"><h3>Order <?=e($order['order_no'])?></h3><table class="table table-sm mb-0">
+            <div class="col-lg-4"><div class="cardx"><h3>Order <?=e($order['order_no'])?></h3><div class="table-scroll"><table class="table table-sm mb-0">
                 <tr><th>Created</th><td><?=e($order['created_at'])?></td></tr>
                 <tr><th>Quantity</th><td><?=e($order['quantity'])?></td></tr>
                 <tr><th>Amount payable</th><td><?=e($order['amount_payable'])?></td></tr>
@@ -377,9 +377,9 @@ if ($page==='sales') {
                 <tr><th>Shipping</th><td><?=e($order['amount_shipping'])?></td></tr>
                 <tr><th>Discount</th><td><?=e($order['discount'])?></td></tr>
                 <tr><th>ICCID</th><td><?=e($order['iccid'])?></td></tr>
-            </table></div></div>
-            <div class="col-lg-4"><div class="cardx"><h3>Line Items</h3><?php if(!$items):?><p class="text-muted mb-0">No line items.</p><?php else:?><table class="table table-sm mb-0"><thead><tr><th>Offer</th><th>Qty</th><th>Fee</th><th>Bundle</th></tr></thead><tbody><?php foreach($items as $it):?><tr><td><?=e($it['offer_id'])?></td><td><?=e($it['quantity'])?></td><td><?=e($it['fee'])?></td><td><?=e($it['bundle_code'])?></td></tr><?php endforeach;?></tbody></table><?php endif;?></div></div>
-            <div class="col-lg-4"><div class="cardx"><h3>Invoices</h3><?php if(!$invoices):?><p class="text-muted mb-0">No invoice on file.</p><?php else:?><table class="table table-sm mb-0"><thead><tr><th>Invoice No.</th><th>Status</th><th>Created</th></tr></thead><tbody><?php foreach($invoices as $inv):?><tr><td><?=e($inv['invoice_no'])?></td><td><?=e($inv['status'])?></td><td><?=e($inv['created_at'])?></td></tr><?php endforeach;?></tbody></table><?php endif;?></div></div>
+            </table></div></div></div>
+            <div class="col-lg-4"><div class="cardx"><h3>Line Items</h3><?php if(!$items):?><p class="text-muted mb-0">No line items.</p><?php else:?><div class="table-scroll"><table class="table table-sm mb-0"><thead><tr><th>Offer</th><th>Qty</th><th>Fee</th><th>Bundle</th></tr></thead><tbody><?php foreach($items as $it):?><tr><td><?=e($it['offer_id'])?></td><td><?=e($it['quantity'])?></td><td><?=e($it['fee'])?></td><td><?=e($it['bundle_code'])?></td></tr><?php endforeach;?></tbody></table></div><?php endif;?></div></div>
+            <div class="col-lg-4"><div class="cardx"><h3>Invoices</h3><?php if(!$invoices):?><p class="text-muted mb-0">No invoice on file.</p><?php else:?><div class="table-scroll"><table class="table table-sm mb-0"><thead><tr><th>Invoice No.</th><th>Status</th><th>Created</th></tr></thead><tbody><?php foreach($invoices as $inv):?><tr><td><?=e($inv['invoice_no'])?></td><td><?=e($inv['status'])?></td><td><?=e($inv['created_at'])?></td></tr><?php endforeach;?></tbody></table></div><?php endif;?></div></div>
         </div>
     <?php endif; elseif ($iccid !== ''): ?>
         <div class="cardx mt-3"><h3>Orders for ICCID <?=e($iccid)?></h3><?php if(!$ordersByIccid):?><p class="text-muted mb-0">No orders found.</p><?php else:?><table class="table table-hover table-sm"><thead><tr><th>Order No.</th><th>Created</th><th>Qty</th><th>Amount Payable</th><th></th></tr></thead><tbody><?php foreach($ordersByIccid as $o):?><tr><td><?=e($o['order_no'])?></td><td><?=e($o['created_at'])?></td><td><?=e($o['quantity'])?></td><td><?=e($o['amount_payable'])?></td><td><a class="btn btn-sm btn-outline-primary" href="?page=sales&order_no=<?=urlencode((string)$o['order_no'])?>">View</a></td></tr><?php endforeach;?></tbody></table><?php endif;?></div>
@@ -450,9 +450,9 @@ if ($page==='voting') {
                 <?php if($edit):?><a class="btn btn-outline-secondary w-100 mt-2" href="?page=voting">Cancel Edit</a><?php endif;?>
             </form>
         </div>
-        <div class="cardx mt-3"><h3>Contestants</h3><table class="table table-sm mb-0"><thead><tr><th>#</th><th>Name</th><th>Status</th><th></th></tr></thead><tbody><?php foreach($contestants as $c):?><tr><td><?=e($c['number'])?></td><td><?=e($c['name'])?></td><td><?=e($c['status'])?></td><td><a class="btn btn-sm btn-warning" href="?page=voting&id=<?=e($c['id'])?>">Edit</a></td></tr><?php endforeach;?></tbody></table></div>
+        <div class="cardx mt-3"><h3>Contestants</h3><div class="table-scroll"><table class="table table-sm mb-0"><thead><tr><th>#</th><th>Name</th><th>Status</th><th></th></tr></thead><tbody><?php foreach($contestants as $c):?><tr><td><?=e($c['number'])?></td><td><?=e($c['name'])?></td><td><?=e($c['status'])?></td><td><a class="btn btn-sm btn-warning" href="?page=voting&id=<?=e($c['id'])?>">Edit</a></td></tr><?php endforeach;?></tbody></table></div></div>
         </div>
-        <div class="col-lg-8"><div class="cardx"><h3>Live Tally</h3><?php if(!$tally):?><p class="text-muted mb-0">No votes recorded.</p><?php else:?><table class="table table-hover"><thead><tr><th>Vote Code</th><th>Contestant</th><th>Votes</th></tr></thead><tbody><?php foreach($tally as $t):?><tr><td><?=e($t['content'])?></td><td><?=e($t['contestant']??'Unknown')?></td><td><strong><?=number_format($t['votes'])?></strong></td></tr><?php endforeach;?></tbody></table><?php endif;?></div></div>
+        <div class="col-lg-8"><div class="cardx"><h3>Live Tally</h3><?php if(!$tally):?><p class="text-muted mb-0">No votes recorded.</p><?php else:?><div class="table-scroll"><table class="table table-hover"><thead><tr><th>Vote Code</th><th>Contestant</th><th>Votes</th></tr></thead><tbody><?php foreach($tally as $t):?><tr><td><?=e($t['content'])?></td><td><?=e($t['contestant']??'Unknown')?></td><td><strong><?=number_format($t['votes'])?></strong></td></tr><?php endforeach;?></tbody></table></div><?php endif;?></div></div>
     </div>
     <?php layout_end(); exit;
 }
@@ -530,7 +530,7 @@ if ($page==='ussd_ivr') {
             </tbody></table><?php endif;?>
         </div>
         <div class="cardx mt-3"><h3>Live Agent Queue</h3><p class="text-muted">Current USSD/IVR sessions held in <code>agent_queue</code>.</p>
-            <?php if(!$queue):?><p class="text-muted mb-0">Queue is empty.</p><?php else:?><table class="table table-sm mb-0"><thead><tr><th>MSISDN</th><th>Service Code</th><th>Status</th></tr></thead><tbody><?php foreach($queue as $q):?><tr><td><?=e($q['msisdn'])?></td><td><?=e($q['service_code'])?></td><td><span class="badge bg-info text-dark"><?=e($q['status'])?></span></td></tr><?php endforeach;?></tbody></table><?php endif;?>
+            <?php if(!$queue):?><p class="text-muted mb-0">Queue is empty.</p><?php else:?><div class="table-scroll"><table class="table table-sm mb-0"><thead><tr><th>MSISDN</th><th>Service Code</th><th>Status</th></tr></thead><tbody><?php foreach($queue as $q):?><tr><td><?=e($q['msisdn'])?></td><td><?=e($q['service_code'])?></td><td><span class="badge bg-info text-dark"><?=e($q['status'])?></span></td></tr><?php endforeach;?></tbody></table></div><?php endif;?>
         </div></div>
     </div>
     <?php layout_end(); exit;
@@ -652,7 +652,7 @@ if ($page==='integrations') {
         <div class="col-lg-7"><div class="cardx">
             <div class="d-flex justify-content-between align-items-center"><h3>Connections</h3><div class="btn-group btn-group-sm"><a class="btn btn-outline-primary <?=!$typeFilter?'active':''?>" href="?page=integrations">All</a><?php foreach(INTEGRATION_TYPES as $t):?><a class="btn btn-outline-primary <?=$typeFilter===$t?'active':''?>" href="?page=integrations&type=<?=e($t)?>"><?=e(ucfirst($t))?></a><?php endforeach;?></div></div>
             <?php if(!$connections):?><p class="text-muted mb-0 mt-2">No integrations registered<?=$typeFilter?" for $typeFilter":''?> yet.</p><?php else:?>
-            <table class="table table-hover table-sm mt-2"><thead><tr><th>Type</th><th>Name</th><th>Target</th><th>Status</th><th>Last Check</th><th>Last 10 / 24h Uptime</th><th></th></tr></thead><tbody>
+            <div class="table-scroll mt-2"><table class="table table-hover table-sm"><thead><tr><th>Type</th><th>Name</th><th>Target</th><th>Status</th><th>Last Check</th><th>Last 10 / 24h Uptime</th><th></th></tr></thead><tbody>
             <?php foreach($connections as $c):
                 $target = $c['protocol']==='tcp' ? e($c['host']).':'.e($c['port']) : e($c['base_url'] ?: $c['host']);
                 $lastCheck = 'never';
@@ -675,7 +675,7 @@ if ($page==='integrations') {
                     <form method="post"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="action" value="test"><input type="hidden" name="id" value="<?=e($c['id'])?>"><button class="btn btn-sm btn-outline-dark">Test</button></form>
                 </td>
             </tr><?php endforeach;?>
-            </tbody></table><?php endif;?>
+            </tbody></table></div><?php endif;?>
         </div></div>
     </div>
     <?php layout_end(); exit;
@@ -702,7 +702,7 @@ if ($page==='monitoring') {
         <div class="col-lg-4"><div class="cardx"><h3>Integrations</h3><p class="text-muted mb-2">SMSC, USSD gateway, IVR platform and anything else you connect — with live up/down checks.</p><a class="btn btn-outline-primary w-100" href="?page=integrations">Open Integrations</a></div></div>
     </div>
     <?php if ($snap['integrations']):?>
-    <div class="cardx mt-3"><h3>Integration Status</h3><table class="table table-sm mb-0"><thead><tr><th>Type</th><th>Name</th><th>Status</th><th>Last Check</th></tr></thead><tbody><?php foreach($snap['integrations'] as $i):?><tr><td><span class="badge bg-dark"><?=e($i['service_type'])?></span></td><td><?=e($i['name'])?></td><td><span class="badge <?=$i['status']==='active'?'bg-success':'bg-secondary'?>"><?=e($i['status'])?></span></td><td><?php if($i['last_check_at']):?><span class="badge <?=$i['last_check_ok']?'bg-success':'bg-danger'?>"><?=$i['last_check_ok']?'UP':'DOWN'?></span> <?=e($i['last_check_latency_ms'])?>ms — <?=e($i['last_check_at'])?><?php else:?><span class="text-muted">never checked</span><?php endif;?></td></tr><?php endforeach;?></tbody></table></div>
+    <div class="cardx mt-3"><h3>Integration Status</h3><div class="table-scroll"><table class="table table-sm mb-0"><thead><tr><th>Type</th><th>Name</th><th>Status</th><th>Last Check</th></tr></thead><tbody><?php foreach($snap['integrations'] as $i):?><tr><td><span class="badge bg-dark"><?=e($i['service_type'])?></span></td><td><?=e($i['name'])?></td><td><span class="badge <?=$i['status']==='active'?'bg-success':'bg-secondary'?>"><?=e($i['status'])?></span></td><td><?php if($i['last_check_at']):?><span class="badge <?=$i['last_check_ok']?'bg-success':'bg-danger'?>"><?=$i['last_check_ok']?'UP':'DOWN'?></span> <?=e($i['last_check_latency_ms'])?>ms — <?=e($i['last_check_at'])?><?php else:?><span class="text-muted">never checked</span><?php endif;?></td></tr><?php endforeach;?></tbody></table></div></div>
     <?php endif;?>
     <div class="cardx mt-3"><h3>All Alerts</h3><a class="btn btn-outline-primary btn-sm mb-2" href="?page=alerts">Open Alerts page</a><?php if(!$snap['alerts']):?><p class="text-muted mb-0">No active alerts.</p><?php endif;?></div>
     <?php layout_end(); exit;
