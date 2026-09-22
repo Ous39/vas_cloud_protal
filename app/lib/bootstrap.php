@@ -317,6 +317,38 @@ function table_filter_where(string $schema,string $table,array $filters,array &$
     return $where ? ' WHERE '.implode(' AND ',$where) : '';
 }
 function order_by_pk(string $schema,string $table): string { $pk=primary_columns($schema,$table); return $pk ? ' ORDER BY '.implode(',',array_map('ident',$pk)).' DESC' : ''; }
+
+// ===================== Large-table scan guard (generic Database Tables browser) =====================
+// Dedicated pages (Subscriptions, Complaint Investigation) already require a bounded/indexed lookup
+// for the two tables known to be huge (subscription ~89M rows, audit_log ~227M rows). This guard
+// applies the same protection generically to the plain table browser/export, so ANY table that turns
+// out to be this large — including ones added after this was written — gets it automatically instead
+// of relying on someone remembering to build a dedicated page first.
+const LARGE_TABLE_ROW_THRESHOLD = 1000000;
+
+function indexed_columns(string $schema, string $table): array {
+    $st = pdo($schema)->prepare('SELECT DISTINCT COLUMN_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=? AND TABLE_NAME=?');
+    $st->execute([$schema, $table]);
+    return array_column($st->fetchAll(), 'COLUMN_NAME');
+}
+
+// Returns null if the browse/export is safe to run as-is, or ['level'=>'block'|'warn','message'=>...]
+// if it's a large table being scanned without an index to lean on. 'block' means the caller should
+// not run the query at all; 'warn' means it's safe to run but the UI should say why it may be slow.
+function large_table_guard(string $schema, string $table, array $filters): ?array {
+    if (approx_table_count($schema, $table) < LARGE_TABLE_ROW_THRESHOLD) return null;
+    if (!$filters) {
+        return ['level' => 'block', 'message' => 'This table has an estimated '.number_format(approx_table_count($schema,$table)).' rows. Browsing or exporting it without a filter would scan the whole table — add a filter (ideally on an indexed column) first.'];
+    }
+    $indexed = indexed_columns($schema, $table);
+    $filteredCols = array_unique(array_filter(array_column($filters, 'col')));
+    $anyIndexed = false;
+    foreach ($filteredCols as $c) if (in_array($c, $indexed, true)) { $anyIndexed = true; break; }
+    if (!$anyIndexed) {
+        return ['level' => 'warn', 'message' => 'This table has an estimated '.number_format(approx_table_count($schema,$table)).' rows and none of your filter columns ('.implode(', ',$filteredCols).') has a database index — this query will scan the full table and may be slow.'];
+    }
+    return null;
+}
 function list_records(string $schema,string $table,array $filters,int $page,int $perPage): array {
     $params=[]; $where=table_filter_where($schema,$table,$filters,$params);
     $sql='FROM '.ident($table).$where;
