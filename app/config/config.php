@@ -5,6 +5,14 @@ return [
     'db_port' => getenv('DB_PORT') ?: '3306',
     'db_user' => getenv('DB_USER') ?: 'vas_user',
     'db_pass' => getenv('DB_PASSWORD') ?: 'vas_password',
+    // HeraProduction/HeraTesting connect separately from vas_portal (this app's own users/audit/
+    // integrations/API-key data) so the portal's own metadata never has to live on the real
+    // production database server. Falls back to the db_* values above (the local Docker MySQL)
+    // until HERA_DB_* is actually set — see .env.example for where to fill those in.
+    'hera_db_host' => getenv('HERA_DB_HOST') ?: getenv('DB_HOST') ?: 'db',
+    'hera_db_port' => getenv('HERA_DB_PORT') ?: getenv('DB_PORT') ?: '3306',
+    'hera_db_user' => getenv('HERA_DB_USER') ?: getenv('DB_USER') ?: 'vas_user',
+    'hera_db_pass' => getenv('HERA_DB_PASSWORD') ?: getenv('DB_PASSWORD') ?: 'vas_password',
     'portal_db' => getenv('PORTAL_DB') ?: 'vas_portal',
     'allowed_schemas' => ['HeraTesting','HeraProduction'],
     'default_schema' => getenv('DEFAULT_SCHEMA') ?: 'HeraTesting',

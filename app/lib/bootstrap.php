@@ -39,8 +39,16 @@ function pdo(?string $schema=null): PDO {
     static $pool=[]; $cfg=app_config(); $db=$schema ?: $cfg['portal_db'];
     if (!preg_match('/^[A-Za-z0-9_]+$/',$db)) throw new InvalidArgumentException('Invalid schema');
     if (!isset($pool[$db])) {
-        $dsn='mysql:host='.$cfg['db_host'].';port='.$cfg['db_port'].';dbname='.$db.';charset=utf8mb4';
-        $pool[$db]=new PDO($dsn,$cfg['db_user'],$cfg['db_pass'],[
+        // HeraProduction/HeraTesting connect via hera_db_* (the real infrastructure once configured);
+        // everything else (vas_portal, this app's own metadata) always uses db_* (local Docker MySQL)
+        // regardless of what hera_db_* points at. See config.php / .env.example.
+        $isHera = in_array($db, $cfg['allowed_schemas'], true);
+        $host = $isHera ? $cfg['hera_db_host'] : $cfg['db_host'];
+        $port = $isHera ? $cfg['hera_db_port'] : $cfg['db_port'];
+        $user = $isHera ? $cfg['hera_db_user'] : $cfg['db_user'];
+        $pass = $isHera ? $cfg['hera_db_pass'] : $cfg['db_pass'];
+        $dsn='mysql:host='.$host.';port='.$port.';dbname='.$db.';charset=utf8mb4';
+        $pool[$db]=new PDO($dsn,$user,$pass,[
             PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE=>PDO::FETCH_ASSOC,
             PDO::ATTR_EMULATE_PREPARES=>false,

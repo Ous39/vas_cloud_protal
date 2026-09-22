@@ -38,6 +38,12 @@ services:
       DEFAULT_SCHEMA: ${DEFAULT_SCHEMA:-HeraTesting}
       APP_TZ: ${APP_TIMEZONE:-UTC}
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-}
+      # Real HeraProduction/HeraTesting infrastructure — vas_portal (above) never uses these, only
+      # the Hera schemas do. Leave unset to keep using the local Docker MySQL for everything, as today.
+      HERA_DB_HOST: ${HERA_DB_HOST:-}
+      HERA_DB_PORT: ${HERA_DB_PORT:-}
+      HERA_DB_USER: ${HERA_DB_USER:-}
+      HERA_DB_PASSWORD: ${HERA_DB_PASSWORD:-}
     ports:
       - "${APP_PORT:-8090}:80"
     networks:

@@ -20,6 +20,32 @@ The Comium logo (`app/public/comium_logo.png`) was copied from that reference re
 The stylesheet link carries a `?v=<filemtime>` cache-buster (`asset_version()`) so a CSS change
 takes effect on the next request instead of being served stale from a browser's HTTP cache.
 
+## Connecting to a real HeraProduction/HeraTesting server
+
+`HeraProduction`/`HeraTesting` and `vas_portal` (this app's own users/audit/API-keys/integrations
+data) can point at **different database hosts**. `vas_portal` always uses `DB_HOST`/`DB_USER`/
+`DB_PASSWORD` (the local Docker MySQL) — it is never affected by the setting below, by design,
+so this admin tool's own metadata never has to live on a real production server. Only the Hera
+schemas read `HERA_DB_*`, and only once it's set (`pdo()` in `app/lib/bootstrap.php` picks the
+host/user/pass per-schema; `config.php` falls back to the local `DB_*` values when `HERA_DB_*` is
+unset, so leaving it blank is exactly today's behavior).
+
+To point HeraProduction/HeraTesting at a real server: edit `.env` (never committed — see the
+commented block already there) and fill in:
+
+```
+HERA_DB_HOST=<the real host>
+HERA_DB_PORT=<the real port>
+HERA_DB_USER=<credentials only you should enter>
+HERA_DB_PASSWORD=<credentials only you should enter>
+```
+
+then `docker compose build app && docker compose up -d app` (a rebuild is required — these are
+baked into the image via `config.php`, not read from a live-mounted file) and verify the actual
+connection (not just that the port is open) before trusting it — the login page failing to load,
+or `page=table` throwing a connection error, means something in host/port/credentials/grants is
+still wrong.
+
 ## Schemas
 
 - `HeraProduction`: live/production VAS operational database.
