@@ -20,6 +20,29 @@ The Comium logo (`app/public/comium_logo.png`) was copied from that reference re
 The stylesheet link carries a `?v=<filemtime>` cache-buster (`asset_version()`) so a CSS change
 takes effect on the next request instead of being served stale from a browser's HTTP cache.
 
+## USSD Menu Builder
+
+`?page=ussd_menu` designs and previews a USSD menu tree per short code
+(`vas_portal.ussd_menu_nodes` — self-referencing hierarchy, `parent_id` NULL for root nodes).
+**This is a design/staging tool.** It does not push configuration to Mobius or any other gateway —
+that needs the gateway's own menu-config API, which isn't wired up (Mobius's own docs describe a
+menu configuration mechanism, but the details are behind access-gated pages). Until that
+integration exists, `?page=ussd_menu_export` (JSON) is the source of truth you'd hand-enter into
+the real gateway, or feed to a future push integration once its API is available.
+- `menu_tree()` builds the nested structure from the flat table; `render_menu_preview()` renders a
+  plain-text simulation of what a subscriber would actually see, for reviewing the flow without a
+  live gateway.
+- Each node can be a submenu, an offer purchase (linked to `vas_offers.offer_code`), a symbolic
+  action (e.g. `check_balance` — the actual balance-check logic lives wherever the real USSD
+  session handler is, not here), or an end-of-session leaf.
+
+## Integration check history
+
+Every `Test` click on an Integrations row now writes to `vas_portal.integration_checks`, not just
+overwriting `integrations.last_check_*`. The Integrations page shows the last 10 results as a
+●/○ sparkline plus a rolling 24-hour uptime percentage (`integration_check_history()` /
+`integration_uptime_pct()`) — a single "last check" no longer hides a flaky connection.
+
 ## Connecting to a real HeraProduction/HeraTesting server
 
 `HeraProduction`/`HeraTesting` and `vas_portal` (this app's own users/audit/API-keys/integrations

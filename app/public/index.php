@@ -18,7 +18,7 @@ function nav_can_see(string $page): bool {
     if ($page==='audit') return can('view_audit');
     if ($page==='api_keys') return can('manage_api_keys');
     if (in_array($page,['investigate','reports','alerts','monitoring'],true)) return can('view_reports');
-    if (in_array($page,['subscriptions','offers','esim','sales','friends_family','voting','ussd_ivr','integrations','tables','projects','shortcodes'],true)) return can('view_tables');
+    if (in_array($page,['subscriptions','offers','esim','sales','friends_family','voting','ussd_ivr','ussd_menu','integrations','tables','projects','shortcodes'],true)) return can('view_tables');
     return true;
 }
 function layout_start(string $title): void {
@@ -27,7 +27,7 @@ function layout_start(string $title): void {
         ['dashboard','fa-gauge','Dashboard'],
         ['monitoring','fa-heart-pulse','Monitoring'],
         ['group','fa-layer-group','Operations',[['subscriptions','fa-user-check','Subscriptions'],['offers','fa-tags','Offer Management'],['esim','fa-sim-card','eSIM Profiles'],['sales','fa-file-invoice-dollar','Sales & Invoices'],['friends_family','fa-user-group','Friends & Family'],['voting','fa-square-poll-vertical','Voting Service']]],
-        ['group','fa-tower-broadcast','Infrastructure',[['ussd_ivr','fa-mobile-screen-button','USSD & IVR'],['integrations','fa-plug-circle-check','Integrations']]],
+        ['group','fa-tower-broadcast','Infrastructure',[['ussd_ivr','fa-mobile-screen-button','USSD & IVR'],['ussd_menu','fa-sitemap','USSD Menu Builder'],['integrations','fa-plug-circle-check','Integrations']]],
         ['group','fa-chart-line','Reports',[['investigate','fa-headset','Complaint Investigation'],['alerts','fa-triangle-exclamation','Alerts'],['reports','fa-chart-line','Reports'],['sql','fa-code','SQL Console']]],
         ['group','fa-gears','Admin',[['tables','fa-database','Database Tables'],['projects','fa-diagram-project','Projects'],['shortcodes','fa-hashtag','Short Codes'],['api_keys','fa-key','Partner API Keys'],['audit','fa-shield-halved','Audit Trail'],['users','fa-users-gear','Users']]],
     ];
@@ -530,6 +530,74 @@ if ($page==='ussd_ivr') {
     <?php layout_end(); exit;
 }
 
+if ($page==='ussd_menu') {
+    require_perm('view_tables');
+    if ($_SERVER['REQUEST_METHOD']==='POST') {
+        require_perm('manage_ussd_menus');
+        save_menu_node($_POST['data']??[], !empty($_POST['id'])?(int)$_POST['id']:null);
+        flash('success','Menu node saved.');
+        redirect('?page=ussd_menu&short_code='.urlencode($_POST['data']['short_code']??''));
+    }
+    $shortCode = trim((string)($_GET['short_code'] ?? ''));
+    if ($shortCode === '') $shortCode = trim((string)($_GET['new_short_code'] ?? ''));
+    $known = menu_shortcodes();
+    if ($shortCode==='' && $known) $shortCode = $known[0];
+    $edit=null; if(isset($_GET['id'])){ $edit=menu_node((int)$_GET['id']); }
+    $tree = $shortCode!=='' ? menu_tree($shortCode) : [];
+    $flatNodes = $shortCode!=='' ? menu_nodes_flat($shortCode) : [];
+    $offers = table_exists(current_schema(),'vas_offers') ? pdo(current_schema())->query("SELECT offer_code, name FROM vas_offers WHERE status='active' ORDER BY name")->fetchAll() : [];
+    layout_start('USSD Menu Builder');
+    ?>
+    <div class="cardx">
+        <h3><i class="fa-solid fa-sitemap me-2"></i>USSD Menu Builder</h3>
+        <p class="text-muted mb-0">Design and preview a USSD menu tree per short code. <strong>This is a design/staging tool</strong> — it does not push configuration to Mobius or any gateway; that needs the gateway's own menu-config API, which isn't wired up yet. Use the JSON export as the source of truth to hand-enter (or later auto-push) into the real gateway.</p>
+        <form method="get" class="row g-2 mt-2"><input type="hidden" name="page" value="ussd_menu">
+            <div class="col-md-4"><select class="form-select" name="short_code"><?php foreach($known as $sc):?><option value="<?=e($sc)?>" <?=$shortCode===$sc?'selected':''?>><?=e($sc)?></option><?php endforeach;?></select></div>
+            <div class="col-md-4"><input class="form-control" name="new_short_code" placeholder="Or start a new short code, e.g. *123#"></div>
+            <div class="col-md-4"><button class="btn btn-outline-primary w-100">Switch / Start</button></div>
+        </form>
+    </div>
+    <?php if($shortCode!==''):?>
+    <div class="row g-3 mt-1">
+        <div class="col-lg-5"><div class="cardx"><h3><?= $edit?'Edit Node':'Add Node' ?></h3>
+            <form method="post"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="id" value="<?=e($edit['id']??'')?>"><input type="hidden" name="data[short_code]" value="<?=e($shortCode)?>">
+                <label>Parent</label><select class="form-select mb-2" name="data[parent_id]"><option value="">— None (root menu item) —</option><?php foreach($flatNodes as $n): if($edit && (int)$n['id']===(int)$edit['id']) continue; ?><option value="<?=e($n['id'])?>" <?=(int)($edit['parent_id']??-1)===(int)$n['id']?'selected':''?>><?=e($n['prompt_text'])?></option><?php endforeach;?></select>
+                <label>Prompt Text</label><input class="form-control mb-2" name="data[prompt_text]" value="<?=e($edit['prompt_text']??'')?>" placeholder="e.g. Buy Data Bundle">
+                <label>Order</label><input type="number" class="form-control mb-2" name="data[display_order]" value="<?=e($edit['display_order']??0)?>">
+                <label>Node Type</label><select class="form-select mb-2" name="data[node_type]" id="node_type"><?php foreach(['menu'=>'Submenu (has children)','offer'=>'Purchase an offer','action'=>'Action (e.g. check balance)','end'=>'End session'] as $v=>$label):?><option value="<?=e($v)?>" <?=($edit['node_type']??'menu')===$v?'selected':''?>><?=e($label)?></option><?php endforeach;?></select>
+                <label>Offer <small class="text-muted">(if type = Purchase an offer)</small></label><select class="form-select mb-2" name="data[offer_code]"><option value="">—</option><?php foreach($offers as $o):?><option value="<?=e($o['offer_code'])?>" <?=($edit['offer_code']??'')===$o['offer_code']?'selected':''?>><?=e($o['name'])?> (<?=e($o['offer_code'])?>)</option><?php endforeach;?></select>
+                <label>Action Key <small class="text-muted">(if type = Action)</small></label><input class="form-control mb-2" name="data[action_key]" value="<?=e($edit['action_key']??'')?>" placeholder="e.g. check_balance">
+                <label>Status</label><select class="form-select mb-2" name="data[status]"><?php foreach(['draft','active','inactive'] as $v):?><option value="<?=e($v)?>" <?=($edit['status']??'draft')===$v?'selected':''?>><?=e(ucfirst($v))?></option><?php endforeach;?></select>
+                <button class="btn btn-primary w-100">Save Node</button>
+                <?php if($edit):?><a class="btn btn-outline-secondary w-100 mt-2" href="?page=ussd_menu&short_code=<?=urlencode($shortCode)?>">Cancel Edit</a><?php endif;?>
+            </form>
+        </div></div>
+        <div class="col-lg-7">
+            <div class="cardx"><h3>Menu Tree — <?=e($shortCode)?></h3>
+                <?php if(!$tree):?><p class="text-muted mb-0">No nodes yet. Add the first root menu item on the left.</p><?php else:?>
+                <?php $renderTree = function($nodes, $depth=0) use (&$renderTree, $shortCode) { foreach($nodes as $n): $badge = ['menu'=>'bg-primary','offer'=>'bg-success','action'=>'bg-info text-dark','end'=>'bg-secondary'][$n['node_type']]; ?><div style="margin-left:<?=$depth*20?>px" class="d-flex align-items-center gap-2 py-1"><span class="badge <?=$badge?>"><?=e($n['node_type'])?></span><span><?=e($n['prompt_text'])?></span><?php if($n['offer_code']):?><small class="text-muted">(<?=e($n['offer_code'])?>)</small><?php endif;?><?php if($n['status']!=='active'):?><span class="badge status-<?=e($n['status'])?>"><?=e($n['status'])?></span><?php endif;?><a class="btn btn-sm btn-outline-warning py-0" href="?page=ussd_menu&short_code=<?=urlencode($shortCode)?>&id=<?=e($n['id'])?>">Edit</a></div><?php if($n['children']) $renderTree($n['children'],$depth+1); endforeach; }; $renderTree($tree); ?>
+                <?php endif;?>
+            </div>
+            <div class="cardx mt-3"><div class="d-flex justify-content-between align-items-center"><h3>Session Preview</h3><a class="btn btn-outline-primary btn-sm" href="?page=ussd_menu_export&short_code=<?=urlencode($shortCode)?>">Export JSON</a></div>
+                <?php if(!$tree):?><p class="text-muted mb-0">Nothing to preview yet.</p><?php else:?><pre class="mb-0"><?=render_menu_preview($tree)?></pre><?php endif;?>
+            </div>
+        </div>
+    </div>
+    <?php endif; layout_end(); exit;
+}
+
+if ($page==='ussd_menu_export') {
+    require_perm('view_tables');
+    $shortCode = trim((string)($_GET['short_code'] ?? ''));
+    if ($shortCode==='') throw new RuntimeException('short_code is required');
+    $tree = menu_tree($shortCode);
+    audit('export','vas_portal','ussd_menu_nodes',null,'Menu JSON export: '.$shortCode);
+    header('Content-Type: application/json');
+    header('Content-Disposition: attachment; filename="ussd_menu_'.preg_replace('/[^A-Za-z0-9_-]/','_',$shortCode).'.json"');
+    echo json_encode(['short_code'=>$shortCode,'generated_at'=>date('c'),'note'=>'Design export from VAS Cloud — not a Mobius or gateway-native config format.','menu'=>$tree], JSON_PRETTY_PRINT);
+    exit;
+}
+
 if ($page==='integrations') {
     require_perm('view_tables');
     if ($_SERVER['REQUEST_METHOD']==='POST') {
@@ -578,7 +646,7 @@ if ($page==='integrations') {
         <div class="col-lg-7"><div class="cardx">
             <div class="d-flex justify-content-between align-items-center"><h3>Connections</h3><div class="btn-group btn-group-sm"><a class="btn btn-outline-primary <?=!$typeFilter?'active':''?>" href="?page=integrations">All</a><?php foreach(INTEGRATION_TYPES as $t):?><a class="btn btn-outline-primary <?=$typeFilter===$t?'active':''?>" href="?page=integrations&type=<?=e($t)?>"><?=e(ucfirst($t))?></a><?php endforeach;?></div></div>
             <?php if(!$connections):?><p class="text-muted mb-0 mt-2">No integrations registered<?=$typeFilter?" for $typeFilter":''?> yet.</p><?php else:?>
-            <table class="table table-hover table-sm mt-2"><thead><tr><th>Type</th><th>Name</th><th>Target</th><th>Status</th><th>Last Check</th><th></th></tr></thead><tbody>
+            <table class="table table-hover table-sm mt-2"><thead><tr><th>Type</th><th>Name</th><th>Target</th><th>Status</th><th>Last Check</th><th>Last 10 / 24h Uptime</th><th></th></tr></thead><tbody>
             <?php foreach($connections as $c):
                 $target = $c['protocol']==='tcp' ? e($c['host']).':'.e($c['port']) : e($c['base_url'] ?: $c['host']);
                 $lastCheck = 'never';
@@ -586,12 +654,16 @@ if ($page==='integrations') {
                     $badge = $c['last_check_ok'] ? '<span class="badge bg-success">UP</span>' : '<span class="badge bg-danger">DOWN</span>';
                     $lastCheck = $badge.' '.e($c['last_check_latency_ms']).'ms<br><small class="text-muted">'.e($c['last_check_at']).'</small>';
                 }
+                $history = integration_check_history((int)$c['id'], 10);
+                $sparkline = implode('', array_map(fn($h)=>$h['ok']?'●':'○', array_reverse($history)));
+                $uptime = integration_uptime_pct((int)$c['id'], 24);
             ?><tr>
                 <td><span class="badge bg-dark"><?=e($c['service_type'])?></span></td>
                 <td><strong><?=e($c['name'])?></strong></td>
                 <td><small><?=$target?></small></td>
                 <td><span class="badge <?=$c['status']==='active'?'bg-success':($c['status']==='testing'?'bg-warning text-dark':'bg-secondary')?>"><?=e($c['status'])?></span></td>
                 <td><?=$lastCheck?></td>
+                <td><span title="Oldest to newest, left to right" style="letter-spacing:2px;color:#22aa55;"><?=e($sparkline)?></span><br><small class="text-muted"><?=$uptime!==null?$uptime.'% up (24h)':'no data yet'?></small></td>
                 <td class="d-flex gap-1">
                     <a class="btn btn-sm btn-warning" href="?page=integrations&id=<?=e($c['id'])?>">Edit</a>
                     <form method="post"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="action" value="test"><input type="hidden" name="id" value="<?=e($c['id'])?>"><button class="btn btn-sm btn-outline-dark">Test</button></form>

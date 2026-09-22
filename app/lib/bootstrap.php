@@ -142,6 +142,40 @@ function ensure_portal_runtime_schema(): void {
             INDEX idx_integration_type_status (service_type, status)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
 
+        // History of every Test click, not just the latest — integrations.last_check_* only ever
+        // held the most recent result, which can't show a flaky connection or a real uptime trend.
+        $db->exec("CREATE TABLE IF NOT EXISTS integration_checks (
+            id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            integration_id INT NOT NULL,
+            checked_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            ok TINYINT(1) NOT NULL,
+            latency_ms INT NULL,
+            message VARCHAR(500) NULL,
+            INDEX idx_integration_checked (integration_id, checked_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+        $db->exec("INSERT IGNORE INTO role_permissions(role_name, permission_key) VALUES ('admin','manage_ussd_menus'),('manager','manage_ussd_menus'),('operator','manage_ussd_menus')");
+
+        // USSD/IVR menu tree — a self-referencing hierarchy (root nodes have parent_id NULL). This is
+        // a design/staging tool: it defines and previews the menu structure and exports it as JSON.
+        // It does NOT push configuration to Mobius or any other real gateway — that would need the
+        // gateway's own menu-config API, which is not something this app has access to yet.
+        $db->exec("CREATE TABLE IF NOT EXISTS ussd_menu_nodes (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            parent_id INT NULL,
+            short_code VARCHAR(80) NOT NULL,
+            display_order INT NOT NULL DEFAULT 0,
+            prompt_text VARCHAR(300) NOT NULL,
+            node_type ENUM('menu','offer','action','end') NOT NULL DEFAULT 'menu',
+            offer_code VARCHAR(80) NULL,
+            action_key VARCHAR(80) NULL,
+            status ENUM('active','inactive','draft') NOT NULL DEFAULT 'draft',
+            created_by VARCHAR(80) NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_menu_shortcode_parent (short_code, parent_id, display_order)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
         // One-time migration of the old smsc-only registry into the unified integrations table.
         // Gated on a persisted marker, not on matching row names against smsc_connections — matching
         // by name broke the first time a migrated row got renamed (it no longer matched its source
@@ -851,10 +885,92 @@ function test_integration(int $id): array {
     $latency = (int)round((microtime(true) - $start) * 1000);
     portal_pdo()->prepare('UPDATE integrations SET last_check_at=NOW(), last_check_ok=?, last_check_latency_ms=?, last_check_message=? WHERE id=?')
         ->execute([$ok ? 1 : 0, $latency, $message, $id]);
+    portal_pdo()->prepare('INSERT INTO integration_checks(integration_id,ok,latency_ms,message) VALUES(?,?,?,?)')
+        ->execute([$id, $ok ? 1 : 0, $latency, $message]);
     audit('test_integration', null, 'integrations', (string)$id, "$message ({$latency}ms)");
     return ['ok' => $ok, 'latency_ms' => $latency, 'message' => $message];
 }
 function smsc_activity_today(string $schema): array { return channel_activity_today($schema, ['SMS', 'SMSC']); }
+
+function integration_check_history(int $id, int $limit = 20): array {
+    $st = portal_pdo()->prepare('SELECT ok, latency_ms, message, checked_at FROM integration_checks WHERE integration_id=? ORDER BY checked_at DESC LIMIT ?');
+    $st->bindValue(1, $id, PDO::PARAM_INT); $st->bindValue(2, $limit, PDO::PARAM_INT); $st->execute();
+    return $st->fetchAll();
+}
+function integration_uptime_pct(int $id, int $sinceHours = 24): ?float {
+    $st = portal_pdo()->prepare('SELECT COUNT(*) total, SUM(ok) up FROM integration_checks WHERE integration_id=? AND checked_at > (NOW() - INTERVAL ? HOUR)');
+    $st->bindValue(1, $id, PDO::PARAM_INT); $st->bindValue(2, $sinceHours, PDO::PARAM_INT); $st->execute();
+    $r = $st->fetch();
+    if (!$r || (int)$r['total'] === 0) return null;
+    return round(((int)$r['up'] / (int)$r['total']) * 100, 1);
+}
+
+// ===================== USSD Menu Builder =====================
+// A design/staging tool: define and preview a USSD menu tree, export it as JSON. It does NOT push
+// configuration to Mobius (or any other gateway) — that needs the gateway's own menu-config API,
+// which this app does not have access to. Until that's wired up, this is the source of truth you'd
+// hand-enter (or later auto-push) into the real gateway.
+function menu_shortcodes(): array {
+    return array_column(portal_pdo()->query('SELECT DISTINCT short_code FROM ussd_menu_nodes ORDER BY short_code')->fetchAll(), 'short_code');
+}
+function menu_node(int $id): ?array {
+    $st = portal_pdo()->prepare('SELECT * FROM ussd_menu_nodes WHERE id=?'); $st->execute([$id]);
+    return $st->fetch() ?: null;
+}
+function menu_nodes_flat(string $shortCode): array {
+    $st = portal_pdo()->prepare('SELECT * FROM ussd_menu_nodes WHERE short_code=? ORDER BY parent_id IS NULL DESC, parent_id, display_order, id');
+    $st->execute([$shortCode]);
+    return $st->fetchAll();
+}
+function menu_tree(string $shortCode): array {
+    $flat = menu_nodes_flat($shortCode);
+    $byParent = [];
+    foreach ($flat as $n) $byParent[$n['parent_id'] === null ? 0 : (int)$n['parent_id']][] = $n;
+    $build = function ($parentId) use (&$build, $byParent) {
+        $out = [];
+        foreach ($byParent[$parentId] ?? [] as $n) {
+            $n['children'] = $build((int)$n['id']);
+            $out[] = $n;
+        }
+        return $out;
+    };
+    return $build(0);
+}
+function save_menu_node(array $data, ?int $id = null): int {
+    $shortCode = trim((string)($data['short_code'] ?? ''));
+    $prompt = trim((string)($data['prompt_text'] ?? ''));
+    if ($shortCode === '' || $prompt === '') throw new RuntimeException('Short code and prompt text are required.');
+    $parentId = trim((string)($data['parent_id'] ?? '')) !== '' ? (int)$data['parent_id'] : null;
+    $type = in_array($data['node_type'] ?? '', ['menu','offer','action','end'], true) ? $data['node_type'] : 'menu';
+    $fields = [$parentId, $shortCode, (int)($data['display_order'] ?? 0), $prompt, $type,
+        normalize_value($data['offer_code'] ?? ''), normalize_value($data['action_key'] ?? ''),
+        in_array($data['status'] ?? '', ['active','inactive','draft'], true) ? $data['status'] : 'draft'];
+    $db = portal_pdo();
+    if ($id) {
+        $db->prepare('UPDATE ussd_menu_nodes SET parent_id=?,short_code=?,display_order=?,prompt_text=?,node_type=?,offer_code=?,action_key=?,status=? WHERE id=?')->execute([...$fields, $id]);
+    } else {
+        $db->prepare('INSERT INTO ussd_menu_nodes(parent_id,short_code,display_order,prompt_text,node_type,offer_code,action_key,status,created_by) VALUES(?,?,?,?,?,?,?,?,?)')->execute([...$fields, user()['username'] ?? null]);
+        $id = (int)$db->lastInsertId();
+    }
+    audit('save_menu_node', null, 'ussd_menu_nodes', (string)$id, json_encode(['short_code'=>$shortCode,'prompt'=>$prompt]));
+    return $id;
+}
+// Renders a simple text simulation of walking the menu from its root nodes — what a subscriber
+// would actually see on their phone, useful for reviewing the flow without a live gateway.
+function render_menu_preview(array $tree, int $depth = 0): string {
+    $out = '';
+    $i = 1;
+    foreach ($tree as $node) {
+        $indent = str_repeat('  ', $depth);
+        $suffix = $node['node_type'] === 'offer' ? ' → purchase '.$node['offer_code']
+            : ($node['node_type'] === 'action' ? ' → '.$node['action_key']
+            : ($node['node_type'] === 'end' ? ' → END' : ''));
+        $out .= $indent.($depth===0 ? $i.'. ' : '- ').e($node['prompt_text']).$suffix."\n";
+        if ($node['children']) $out .= render_menu_preview($node['children'], $depth + 1);
+        $i++;
+    }
+    return $out;
+}
 
 // ===================== Unified Monitoring =====================
 function monitoring_snapshot(string $schema): array {
