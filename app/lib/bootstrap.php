@@ -135,14 +135,23 @@ function ensure_portal_runtime_schema(): void {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
 
         // One-time migration of the old smsc-only registry into the unified integrations table.
+        // Gated on a persisted marker, not on matching row names against smsc_connections — matching
+        // by name broke the first time a migrated row got renamed (it no longer matched its source
+        // row, so the "already migrated" check failed open and re-inserted a duplicate on the next
+        // request). A marker in app_secrets runs this at most once, ever, regardless of what happens
+        // to the migrated rows afterward.
         if ($columnExists('smsc_connections', 'id')) {
-            $safeExecEarly2 = function (string $sql) use ($db): void { try { $db->exec($sql); } catch (Throwable $e) {} };
-            $safeExecEarly2("INSERT INTO integrations(service_type,name,protocol,host,port,auth_type,status,notes,created_at)
-                SELECT 'smsc', s.name, 'tcp', s.host, s.port, 'none', s.status,
-                       TRIM(BOTH ' | ' FROM CONCAT_WS(' | ', s.notes, CONCAT('system_id=', COALESCE(s.system_id,''), ' bind=', COALESCE(s.bind_type,'')))),
-                       s.created_at
-                FROM smsc_connections s
-                WHERE NOT EXISTS (SELECT 1 FROM integrations i WHERE i.name = s.name AND i.service_type = 'smsc')");
+            $st = $db->prepare('SELECT 1 FROM app_secrets WHERE name=?'); $st->execute(['smsc_connections_migrated']);
+            if (!$st->fetch()) {
+                $safeExecEarly2 = function (string $sql) use ($db): void { try { $db->exec($sql); } catch (Throwable $e) {} };
+                $safeExecEarly2("INSERT INTO integrations(service_type,name,protocol,host,port,auth_type,status,notes,created_at)
+                    SELECT 'smsc', s.name, 'tcp', s.host, s.port, 'none', s.status,
+                           TRIM(BOTH ' | ' FROM CONCAT_WS(' | ', s.notes, CONCAT('system_id=', COALESCE(s.system_id,''), ' bind=', COALESCE(s.bind_type,'')))),
+                           s.created_at
+                    FROM smsc_connections s
+                    WHERE NOT EXISTS (SELECT 1 FROM integrations i WHERE i.name = s.name AND i.service_type = 'smsc')");
+                $safeExecEarly2("INSERT IGNORE INTO app_secrets(name,value) VALUES('smsc_connections_migrated', '1')");
+            }
         }
 
         $db->exec("CREATE TABLE IF NOT EXISTS saved_queries (
