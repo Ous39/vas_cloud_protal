@@ -1,0 +1,28 @@
+# Most Rancher clusters ship with nginx-ingress by default — adjust ingressClassName if yours
+# uses something else (check Rancher: Cluster > Service Discovery > Ingresses, or ask whoever
+# set the cluster up). Replace the host with your team's real internal DNS name for this.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vas-cloud-app
+  namespace: vas-cloud
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    # Uncomment once cert-manager (or Rancher's built-in one) is set up for automatic HTTPS:
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: vas-cloud.internal.example.com # <- change this
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: vas-cloud-app
+                port:
+                  number: 80
+  # tls:
+  #   - hosts: ["vas-cloud.internal.example.com"]
+  #     secretName: vas-cloud-tls

@@ -6,6 +6,10 @@
 - **db**: MySQL 8 database server.
 - **phpmyadmin**: browser database administration.
 
+Local dev runs all of this via `docker-compose.yml`. For a shared team deployment (Rancher/
+Kubernetes), see `deploy/k8s/README.md` — plain manifests, no Helm required, with the same
+vas_portal-stays-local / HeraProduction-HeraTesting-can-be-external split described below.
+
 ## Branding / UI
 
 The visual design (red `#ff4d4d` Comium theme, top navbar with logo, card/table styling, footer)

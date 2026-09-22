@@ -1,0 +1,68 @@
+# vas_portal's own MySQL — this app's users/audit/API-keys/integrations data. Deliberately
+# separate from HeraProduction/HeraTesting (see docs/ARCHITECTURE.md "Connecting to a real
+# HeraProduction/HeraTesting server") — those are reached externally via HERA_DB_* and never
+# run inside this cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  namespace: vas-cloud
+spec:
+  clusterIP: None # headless — StatefulSet gets a stable DNS name: mysql-0.mysql.vas-cloud.svc.cluster.local
+  selector:
+    app: mysql
+  ports:
+    - port: 3306
+      targetPort: 3306
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+  namespace: vas-cloud
+spec:
+  serviceName: mysql
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8.0
+          ports:
+            - containerPort: 3306
+          envFrom:
+            - secretRef:
+                name: vas-cloud-db-secret
+          volumeMounts:
+            - name: mysql-data
+              mountPath: /var/lib/mysql
+            - name: init-scripts
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          readinessProbe:
+            exec:
+              command: ["mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-p$(MYSQL_ROOT_PASSWORD)"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { cpu: "1", memory: 1Gi }
+      volumes:
+        - name: init-scripts
+          configMap:
+            name: vas-cloud-db-init
+  volumeClaimTemplates:
+    - metadata:
+        name: mysql-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+        # storageClassName: <set this to a StorageClass your Rancher cluster provides, e.g. "longhorn">

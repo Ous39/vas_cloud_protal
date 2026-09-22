@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vas-cloud-app
+  namespace: vas-cloud
+spec:
+  replicas: 2 # login sessions are stored in PHP's default file-based session store per-pod, so with
+              # >1 replica a user can get logged out when their next request lands on a different
+              # pod. Fine for an internal tool at low usage; see README.md "Known limitation" if
+              # this bites your team before it's worth fixing properly (shared session storage).
+  selector:
+    matchLabels:
+      app: vas-cloud-app
+  template:
+    metadata:
+      labels:
+        app: vas-cloud-app
+    spec:
+      containers:
+        - name: app
+          image: <your-registry>/vas-cloud-app:latest # build & push first — see README.md
+          ports:
+            - containerPort: 80
+          envFrom:
+            - configMapRef:
+                name: vas-cloud-app-config
+            - secretRef:
+                name: vas-cloud-app-secret
+          readinessProbe:
+            httpGet: { path: /, port: 80 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /, port: 80 }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vas-cloud-app
+  namespace: vas-cloud
+spec:
+  selector:
+    app: vas-cloud-app
+  ports:
+    - port: 80
+      targetPort: 80

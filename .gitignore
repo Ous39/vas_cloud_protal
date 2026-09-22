@@ -3,6 +3,7 @@
 .env.*.local
 *.pem
 *.key
+deploy/k8s/*.secret.yaml
 
 # Raw data exports — contain live subscriber/billing PII, must never enter version control
 database/source_dump/

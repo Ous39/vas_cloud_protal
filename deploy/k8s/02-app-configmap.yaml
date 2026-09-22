@@ -1,0 +1,21 @@
+# Non-secret settings only. Credentials (DB_PASSWORD, MYSQL_ROOT_PASSWORD, HERA_DB_USER,
+# HERA_DB_PASSWORD, APP_ENCRYPTION_KEY) live in the vas-cloud-db-secret / vas-cloud-app-secret
+# Secrets instead — see README.md for how to create those without ever committing real values.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vas-cloud-app-config
+  namespace: vas-cloud
+data:
+  APP_ENV: production
+  APP_TIMEZONE: UTC
+  DEFAULT_SCHEMA: HeraTesting
+  DB_HOST: mysql
+  DB_PORT: "3306"
+  DB_USER: vas_user
+  PORTAL_DB: vas_portal
+  # Fill in once you have real HeraProduction/HeraTesting infrastructure to point at (same
+  # host/port you'd otherwise put in .env — see docs/ARCHITECTURE.md). Leaving these blank keeps
+  # HeraProduction/HeraTesting on the in-cluster MySQL above, same as an unconfigured local install.
+  HERA_DB_HOST: ""
+  HERA_DB_PORT: ""
