@@ -17,5 +17,5 @@ data:
   # Fill in once you have real HeraProduction/HeraTesting infrastructure to point at (same
   # host/port you'd otherwise put in .env — see docs/ARCHITECTURE.md). Leaving these blank keeps
   # HeraProduction/HeraTesting on the in-cluster MySQL above, same as an unconfigured local install.
-  HERA_DB_HOST: ""
-  HERA_DB_PORT: ""
+  HERA_DB_HOST: "192.168.164.138"
+  HERA_DB_PORT: "31241"

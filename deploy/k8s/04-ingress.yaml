@@ -1,6 +1,8 @@
-# Most Rancher clusters ship with nginx-ingress by default — adjust ingressClassName if yours
-# uses something else (check Rancher: Cluster > Service Discovery > Ingresses, or ask whoever
-# set the cluster up). Replace the host with your team's real internal DNS name for this.
+# Served under /portal (not the bare host) because vas-prod.comium.gm is shared with other
+# services. The regex path + rewrite-target strips /portal before forwarding to the app, which
+# knows nothing about the prefix; the configuration-snippet redirects the bare "/portal" (no
+# trailing slash) to "/portal/" so the app's relative asset links (style.css, ?page=...) resolve
+# correctly — without it, a browser at exactly "/portal" resolves "style.css" against "/" and 404s.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -8,21 +10,31 @@ metadata:
   namespace: vas-cloud
   annotations:
     nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/session-cookie-name: "vas-cloud-affinity"
+    nginx.ingress.kubernetes.io/session-cookie-expires: "3600"
+    nginx.ingress.kubernetes.io/session-cookie-max-age: "3600"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      if ($request_uri = "/portal") {
+        return 301 /portal/;
+      }
     # Uncomment once cert-manager (or Rancher's built-in one) is set up for automatic HTTPS:
     # cert-manager.io/cluster-issuer: letsencrypt-prod
 spec:
   ingressClassName: nginx
   rules:
-    - host: vas-cloud.internal.example.com # <- change this
+    - host: vas-prod.comium.gm
       http:
         paths:
-          - path: /
-            pathType: Prefix
+          - path: /portal(/|$)(.*)
+            pathType: ImplementationSpecific
             backend:
               service:
                 name: vas-cloud-app
                 port:
                   number: 80
   # tls:
-  #   - hosts: ["vas-cloud.internal.example.com"]
+  #   - hosts: ["vas-prod.comium.gm"]
   #     secretName: vas-cloud-tls
