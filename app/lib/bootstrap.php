@@ -353,6 +353,19 @@ function build_pk_where(string $schema,string $table,array $rowOrGet,array &$par
 function fetch_record(string $schema,string $table,array $keys): ?array { $params=[]; $where=build_pk_where($schema,$table,$keys,$params); $st=pdo($schema)->prepare('SELECT * FROM '.ident($table).' WHERE '.$where.' LIMIT 1'); $st->execute($params); return $st->fetch() ?: null; }
 function row_key_query(string $schema,string $table,array $row): string { $pairs=[]; foreach(primary_columns($schema,$table) as $pk) $pairs[$pk]=$row[$pk]??''; return http_build_query($pairs); }
 function is_auto_col(array $c): bool { return str_contains((string)$c['extra'],'auto_increment'); }
+function distinct_column_values(string $schema, string $table, string $col, int $limit = 100): array {
+    if (!table_exists($schema, $table)) return [];
+    $st = pdo($schema)->prepare('SELECT DISTINCT '.ident($col).' v FROM '.ident($table).' WHERE '.ident($col).' IS NOT NULL AND '.ident($col)." != '' ORDER BY v LIMIT ".(int)$limit);
+    $st->execute();
+    return array_column($st->fetchAll(), 'v');
+}
+function normalize_free_data_to_mb(string $raw): string {
+    $raw = trim($raw);
+    if ($raw === '') return $raw;
+    if (preg_match('/^([\d.]+)\s*GB$/i', $raw, $m)) return (string)(int)round(((float)$m[1]) * 1024);
+    if (preg_match('/^([\d.]+)\s*MB$/i', $raw, $m)) return (string)(int)round((float)$m[1]);
+    return $raw;
+}
 function editable_columns(string $schema,string $table,bool $includePk=false): array { return array_values(array_filter(columns($schema,$table), fn($c)=>$includePk || !is_auto_col($c))); }
 
 const SENSITIVE_COLUMN_PATTERN = '/password|secret|token|hash|otp|pin_code|^pin$|cvv|card_number|auth_data|credential|api_key/i';
@@ -405,6 +418,11 @@ function list_records(string $schema,string $table,array $filters,int $page,int 
     $sql='FROM '.ident($table).$where;
     $st=pdo($schema)->prepare('SELECT COUNT(*) c '.$sql); $st->execute($params); $total=(int)$st->fetch()['c'];
     $offset=max(0,($page-1)*$perPage); $q='SELECT * '.$sql.order_by_pk($schema,$table).' LIMIT '.(int)$perPage.' OFFSET '.(int)$offset; $st=pdo($schema)->prepare($q); $st->execute($params); return ['rows'=>$st->fetchAll(),'total'=>$total];
+}
+const PAGE_SIZE_OPTIONS = [10, 20, 25];
+function resolve_page_size(array $get, int $default = 25): int {
+    $v = (int)($get['per_page'] ?? $default);
+    return in_array($v, PAGE_SIZE_OPTIONS, true) ? $v : $default;
 }
 function export_records(string $schema,string $table,array $filters,int $limit=10000): array {
     $params=[]; $where=table_filter_where($schema,$table,$filters,$params);
@@ -650,6 +668,14 @@ function compute_alerts(string $schema): array {
         }
     }
     return $alerts;
+}
+
+function failure_reasons_breakdown(string $schema, int $hours = 1, int $limit = 8): array {
+    if (!table_exists($schema, AUDIT_LOG_TABLE)) return [];
+    $hours = max(1, $hours); $limit = max(1, $limit);
+    $st = pdo($schema)->prepare("SELECT COALESCE(NULLIF(TRIM(result_description),''),'(no reason given)') reason, COUNT(*) c FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL $hours HOUR AND UPPER(result_status)!='SUCCESS' GROUP BY reason ORDER BY c DESC LIMIT $limit");
+    $st->execute();
+    return $st->fetchAll();
 }
 
 // ===================== Sales Orders & Invoices (relational lookup) =====================

@@ -69,6 +69,7 @@ function confirmAction(msg){return confirm(msg||'Please confirm before saving th
 // tags), so every interactive hook is wired here instead of inline in the markup.
 document.getElementById('add-filter-btn')?.addEventListener('click', addFilter);
 document.querySelectorAll('form[data-confirm]').forEach(f => f.addEventListener('submit', e => { if (!confirmAction(f.dataset.confirm)) e.preventDefault(); }));
+document.querySelectorAll('[data-autosubmit]').forEach(el => el.addEventListener('change', () => el.form.submit()));
 // Close an open nav dropdown when clicking outside it.
 document.addEventListener('click', e => { document.querySelectorAll('.topnav-group[open]').forEach(d => { if (!d.contains(e.target)) d.removeAttribute('open'); }); });
 // Mobile nav toggle.
@@ -80,7 +81,6 @@ function render_form(string $schema,string $table,array $values=[],string $mode=
 try {
 if ($page==='dashboard') {
     require_perm('view_dashboard'); $schema=current_schema();
-    $tables=table_names($schema); $counts=[]; foreach($tables as $t) $counts[$t]=approx_table_count($schema,$t);
     $kpis=dashboard_kpis($schema); $topVendors=top_vendors_today($schema);
     $alerts = can('view_reports') ? compute_alerts($schema) : [];
     layout_start('Executive Dashboard');
@@ -96,16 +96,15 @@ if ($page==='dashboard') {
     </div>
     <div class="row g-3 mt-1">
         <div class="col-lg-4"><div class="cardx"><h3>Top Vendors Today</h3><?php if(!$topVendors):?><p class="text-muted mb-0">No transactions yet today.</p><?php else:?><div class="table-scroll"><table class="table table-sm mb-0"><thead><tr><th>Vendor</th><th>Total</th><th>Failed</th></tr></thead><tbody><?php foreach($topVendors as $v):?><tr><td><?=e($v['vendor_entity_name'])?></td><td><?=number_format((int)$v['total'])?></td><td><?=number_format((int)$v['failed'])?></td></tr><?php endforeach;?></tbody></table></div><?php endif;?></div></div>
-        <div class="col-lg-4"><div class="cardx"><h3>Quick Links</h3><div class="d-grid gap-2"><a class="btn btn-outline-primary" href="?page=investigate"><i class="fa fa-headset me-2"></i>Complaint Investigation</a><a class="btn btn-outline-primary" href="?page=subscriptions"><i class="fa fa-user-check me-2"></i>Subscriptions</a><a class="btn btn-outline-primary" href="?page=offers"><i class="fa fa-tags me-2"></i>Offer Management</a><a class="btn btn-outline-primary" href="?page=alerts"><i class="fa fa-triangle-exclamation me-2"></i>Alerts</a></div></div></div>
+        <div class="col-lg-4"><div class="cardx"><h3>Quick Links</h3><div class="d-grid gap-2"><a class="btn btn-outline-primary" href="?page=investigate"><i class="fa fa-headset me-2"></i>Complaint Investigation</a><a class="btn btn-outline-primary" href="?page=subscriptions"><i class="fa fa-user-check me-2"></i>Subscriptions</a><a class="btn btn-outline-primary" href="?page=offers"><i class="fa fa-tags me-2"></i>Offer Management</a><a class="btn btn-outline-primary" href="?page=alerts"><i class="fa fa-triangle-exclamation me-2"></i>Alerts</a><a class="btn btn-outline-primary" href="?page=tables"><i class="fa fa-database me-2"></i>Database Tables</a></div></div></div>
         <div class="col-lg-4"><div class="cardx"><h3>Safety Rules</h3><p class="text-muted mb-1">Delete is disabled everywhere. HeraProduction is read-only in the SQL Console and cannot be full-table-synced. All writes require confirmation and are audited.</p></div></div>
     </div>
-    <div class="cardx mt-3"><h3>Database Modules</h3><p class="text-muted">Row counts are estimates (InnoDB statistics) — exact on the largest tables would mean scanning hundreds of millions of rows on every dashboard load.</p><div class="table-responsive"><table class="table table-hover align-middle"><thead><tr><th>Table</th><th>Rows (est.)</th><th></th></tr></thead><tbody><?php foreach($counts as $t=>$c):?><tr><td><b><?=e($t)?></b></td><td><?=number_format($c)?></td><td><a class="btn btn-sm btn-primary" href="?page=table&table=<?=urlencode($t)?>">Open</a></td></tr><?php endforeach;?></tbody></table></div></div>
     <?php layout_end(); exit;
 }
 
 if ($page==='tables') { require_perm('view_tables'); layout_start('Database Tables'); $schema=current_schema(); ?><div class="cardx"><div class="d-flex justify-content-between align-items-center"><h3>Tables in <?=e($schema)?></h3><a class="btn btn-outline-primary" href="?page=reports">View Reports</a></div><div class="module-grid mt-3"><?php foreach(table_names($schema) as $t):?><a class="module-card" href="?page=table&table=<?=urlencode($t)?>"><i class="fa-solid fa-table"></i><strong><?=e($t)?></strong><span><?=number_format(approx_table_count($schema,$t))?> records (est.)</span></a><?php endforeach;?></div></div><?php layout_end(); exit; }
 
-if ($page==='table') { require_perm('view_tables'); $schema=current_schema(); $table=$_GET['table']??''; if(!table_exists($schema,$table)) throw new RuntimeException('Table not found'); $pageNo=max(1,(int)($_GET['p']??1)); $cols=columns($schema,$table); $filters=parse_table_filters($_GET); $guard=large_table_guard($schema,$table,$filters); if($guard && $guard['level']==='block'){ $data=['rows'=>[],'total'=>0]; } else { $data=list_records($schema,$table,$filters,$pageNo,25); $data['rows']=array_map('redact_row',$data['rows']); } $exportQs=$_GET; $exportQs['page']='export'; layout_start('Table: '.$table); ?><?php if($guard):?><div class="alert alert-<?=$guard['level']==='block'?'warning':'info'?>"><?=e($guard['message'])?></div><?php endif;?><div class="cardx"><div class="d-flex flex-wrap gap-2 justify-content-between"><div><h3><?=e($table)?></h3><p class="text-muted mb-0"><?=number_format($data['total'])?> matching records in <?=e($schema)?></p></div><div class="d-flex gap-2"><a class="btn btn-success" href="?page=form&mode=add&table=<?=urlencode($table)?>"><i class="fa fa-plus"></i> Add</a><a class="btn btn-outline-primary" href="?<?=http_build_query($exportQs)?>">Export CSV<?=$filters?' (filtered)':''?></a><a class="btn btn-outline-dark" href="?page=sync&table=<?=urlencode($table)?>">Copy/Sync</a></div></div><form class="search-panel mt-3" method="get"><input type="hidden" name="page" value="table"><input type="hidden" name="table" value="<?=e($table)?>"><div id="filters"><?php $show=$filters ?: [['col'=>'','op'=>'contains','val'=>'']]; foreach($show as $f):?><div class="filter-row"><select name="fcol[]" class="form-select"><option value="">Select column</option><?php foreach($cols as $c):?><option value="<?=e($c['name'])?>" <?=$f['col']===$c['name']?'selected':''?>><?=e($c['name'])?></option><?php endforeach;?></select><select name="fop[]" class="form-select"><option value="contains" <?=$f['op']==='contains'?'selected':''?>>contains</option><option value="equals" <?=$f['op']==='equals'?'selected':''?>>equals</option><option value="starts" <?=$f['op']==='starts'?'selected':''?>>starts with</option><option value="ends" <?=$f['op']==='ends'?'selected':''?>>ends with</option><option value="gt" <?=$f['op']==='gt'?'selected':''?>>&gt;</option><option value="lt" <?=$f['op']==='lt'?'selected':''?>>&lt;</option></select><input name="fval[]" class="form-control" value="<?=e($f['val'])?>" placeholder="Search value"></div><?php endforeach;?></div><template id="filter-template"><div class="filter-row"><select name="fcol[]" class="form-select"><option value="">Select column</option><?php foreach($cols as $c):?><option value="<?=e($c['name'])?>"><?=e($c['name'])?></option><?php endforeach;?></select><select name="fop[]" class="form-select"><option value="contains">contains</option><option value="equals">equals</option><option value="starts">starts with</option><option value="ends">ends with</option><option value="gt">&gt;</option><option value="lt">&lt;</option></select><input name="fval[]" class="form-control" placeholder="Search value"></div></template><div class="d-flex gap-2 mt-2"><button class="btn btn-primary">Search</button><button type="button" id="add-filter-btn" class="btn btn-outline-primary">Add Filter</button><a href="?page=table&table=<?=urlencode($table)?>" class="btn btn-outline-secondary">Reset</a></div></form></div><div class="cardx table-card mt-3"><div class="table-scroll"><table class="table table-hover table-sm align-middle"><thead><tr><?php foreach($cols as $c):?><th><?=e($c['name'])?></th><?php endforeach;?><th class="sticky-actions">Actions</th></tr></thead><tbody><?php foreach($data['rows'] as $r): $key=row_key_query($schema,$table,$r);?><tr><?php foreach($cols as $c): $v=$r[$c['name']]??'';?><td title="<?=e($v)?>"><?=e(mb_strimwidth((string)$v,0,80,'...'))?></td><?php endforeach;?><td class="sticky-actions"><div class="btn-group btn-group-sm"><a class="btn btn-outline-primary" href="?page=view&table=<?=urlencode($table)?>&<?=$key?>">View</a><?php if(can('edit_records')):?><a class="btn btn-outline-warning" href="?page=form&mode=edit&table=<?=urlencode($table)?>&<?=$key?>">Edit</a><?php endif;?><?php if(can('duplicate_records')):?><a class="btn btn-outline-success" href="?page=form&mode=duplicate&table=<?=urlencode($table)?>&<?=$key?>">Duplicate</a><?php endif;?></div></td></tr><?php endforeach;?></tbody></table></div><?php $pages=max(1,ceil($data['total']/25));?><div class="p-3 d-flex justify-content-between"><span>Page <?=$pageNo?> of <?=$pages?></span><div><?php if($pageNo>1):?><a class="btn btn-sm btn-outline-primary" href="<?=e(str_replace('p='.$pageNo,'p='.($pageNo-1),$_SERVER['REQUEST_URI'].(str_contains($_SERVER['REQUEST_URI'],'?')?'':'?')))?>">Prev</a><?php endif;?><?php if($pageNo<$pages):?><a class="btn btn-sm btn-outline-primary" href="?<?=http_build_query(array_merge($_GET,['p'=>$pageNo+1]))?>">Next</a><?php endif;?></div></div></div><?php layout_end(); exit; }
+if ($page==='table') { require_perm('view_tables'); $schema=current_schema(); $table=$_GET['table']??''; if(!table_exists($schema,$table)) throw new RuntimeException('Table not found'); $pageNo=max(1,(int)($_GET['p']??1)); $perPage=resolve_page_size($_GET); $cols=columns($schema,$table); $filters=parse_table_filters($_GET); $guard=large_table_guard($schema,$table,$filters); if($guard && $guard['level']==='block'){ $data=['rows'=>[],'total'=>0]; } else { $data=list_records($schema,$table,$filters,$pageNo,$perPage); $data['rows']=array_map('redact_row',$data['rows']); } $exportQs=$_GET; $exportQs['page']='export'; layout_start('Table: '.$table); ?><?php if($guard):?><div class="alert alert-<?=$guard['level']==='block'?'warning':'info'?>"><?=e($guard['message'])?></div><?php endif;?><div class="cardx"><div class="d-flex flex-wrap gap-2 justify-content-between"><div><h3><?=e($table)?></h3><p class="text-muted mb-0"><?=number_format($data['total'])?> matching records in <?=e($schema)?></p></div><div class="d-flex gap-2"><a class="btn btn-success" href="?page=form&mode=add&table=<?=urlencode($table)?>"><i class="fa fa-plus"></i> Add</a><a class="btn btn-outline-primary" href="?<?=http_build_query($exportQs)?>">Export CSV<?=$filters?' (filtered)':''?></a><a class="btn btn-outline-dark" href="?page=sync&table=<?=urlencode($table)?>">Copy/Sync</a></div></div><form class="search-panel mt-3" method="get"><input type="hidden" name="page" value="table"><input type="hidden" name="table" value="<?=e($table)?>"><div id="filters"><?php $show=$filters ?: [['col'=>'','op'=>'contains','val'=>'']]; foreach($show as $f):?><div class="filter-row"><select name="fcol[]" class="form-select"><option value="">Select column</option><?php foreach($cols as $c):?><option value="<?=e($c['name'])?>" <?=$f['col']===$c['name']?'selected':''?>><?=e($c['name'])?></option><?php endforeach;?></select><select name="fop[]" class="form-select"><option value="contains" <?=$f['op']==='contains'?'selected':''?>>contains</option><option value="equals" <?=$f['op']==='equals'?'selected':''?>>equals</option><option value="starts" <?=$f['op']==='starts'?'selected':''?>>starts with</option><option value="ends" <?=$f['op']==='ends'?'selected':''?>>ends with</option><option value="gt" <?=$f['op']==='gt'?'selected':''?>>&gt;</option><option value="lt" <?=$f['op']==='lt'?'selected':''?>>&lt;</option></select><input name="fval[]" class="form-control" value="<?=e($f['val'])?>" placeholder="Search value"></div><?php endforeach;?></div><template id="filter-template"><div class="filter-row"><select name="fcol[]" class="form-select"><option value="">Select column</option><?php foreach($cols as $c):?><option value="<?=e($c['name'])?>"><?=e($c['name'])?></option><?php endforeach;?></select><select name="fop[]" class="form-select"><option value="contains">contains</option><option value="equals">equals</option><option value="starts">starts with</option><option value="ends">ends with</option><option value="gt">&gt;</option><option value="lt">&lt;</option></select><input name="fval[]" class="form-control" placeholder="Search value"></div></template><div class="d-flex gap-2 mt-2 align-items-center"><button class="btn btn-primary">Search</button><button type="button" id="add-filter-btn" class="btn btn-outline-primary">Add Filter</button><a href="?page=table&table=<?=urlencode($table)?>" class="btn btn-outline-secondary">Reset</a><label class="ms-auto mb-0 small text-muted">Per page</label><select class="form-select form-select-sm w-auto" name="per_page" data-autosubmit><?php foreach(PAGE_SIZE_OPTIONS as $ps):?><option value="<?=$ps?>" <?=$perPage===$ps?'selected':''?>><?=$ps?></option><?php endforeach;?></select></div></form></div><div class="cardx table-card mt-3"<div class="table-scroll"><table class="table table-hover table-sm align-middle"><thead><tr><?php foreach($cols as $c):?><th><?=e($c['name'])?></th><?php endforeach;?><th class="sticky-actions">Actions</th></tr></thead><tbody><?php foreach($data['rows'] as $r): $key=row_key_query($schema,$table,$r);?><tr><?php foreach($cols as $c): $v=$r[$c['name']]??'';?><td title="<?=e($v)?>"><?=e(mb_strimwidth((string)$v,0,80,'...'))?></td><?php endforeach;?><td class="sticky-actions"><div class="btn-group btn-group-sm"><a class="btn btn-outline-primary" href="?page=view&table=<?=urlencode($table)?>&<?=$key?>">View</a><?php if(can('edit_records')):?><a class="btn btn-outline-warning" href="?page=form&mode=edit&table=<?=urlencode($table)?>&<?=$key?>">Edit</a><?php endif;?><?php if(can('duplicate_records')):?><a class="btn btn-outline-success" href="?page=form&mode=duplicate&table=<?=urlencode($table)?>&<?=$key?>">Duplicate</a><?php endif;?></div></td></tr><?php endforeach;?></tbody></table></div><?php $pages=max(1,ceil($data['total']/$perPage));?><div class="p-3 d-flex justify-content-between"><span>Page <?=$pageNo?> of <?=$pages?></span><div><?php if($pageNo>1):?><a class="btn btn-sm btn-outline-primary" href="<?=e(str_replace('p='.$pageNo,'p='.($pageNo-1),$_SERVER['REQUEST_URI'].(str_contains($_SERVER['REQUEST_URI'],'?')?'':'?')))?>">Prev</a><?php endif;?><?php if($pageNo<$pages):?><a class="btn btn-sm btn-outline-primary" href="?<?=http_build_query(array_merge($_GET,['p'=>$pageNo+1]))?>">Next</a><?php endif;?></div></div></div><?php layout_end(); exit; }
 
 if ($page==='view') { require_perm('view_tables'); $schema=current_schema(); $table=$_GET['table']??''; $r=fetch_record($schema,$table,$_GET); if(!$r) throw new RuntimeException('Record not found'); $display=redact_row($r); layout_start('Record Details'); ?><div class="cardx"><div class="d-flex justify-content-between"><h3><?=e($table)?> Record</h3><div class="d-flex gap-2"><a class="btn btn-warning" href="?page=form&mode=edit&table=<?=urlencode($table)?>&<?=row_key_query($schema,$table,$r)?>">Edit</a><a class="btn btn-success" href="?page=form&mode=duplicate&table=<?=urlencode($table)?>&<?=row_key_query($schema,$table,$r)?>">Duplicate</a><a class="btn btn-outline-dark" href="?page=copy_record&table=<?=urlencode($table)?>&<?=row_key_query($schema,$table,$r)?>">Copy to <?=e(opposite_schema($schema))?></a></div></div><div class="detail-grid mt-3"><?php foreach($display as $k=>$v):?><div><label><?=e($k)?></label><pre><?=e($v)?></pre></div><?php endforeach;?></div><div class="alert alert-secondary mt-3">Delete is disabled by system policy. Use status fields such as disabled/retired/deleted_at where available.</div></div><?php layout_end(); exit; }
 
@@ -136,6 +135,7 @@ if ($page==='offers') {
         } else {
             require_perm($id ? 'edit_records' : 'create_records');
             $data=$_POST['data']??[];
+            if (isset($data['free_data'])) $data['free_data']=normalize_free_data_to_mb((string)$data['free_data']);
             $token=make_confirmation($id?'update':'insert',['schema'=>$schema,'table'=>'vas_offers','keys'=>['id'=>$id],'data'=>$data]);
         }
         redirect('?page=confirm&token='.$token);
@@ -145,7 +145,13 @@ if ($page==='offers') {
     foreach(['name'=>'name','offer_code'=>'offer_code','vendor'=>'vendor','category'=>'category'] as $qp=>$col) if(trim((string)($_GET[$qp]??''))!=='') $filters[]=['col'=>$col,'op'=>'contains','val'=>trim((string)$_GET[$qp])];
     if (trim((string)($_GET['status']??''))!=='') $filters[]=['col'=>'status','op'=>'equals','val'=>$_GET['status']];
     $pageNo=max(1,(int)($_GET['p']??1));
-    $data=list_records($schema,'vas_offers',$filters,$pageNo,25);
+    $perPage=resolve_page_size($_GET);
+    $data=list_records($schema,'vas_offers',$filters,$pageNo,$perPage);
+    $vendors=distinct_column_values($schema,'vas_offers','vendor');
+    $categories=distinct_column_values($schema,'vas_offers','category');
+    $subCategories=distinct_column_values($schema,'vas_offers','sub_category');
+    $validities=distinct_column_values($schema,'vas_offers','validity_amount');
+    $speedLimits=distinct_column_values($schema,'vas_offers','speed_limit');
     layout_start('Offer Management');
     ?>
     <div class="row g-3">
@@ -156,11 +162,14 @@ if ($page==='offers') {
                 <form method="post">
                     <input type="hidden" name="csrf" value="<?=e(csrf_token())?>">
                     <input type="hidden" name="id" value="<?=e($edit['id']??'')?>">
-                    <label>Vendor</label><input class="form-control mb-2" name="data[vendor]" value="<?=e($edit['vendor']??'')?>">
+                    <label>Vendor</label><input class="form-control mb-2" name="data[vendor]" list="dl_vendor" value="<?=e($edit['vendor']??'')?>"><datalist id="dl_vendor"><?php foreach($vendors as $v):?><option value="<?=e($v)?>"><?php endforeach;?></datalist>
                     <label>Offer Code</label><input class="form-control mb-2" name="data[offer_code]" value="<?=e($edit['offer_code']??'')?>">
-                    <label>Offer Code (other network)</label><input class="form-control mb-2" name="data[offer_code_for_other]" value="<?=e($edit['offer_code_for_other']??'')?>">
+                    <label>Other Offer Code (Buy For Other Offer Code)</label><input class="form-control mb-2" name="data[offer_code_for_other]" value="<?=e($edit['offer_code_for_other']??'')?>">
                     <label>PCRF Offer Code</label><input class="form-control mb-2" name="data[pcrf_offer_code]" value="<?=e($edit['pcrf_offer_code']??'')?>">
-                    <div class="row g-2"><div class="col-6"><label>Category</label><input class="form-control mb-2" name="data[category]" value="<?=e($edit['category']??'')?>"></div><div class="col-6"><label>Sub-category</label><input class="form-control mb-2" name="data[sub_category]" value="<?=e($edit['sub_category']??'')?>"></div></div>
+                    <div class="row g-2">
+                        <div class="col-6"><label>Category</label><input class="form-control mb-2" name="data[category]" list="dl_category" value="<?=e($edit['category']??'')?>"><datalist id="dl_category"><?php foreach($categories as $v):?><option value="<?=e($v)?>"><?php endforeach;?></datalist></div>
+                        <div class="col-6"><label>Sub-category</label><input class="form-control mb-2" name="data[sub_category]" list="dl_sub_category" value="<?=e($edit['sub_category']??'')?>"><datalist id="dl_sub_category"><?php foreach($subCategories as $v):?><option value="<?=e($v)?>"><?php endforeach;?></datalist></div>
+                    </div>
                     <label>Name</label><input class="form-control mb-2" name="data[name]" value="<?=e($edit['name']??'')?>">
                     <label>Description</label><textarea class="form-control mb-2" name="data[description]" rows="2"><?=e($edit['description']??'')?></textarea>
                     <div class="row g-2">
@@ -169,9 +178,9 @@ if ($page==='offers') {
                         <div class="col-4"><label>Discount</label><input class="form-control mb-2" name="data[discount]" value="<?=e($edit['discount']??'')?>"></div>
                     </div>
                     <div class="row g-2">
-                        <div class="col-4"><label>Free Data (MB)</label><input class="form-control mb-2" name="data[free_data]" value="<?=e($edit['free_data']??'')?>"></div>
-                        <div class="col-4"><label>Validity (days)</label><input class="form-control mb-2" name="data[validity_amount]" value="<?=e($edit['validity_amount']??'')?>"></div>
-                        <div class="col-4"><label>Speed limit</label><input class="form-control mb-2" name="data[speed_limit]" value="<?=e($edit['speed_limit']??'NA')?>"></div>
+                        <div class="col-4"><label>Free Data (MB)</label><input class="form-control mb-2" name="data[free_data]" placeholder="e.g. 500 or 10GB" value="<?=e($edit['free_data']??'')?>"></div>
+                        <div class="col-4"><label>Validity (days)</label><input class="form-control mb-2" name="data[validity_amount]" list="dl_validity" value="<?=e($edit['validity_amount']??'')?>"><datalist id="dl_validity"><?php foreach($validities as $v):?><option value="<?=e($v)?>"><?php endforeach;?></datalist></div>
+                        <div class="col-4"><label>Speed limit</label><input class="form-control mb-2" name="data[speed_limit]" list="dl_speed_limit" value="<?=e($edit['speed_limit']??'NA')?>"><datalist id="dl_speed_limit"><?php foreach($speedLimits as $v):?><option value="<?=e($v)?>"><?php endforeach;?></datalist></div>
                     </div>
                     <label>Status</label>
                     <select class="form-select mb-2" name="data[status]"><?php foreach(['active','inactive'] as $v):?><option value="<?=e($v)?>" <?=($edit['status']??'inactive')===$v?'selected':''?>><?=e(ucfirst($v))?></option><?php endforeach;?></select>
@@ -190,6 +199,7 @@ if ($page==='offers') {
                     <div class="col-md-2"><input class="form-control" name="vendor" placeholder="Vendor" value="<?=e($_GET['vendor']??'')?>"></div>
                     <div class="col-md-2"><input class="form-control" name="category" placeholder="Category" value="<?=e($_GET['category']??'')?>"></div>
                     <div class="col-md-2"><select class="form-select" name="status"><option value="">Any status</option><?php foreach(['active','inactive'] as $v):?><option value="<?=e($v)?>" <?=($_GET['status']??'')===$v?'selected':''?>><?=e(ucfirst($v))?></option><?php endforeach;?></select></div>
+                    <div class="col-md-2"><label class="form-label small text-muted mb-0">Per page</label><select class="form-select" name="per_page" data-autosubmit><?php foreach(PAGE_SIZE_OPTIONS as $ps):?><option value="<?=$ps?>" <?=$perPage===$ps?'selected':''?>><?=$ps?></option><?php endforeach;?></select></div>
                     <div class="col-12"><button class="btn btn-outline-primary">Search</button> <a class="btn btn-outline-secondary" href="?page=offers">Reset</a></div>
                 </form>
                 <div class="table-scroll mt-3"><table class="table table-hover"><thead><tr><th>Name</th><th>Offer Code</th><th>Vendor</th><th>Category</th><th>Price</th><th>Validity</th><th>Status</th><th></th></tr></thead><tbody>
@@ -207,7 +217,7 @@ if ($page==='offers') {
                     </td>
                 </tr><?php endforeach;?>
                 </tbody></table></div>
-                <?php $pages=max(1,(int)ceil($data['total']/25));?>
+                <?php $pages=max(1,(int)ceil($data['total']/$perPage));?>
                 <div class="d-flex justify-content-between"><span>Page <?=$pageNo?> of <?=$pages?></span><div><?php if($pageNo>1):?><a class="btn btn-sm btn-outline-primary" href="?<?=http_build_query(array_merge($_GET,['p'=>$pageNo-1]))?>">Prev</a><?php endif;?> <?php if($pageNo<$pages):?><a class="btn btn-sm btn-outline-primary" href="?<?=http_build_query(array_merge($_GET,['p'=>$pageNo+1]))?>">Next</a><?php endif;?></div></div>
             </div>
         </div>
@@ -277,6 +287,7 @@ if ($page==='subscriptions_export') {
 if ($page==='alerts') {
     require_perm('view_reports'); $schema=current_schema();
     $alerts=compute_alerts($schema);
+    $failureReasons=failure_reasons_breakdown($schema, 1, 8);
     layout_start('Alerts & Monitoring');
     ?>
     <div class="cardx">
@@ -284,6 +295,16 @@ if ($page==='alerts') {
         <p class="text-muted">Computed on page load from <?=e(AUDIT_LOG_TABLE)?> — high failure rate in the last hour, and vendors that were active this time yesterday but silent in the last hour. This is not a push notification; visit this page (or the dashboard) to see current state.</p>
         <?php if(!$alerts):?><div class="alert alert-success mb-0">No active alerts.</div><?php else: foreach($alerts as $a):?><div class="alert alert-<?=e($a['level'])?>"><?=e($a['message'])?></div><?php endforeach; endif;?>
     </div>
+    <?php if($failureReasons):?>
+    <div class="cardx mt-3">
+        <h3>Top Failure Reasons <small class="text-muted">(last hour)</small></h3>
+        <div class="row g-3 mt-1">
+            <?php foreach($failureReasons as $fr):?>
+            <div class="col-md-3 col-sm-6"><div class="cardx h-100"><div class="text-muted small text-uppercase"><?=e($fr['reason'])?></div><div class="fs-3 fw-bold"><?=number_format((int)$fr['c'])?></div></div></div>
+            <?php endforeach;?>
+        </div>
+    </div>
+    <?php endif;?>
     <?php layout_end(); exit;
 }
 
