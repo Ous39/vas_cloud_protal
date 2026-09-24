@@ -70,6 +70,14 @@ function ensure_portal_runtime_schema(): void {
             return (int)$st->fetch()['c'] > 0;
         };
 
+        // audit() has always inserted a request_id column that 00_platform_schema.sql never actually
+        // created — every audit() call has been silently failing (caught by its own try/catch) since
+        // this table's introduction, on every environment including production. Self-heals here
+        // rather than requiring a manual ALTER on every already-deployed database.
+        if ($columnExists('portal_audit_trail', 'id') && !$columnExists('portal_audit_trail', 'request_id')) {
+            $db->exec("ALTER TABLE portal_audit_trail ADD COLUMN request_id VARCHAR(64) NULL AFTER id, ADD INDEX idx_request_id (request_id)");
+        }
+
         if (!$columnExists('portal_users', 'default_schema_name')) {
             $db->exec("ALTER TABLE portal_users ADD COLUMN default_schema_name ENUM('HeraTesting','HeraProduction') NOT NULL DEFAULT 'HeraTesting' AFTER status");
         }
@@ -646,6 +654,40 @@ function top_vendors_today(string $schema, int $limit = 6): array {
     return $st->fetchAll();
 }
 
+// Hourly buckets over the last $hours (bounded, same one-or-two-partition footprint as the rest of
+// this section) for the trend charts on the Dashboard and Alerts pages.
+function hourly_transaction_trend(string $schema, int $hours = 24): array {
+    if (!table_exists($schema, AUDIT_LOG_TABLE)) return [];
+    $hours = max(1, min(168, $hours));
+    $st = pdo($schema)->query("SELECT DATE_FORMAT(create_date, '%Y-%m-%d %H:00') hr, COUNT(*) total, SUM(CASE WHEN UPPER(result_status)!='SUCCESS' THEN 1 ELSE 0 END) failed FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL $hours HOUR GROUP BY hr ORDER BY hr");
+    return $st->fetchAll();
+}
+
+function recent_activity(int $limit = 10): array {
+    $st = portal_pdo()->prepare('SELECT * FROM portal_audit_trail ORDER BY id DESC LIMIT ?');
+    $st->bindValue(1, $limit, PDO::PARAM_INT); $st->execute();
+    return $st->fetchAll();
+}
+
+function integrations_health_summary(string $schema): array {
+    $out = ['active'=>0, 'inactive'=>0, 'testing'=>0, 'last_check_ok'=>0, 'last_check_failed'=>0, 'never_checked'=>0];
+    if (!table_exists($schema, 'integrations')) return $out;
+    $rows = pdo($schema)->query('SELECT status, last_check_ok FROM integrations')->fetchAll();
+    foreach ($rows as $r) {
+        $out[$r['status']] = ($out[$r['status']] ?? 0) + 1;
+        if ($r['last_check_ok'] === null) $out['never_checked']++;
+        elseif ((int)$r['last_check_ok'] === 1) $out['last_check_ok']++;
+        else $out['last_check_failed']++;
+    }
+    return $out;
+}
+
+function recent_alert_history(string $schema, int $limit = 15): array {
+    $st = portal_pdo()->prepare("SELECT * FROM portal_audit_trail WHERE action='alert_fired' AND schema_name=? ORDER BY id DESC LIMIT ?");
+    $st->bindValue(1, $schema); $st->bindValue(2, $limit, PDO::PARAM_INT); $st->execute();
+    return $st->fetchAll();
+}
+
 const ALERT_FAILURE_RATE_THRESHOLD = 0.20;
 const ALERT_FAILURE_MIN_SAMPLE = 20;
 const ALERT_VENDOR_SILENCE_MIN_BASELINE = 5;
@@ -723,6 +765,7 @@ function dispatch_pending_alert_notifications(string $schema): void {
         $row = $st->fetch();
         if ($row && strtotime($row['last_sent_at']) > time() - ALERT_RENOTIFY_MINUTES * 60) continue;
         send_slack_alert($schema, '['.$schema.'] '.$a['message']);
+        audit('alert_fired', $schema, null, $a['key'], $a['message']);
         $db->prepare('INSERT INTO alert_notification_log(alert_key,last_sent_at) VALUES(?,NOW()) ON DUPLICATE KEY UPDATE last_sent_at=NOW()')->execute([$a['key']]);
     }
 }

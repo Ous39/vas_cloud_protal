@@ -37,7 +37,7 @@ function layout_start(string $title): void {
         ['group','fa-gears','Admin',[['tables','fa-database','Database Tables'],['projects','fa-diagram-project','Projects'],['shortcodes','fa-hashtag','Short Codes'],['api_keys','fa-key','Partner API Keys'],['audit','fa-shield-halved','Audit Trail'],['users','fa-users-gear','Users']]],
     ];
     ?>
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title><?=e($title)?> - VAS Cloud</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"><link href="style.css?v=<?=e(asset_version())?>" rel="stylesheet"></head><body>
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title><?=e($title)?> - VAS Cloud</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"><link href="style.css?v=<?=e(asset_version())?>" rel="stylesheet"><script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script></head><body>
 <nav class="topnav"><div class="topnav-inner">
     <a class="topnav-brand" href="?page=dashboard"><img src="comium_logo.png" alt="Comium">VAS Cloud</a>
     <button type="button" id="topnav-toggle" class="topnav-toggle" aria-label="Menu" aria-expanded="false"><i class="fa-solid fa-bars"></i></button>
@@ -87,6 +87,9 @@ try {
 if ($page==='dashboard') {
     require_perm('view_dashboard'); $schema=current_schema();
     $kpis=dashboard_kpis($schema); $topVendors=top_vendors_today($schema);
+    $trend=hourly_transaction_trend($schema, 24);
+    $recentActivity=recent_activity(8);
+    $health=integrations_health_summary($schema);
     $alerts = can('view_reports') ? compute_alerts($schema) : [];
     if ($alerts) dispatch_pending_alert_notifications($schema);
     layout_start('Executive Dashboard');
@@ -100,11 +103,32 @@ if ($page==='dashboard') {
         <div class="metric"><span>Environment</span><strong><?=e($schema==='HeraProduction'?'PROD':'TEST')?></strong></div>
         <div class="metric"><span>Subscription Rows (est.)</span><strong><?=number_format($kpis['subscription_rows_est'])?></strong></div>
     </div>
+    <div class="cardx mt-3">
+        <h3>Transaction Trend <small class="text-muted">(last 24 hours, hourly)</small></h3>
+        <?php if(!$trend):?><p class="text-muted mb-0">No transactions in the last 24 hours.</p><?php else:?><div style="height:260px"><canvas id="trendChart"></canvas></div><?php endif;?>
+    </div>
     <div class="row g-3 mt-1">
         <div class="col-lg-4"><div class="cardx"><h3>Top Vendors Today</h3><?php if(!$topVendors):?><p class="text-muted mb-0">No transactions yet today.</p><?php else:?><div class="table-scroll"><table class="table table-sm mb-0"><thead><tr><th>Vendor</th><th>Total</th><th>Failed</th></tr></thead><tbody><?php foreach($topVendors as $v):?><tr><td><?=e($v['vendor_entity_name'])?></td><td><?=number_format((int)$v['total'])?></td><td><?=number_format((int)$v['failed'])?></td></tr><?php endforeach;?></tbody></table></div><?php endif;?></div></div>
+        <div class="col-lg-4"><div class="cardx"><h3>Recent Activity</h3><?php if(!$recentActivity):?><p class="text-muted mb-0">No activity recorded yet.</p><?php else:?><div class="table-scroll" style="max-height:260px;overflow-y:auto"><table class="table table-sm mb-0"><tbody><?php foreach($recentActivity as $a):?><tr><td><small class="text-muted"><?=e(date('M j H:i',strtotime($a['created_at'])))?></small></td><td><?=e($a['username']??'system')?></td><td><span class="badge bg-secondary"><?=e($a['action'])?></span></td></tr><?php endforeach;?></tbody></table></div><?php endif;?></div></div>
         <div class="col-lg-4"><div class="cardx"><h3>Quick Links</h3><div class="d-grid gap-2"><a class="btn btn-outline-primary" href="?page=investigate"><i class="fa fa-headset me-2"></i>Complaint Investigation</a><a class="btn btn-outline-primary" href="?page=subscriptions"><i class="fa fa-user-check me-2"></i>Subscriptions</a><a class="btn btn-outline-primary" href="?page=offers"><i class="fa fa-tags me-2"></i>Offer Management</a><a class="btn btn-outline-primary" href="?page=alerts"><i class="fa fa-triangle-exclamation me-2"></i>Alerts</a><a class="btn btn-outline-primary" href="?page=tables"><i class="fa fa-database me-2"></i>Database Tables</a></div></div></div>
-        <div class="col-lg-4"><div class="cardx"><h3>Safety Rules</h3><p class="text-muted mb-1">Delete is disabled everywhere. HeraProduction is read-only in the SQL Console and cannot be full-table-synced. All writes require confirmation and are audited.</p></div></div>
     </div>
+    <div class="row g-3 mt-1">
+        <div class="col-lg-6"><div class="cardx"><h3>System Health</h3><div class="d-flex gap-4 flex-wrap"><div><div class="text-muted small text-uppercase">Integrations Active</div><div class="fs-3 fw-bold text-success"><?=number_format($health['active'])?></div></div><div><div class="text-muted small text-uppercase">Passing Checks</div><div class="fs-3 fw-bold text-success"><?=number_format($health['last_check_ok'])?></div></div><div><div class="text-muted small text-uppercase">Failing Checks</div><div class="fs-3 fw-bold <?=$health['last_check_failed']>0?'text-danger':'text-muted'?>"><?=number_format($health['last_check_failed'])?></div></div><div><div class="text-muted small text-uppercase">Never Checked</div><div class="fs-3 fw-bold text-muted"><?=number_format($health['never_checked'])?></div></div></div><a class="btn btn-sm btn-outline-primary mt-3" href="?page=integrations">View Integrations</a></div></div>
+        <div class="col-lg-6"><div class="cardx"><h3>Safety Rules</h3><p class="text-muted mb-1">Delete is disabled everywhere. HeraProduction is read-only in the SQL Console and cannot be full-table-synced. All writes require confirmation and are audited.</p></div></div>
+    </div>
+    <?php if($trend):?><script nonce="<?=e(csp_nonce())?>">
+    new Chart(document.getElementById('trendChart'), {
+        type: 'line',
+        data: {
+            labels: <?=json_encode(array_map(fn($t)=>substr($t['hr'],11,5), $trend), JSON_HEX_TAG)?>,
+            datasets: [
+                { label: 'Total', data: <?=json_encode(array_map(fn($t)=>(int)$t['total'], $trend), JSON_HEX_TAG)?>, borderColor: '#0d6efd', backgroundColor: 'rgba(13,110,253,.1)', tension: 0.3, fill: true },
+                { label: 'Failed', data: <?=json_encode(array_map(fn($t)=>(int)$t['failed'], $trend), JSON_HEX_TAG)?>, borderColor: '#dc3545', backgroundColor: 'rgba(220,53,69,.1)', tension: 0.3, fill: true }
+            ]
+        },
+        options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } } }
+    });
+    </script><?php endif;?>
     <?php layout_end(); exit;
 }
 
@@ -295,6 +319,8 @@ if ($page==='alerts') {
     $alerts=compute_alerts($schema);
     if ($alerts) dispatch_pending_alert_notifications($schema);
     $failureReasons=failure_reasons_breakdown($schema, 1, 8);
+    $trend=hourly_transaction_trend($schema, 24);
+    $alertHistory=recent_alert_history($schema, 15);
     layout_start('Alerts & Monitoring');
     ?>
     <div class="cardx">
@@ -302,16 +328,40 @@ if ($page==='alerts') {
         <p class="text-muted">Computed on page load from <?=e(AUDIT_LOG_TABLE)?> — high failure rate in the last hour, and vendors that were active this time yesterday but silent in the last hour. Also pushed to Slack (at most every <?=ALERT_RENOTIFY_MINUTES?> minutes per alert) if a monitoring integration is configured below, and via a scheduled check if one's set up — see Push Alerting Setup.</p>
         <?php if(!$alerts):?><div class="alert alert-success mb-0">No active alerts.</div><?php else: foreach($alerts as $a):?><div class="alert alert-<?=e($a['level'])?>"><?=e($a['message'])?></div><?php endforeach; endif;?>
     </div>
-    <?php if($failureReasons):?>
     <div class="cardx mt-3">
+        <h3>Failure Rate Trend <small class="text-muted">(last 24 hours, hourly)</small></h3>
+        <?php if(!$trend):?><p class="text-muted mb-0">No transactions in the last 24 hours.</p><?php else:?><div style="height:220px"><canvas id="failureTrendChart"></canvas></div><?php endif;?>
+    </div>
+    <div class="row g-3 mt-1">
+        <div class="col-lg-6">
+    <?php if($failureReasons):?>
+    <div class="cardx h-100">
         <h3>Top Failure Reasons <small class="text-muted">(last hour)</small></h3>
         <div class="row g-3 mt-1">
             <?php foreach($failureReasons as $fr):?>
-            <div class="col-md-3 col-sm-6"><div class="cardx h-100"><div class="text-muted small text-uppercase"><?=e($fr['reason'])?></div><div class="fs-3 fw-bold"><?=number_format((int)$fr['c'])?></div></div></div>
+            <div class="col-md-6"><div class="cardx h-100"><div class="text-muted small text-uppercase"><?=e($fr['reason'])?></div><div class="fs-3 fw-bold"><?=number_format((int)$fr['c'])?></div></div></div>
             <?php endforeach;?>
         </div>
     </div>
     <?php endif;?>
+        </div>
+        <div class="col-lg-6">
+    <div class="cardx h-100">
+        <h3>Alert History <small class="text-muted">(last 15 firings)</small></h3>
+        <?php if(!$alertHistory):?><p class="text-muted mb-0">No alerts have fired yet.</p><?php else:?><div class="table-scroll" style="max-height:260px;overflow-y:auto"><table class="table table-sm mb-0"><tbody><?php foreach($alertHistory as $h):?><tr><td><small class="text-muted"><?=e(date('M j H:i',strtotime($h['created_at'])))?></small></td><td><?=e($h['details'])?></td></tr><?php endforeach;?></tbody></table></div><?php endif;?>
+    </div>
+        </div>
+    </div>
+    <?php if($trend):?><script nonce="<?=e(csp_nonce())?>">
+    new Chart(document.getElementById('failureTrendChart'), {
+        type: 'bar',
+        data: {
+            labels: <?=json_encode(array_map(fn($t)=>substr($t['hr'],11,5), $trend), JSON_HEX_TAG)?>,
+            datasets: [{ label: 'Failure rate %', data: <?=json_encode(array_map(fn($t)=>$t['total']>0?round($t['failed']/$t['total']*100,1):0, $trend), JSON_HEX_TAG)?>, backgroundColor: '#dc3545' }]
+        },
+        options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, max: 100 } } }
+    });
+    </script><?php endif;?>
     <?php if(can('manage_api_keys')):?>
     <div class="cardx mt-3">
         <h3>Push Alerting Setup <small class="text-muted">(admin only)</small></h3>
