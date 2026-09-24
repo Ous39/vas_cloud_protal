@@ -23,7 +23,7 @@ function nav_can_see(string $page): bool {
     if ($page==='audit') return can('view_audit');
     if ($page==='api_keys') return can('manage_api_keys');
     if ($page==='promotions') return can('manage_promotions');
-    if (in_array($page,['investigate','reports','alerts','monitoring','promotion_report'],true)) return can('view_reports');
+    if (in_array($page,['investigate','reports','alerts','monitoring','offer_report'],true)) return can('view_reports');
     if (in_array($page,['subscriptions','offers','esim','sales','friends_family','voting','ussd_ivr','ussd_menu','integrations','tables','projects','shortcodes'],true)) return can('view_tables');
     return true;
 }
@@ -34,7 +34,7 @@ function layout_start(string $title): void {
         ['monitoring','fa-heart-pulse','Monitoring'],
         ['group','fa-layer-group','Operations',[['subscriptions','fa-user-check','Subscriptions'],['offers','fa-tags','Offer Management'],['esim','fa-sim-card','eSIM Profiles'],['sales','fa-file-invoice-dollar','Sales & Invoices'],['friends_family','fa-user-group','Friends & Family'],['voting','fa-square-poll-vertical','Voting Service']]],
         ['group','fa-tower-broadcast','Infrastructure',[['ussd_ivr','fa-mobile-screen-button','USSD & IVR'],['ussd_menu','fa-sitemap','USSD Menu Builder'],['integrations','fa-plug-circle-check','Integrations']]],
-        ['group','fa-chart-line','Reports',[['investigate','fa-headset','Complaint Investigation'],['alerts','fa-triangle-exclamation','Alerts'],['promotion_report','fa-bullhorn','Promotion Performance'],['reports','fa-chart-line','Reports'],['sql','fa-code','SQL Console']]],
+        ['group','fa-chart-line','Reports',[['investigate','fa-headset','Complaint Investigation'],['alerts','fa-triangle-exclamation','Alerts'],['offer_report','fa-bullhorn','Offer Performance'],['reports','fa-chart-line','Reports'],['sql','fa-code','SQL Console']]],
         ['group','fa-gears','Admin',[['tables','fa-database','Database Tables'],['promotions','fa-bullhorn','Promotions'],['projects','fa-diagram-project','Projects'],['shortcodes','fa-hashtag','Short Codes'],['api_keys','fa-key','Partner API Keys'],['audit','fa-shield-halved','Audit Trail'],['users','fa-users-gear','Users']]],
     ];
     ?>
@@ -300,38 +300,47 @@ if ($page==='promotions') {
     <?php layout_end(); exit;
 }
 
-if ($page==='promotion_report') {
+if ($page==='offer_report') {
     require_perm('view_reports'); $schema=current_schema();
     $promotions=list_promotions($schema);
     $channels=distinct_column_values($schema,'subscription','channel');
-    $result=null; $promotionId=(int)($_GET['promotion_id']??0); $channel=trim((string)($_GET['channel']??''));
+    $offers = table_exists($schema,'vas_offers') ? pdo($schema)->query("SELECT offer_code, name FROM vas_offers ORDER BY name")->fetchAll() : [];
+    $promotionId=(int)($_GET['promotion_id']??0);
+    $selectedCodes = $_GET['offer_codes'] ?? null;
+    if ($selectedCodes === null && $promotionId) { $p=get_promotion($promotionId); $selectedCodes = $p['offer_codes'] ?? []; }
+    $selectedCodes = $selectedCodes ?? [];
+    $channel=trim((string)($_GET['channel']??''));
     $dateFrom=trim((string)($_GET['date_from']??date('Y-m-d',strtotime('-6 days')))); $dateTo=trim((string)($_GET['date_to']??date('Y-m-d')));
-    if ($promotionId) {
-        $result = promotion_performance_report($schema, $promotionId, $channel, $dateFrom, $dateTo);
+    $result=null;
+    if (isset($_GET['generate']) || ($_GET['format']??'')==='csv') {
+        $result = offer_performance_report($schema, $selectedCodes, $channel, $dateFrom, $dateTo);
         if (($_GET['format']??'')==='csv') {
-            audit('promotion_report_export',$schema,'promotions',(string)$promotionId,"range=$dateFrom..$dateTo channel=$channel");
-            header('Content-Type:text/csv'); header('Content-Disposition: attachment; filename="promotion_report.csv"');
+            audit('offer_report_export',$schema,'vas_offers',null,"offers=".implode(',',$selectedCodes)." range=$dateFrom..$dateTo channel=$channel");
+            header('Content-Type:text/csv'); header('Content-Disposition: attachment; filename="offer_performance_report.csv"');
             $out=fopen('php://output','w'); $first=true;
             foreach($result as $row){ if($first){fputcsv($out,array_keys($row));$first=false;} fputcsv($out,$row); }
             if($first) fputcsv($out,['(no rows returned)']);
             exit;
         }
     }
-    layout_start('Promotion Performance');
+    layout_start('Offer Performance');
     ?>
     <div class="cardx">
-        <h3><i class="fa-solid fa-bullhorn me-2"></i>Promotion Performance</h3>
-        <p class="text-muted">Success/failure breakdown by offer, including "Buy for Other" purchases, over a bounded date range (subscription has no supporting index, so the range is capped at <?=PROMOTION_REPORT_MAX_RANGE_DAYS?> days).</p>
-        <?php if(!$promotions):?><div class="alert alert-warning mb-0">No promotions defined yet. <a href="?page=promotions">Create one</a> first.</div><?php else:?>
+        <h3><i class="fa-solid fa-bullhorn me-2"></i>Offer Performance</h3>
+        <p class="text-muted">Success/failure breakdown by offer, including "Buy for Other" purchases, over a bounded date range (subscription has no supporting index, so the range is capped at <?=PROMOTION_REPORT_MAX_RANGE_DAYS?> days). Leave Offers empty to report on every offer.</p>
+        <?php if($promotions):?>
+        <form method="get" class="row g-2 mb-2"><input type="hidden" name="page" value="offer_report">
+            <div class="col-md-4"><label class="small text-muted mb-0">Quick-load from a Promotion</label><select class="form-select" name="promotion_id" data-autosubmit><option value="">— none —</option><?php foreach($promotions as $p):?><option value="<?=e($p['id'])?>" <?=$promotionId===(int)$p['id']?'selected':''?>><?=e($p['name'])?></option><?php endforeach;?></select></div>
+        </form>
+        <?php endif;?>
         <form method="get" class="row g-2">
-            <input type="hidden" name="page" value="promotion_report">
-            <div class="col-md-4"><label class="small text-muted mb-0">Promotion</label><select class="form-select" name="promotion_id" required><option value="">Select a promotion</option><?php foreach($promotions as $p):?><option value="<?=e($p['id'])?>" <?=$promotionId===(int)$p['id']?'selected':''?>><?=e($p['name'])?></option><?php endforeach;?></select></div>
+            <input type="hidden" name="page" value="offer_report">
+            <div class="col-md-4"><label class="small text-muted mb-0">Offers <small>(empty = all)</small></label><select class="form-select" name="offer_codes[]" multiple size="6"><?php foreach($offers as $o):?><option value="<?=e($o['offer_code'])?>" <?=in_array($o['offer_code'],$selectedCodes,true)?'selected':''?>><?=e($o['offer_code'])?> — <?=e($o['name'])?></option><?php endforeach;?></select></div>
             <div class="col-md-2"><label class="small text-muted mb-0">Channel</label><input class="form-control" name="channel" list="dl_channel" value="<?=e($channel)?>" placeholder="Any"><datalist id="dl_channel"><?php foreach($channels as $c):?><option value="<?=e($c)?>"><?php endforeach;?></datalist></div>
             <div class="col-md-2"><label class="small text-muted mb-0">Date from</label><input type="date" class="form-control" name="date_from" value="<?=e($dateFrom)?>"></div>
             <div class="col-md-2"><label class="small text-muted mb-0">Date to</label><input type="date" class="form-control" name="date_to" value="<?=e($dateTo)?>"></div>
-            <div class="col-md-2 d-flex align-items-end"><button class="btn btn-primary w-100">Generate</button></div>
+            <div class="col-md-2 d-flex align-items-end"><button class="btn btn-primary w-100" name="generate" value="1">Generate</button></div>
         </form>
-        <?php endif;?>
     </div>
     <?php if($result!==null):?>
     <div class="cardx mt-3">

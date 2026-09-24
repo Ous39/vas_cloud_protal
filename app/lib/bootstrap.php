@@ -710,15 +710,24 @@ function save_promotion(string $schema, string $name, array $offerCodes, ?int $i
     return $id;
 }
 
-function promotion_performance_report(string $schema, int $promotionId, string $channel, string $dateFrom, string $dateTo): array {
+// $offerCodes empty means "every offer" — a saved Promotion is just one convenient way to fill this
+// list, never required; the report works for a single offer, an ad-hoc selection, or everything.
+function offer_performance_report(string $schema, array $offerCodes, string $channel, string $dateFrom, string $dateTo): array {
     if (strtotime($dateFrom) === false || strtotime($dateTo) === false) throw new RuntimeException('Invalid date.');
     if (strtotime($dateTo) < strtotime($dateFrom)) throw new RuntimeException('"Date to" must not be before "date from".');
     if ((strtotime($dateTo) - strtotime($dateFrom)) / 86400 > PROMOTION_REPORT_MAX_RANGE_DAYS) throw new RuntimeException('Date range cannot exceed '.PROMOTION_REPORT_MAX_RANGE_DAYS.' days — subscription has no supporting index, so a wider scan would be very slow.');
-    $promo = get_promotion($promotionId) ?: throw new RuntimeException('Promotion not found.');
     if (!table_exists($schema, 'subscription') || !table_exists($schema, 'vas_offers')) return [];
-    $codes = $promo['offer_codes'];
-    $ph = implode(',', array_fill(0, count($codes), '?'));
+    $offerCodes = array_values(array_unique(array_filter(array_map('trim', $offerCodes), fn($c) => $c !== '')));
     $db = pdo($schema);
+
+    $directWhere = ['1=1']; $directParams = [];
+    $otherWhere = ["offer_code_for_other IS NOT NULL", "offer_code_for_other != ''"]; $otherParams = [];
+    if ($offerCodes) {
+        $ph = implode(',', array_fill(0, count($offerCodes), '?'));
+        $directWhere[] = "offer_code IN ($ph)"; $directParams = $offerCodes;
+        $otherWhere[] = "offer_code IN ($ph)"; $otherParams = $offerCodes;
+    }
+
     $sql = "SELECT DATE(s.date) AS ReportDate, s.channel AS Channel, m.base_offer_code AS OfferCode, m.offer_code_used AS TransactionOfferCode, m.purchase_type AS PurchaseType, v.name AS OfferName,
         CASE WHEN s.result_desc = 'Operation successfully.' THEN 'Successful' ELSE 'Unsuccessful' END AS ResultStatus,
         CASE WHEN s.result_desc = 'Operation successfully.' THEN 'N/A' WHEN s.result_desc IS NULL OR TRIM(s.result_desc) = '' THEN 'Unknown failure reason' ELSE s.result_desc END AS FailureReason,
@@ -728,13 +737,13 @@ function promotion_performance_report(string $schema, int $promotionId, string $
         COUNT(DISTINCT s.subscriber_msisdn) AS TotalDistinctUsers
         FROM subscription s
         INNER JOIN (
-            SELECT offer_code AS offer_code_used, offer_code AS base_offer_code, 'Direct' AS purchase_type FROM vas_offers WHERE offer_code IN ($ph)
+            SELECT offer_code AS offer_code_used, offer_code AS base_offer_code, 'Direct' AS purchase_type FROM vas_offers WHERE ".implode(' AND ',$directWhere)."
             UNION ALL
-            SELECT offer_code_for_other, offer_code, 'Buy for Other' FROM vas_offers WHERE offer_code IN ($ph) AND offer_code_for_other IS NOT NULL AND offer_code_for_other != ''
+            SELECT offer_code_for_other, offer_code, 'Buy for Other' FROM vas_offers WHERE ".implode(' AND ',$otherWhere)."
         ) m ON RIGHT(s.transaction_id, 5) = m.offer_code_used
         INNER JOIN vas_offers v ON m.base_offer_code = v.offer_code
         WHERE s.date >= ? AND s.date < ?";
-    $params = array_merge($codes, $codes, [$dateFrom.' 00:00:00', date('Y-m-d', strtotime($dateTo.' +1 day')).' 00:00:00']);
+    $params = array_merge($directParams, $otherParams, [$dateFrom.' 00:00:00', date('Y-m-d', strtotime($dateTo.' +1 day')).' 00:00:00']);
     if ($channel !== '') { $sql .= ' AND s.channel = ?'; $params[] = $channel; }
     $sql .= " GROUP BY ReportDate, Channel, OfferCode, TransactionOfferCode, PurchaseType, OfferName, s.result_desc ORDER BY ReportDate, OfferName, PurchaseType, ResultStatus, FailureReason";
     $st = $db->prepare($sql);
