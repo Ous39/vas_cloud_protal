@@ -12,6 +12,59 @@ session_set_cookie_params([
     'httponly' => true,
     'samesite' => 'Strict',
 ]);
+// Sessions live in vas_portal (portal_sessions), not per-pod disk — so any of the app's replicas
+// can serve any request for a logged-in user without needing sticky routing at the ingress. Replaces
+// relying on nginx cookie-affinity, which didn't hold up reliably once combined with the /portal
+// regex path rewrite this deployment needs (users were getting "Security token expired" once the
+// deployment ran more than one replica).
+//
+// This class must be declared here, above its use below — unlike a plain class, one that
+// `implements` an interface isn't compile-time hoisted in PHP, so it has to already be defined by
+// the time session_set_save_handler() runs, not just somewhere later in the file.
+class DbSessionHandler implements SessionHandlerInterface {
+    private static bool $tableReady = false;
+    private function ensureTable(): void {
+        if (self::$tableReady) return;
+        try {
+            portal_pdo()->exec("CREATE TABLE IF NOT EXISTS portal_sessions (
+                id VARCHAR(128) NOT NULL PRIMARY KEY,
+                data MEDIUMTEXT NOT NULL,
+                last_activity INT NOT NULL,
+                INDEX idx_last_activity (last_activity)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+            self::$tableReady = true;
+        } catch (Throwable $e) { /* DB not reachable yet — session falls back to failing open below */ }
+    }
+    public function open(string $path, string $name): bool { $this->ensureTable(); return true; }
+    public function close(): bool { return true; }
+    public function read(string $id): string|false {
+        try {
+            $st = portal_pdo()->prepare('SELECT data FROM portal_sessions WHERE id=?');
+            $st->execute([$id]);
+            $row = $st->fetch();
+            return $row ? $row['data'] : '';
+        } catch (Throwable $e) { return ''; }
+    }
+    public function write(string $id, string $data): bool {
+        try {
+            portal_pdo()->prepare('INSERT INTO portal_sessions(id,data,last_activity) VALUES(?,?,?) ON DUPLICATE KEY UPDATE data=VALUES(data), last_activity=VALUES(last_activity)')
+                ->execute([$id, $data, time()]);
+        } catch (Throwable $e) {}
+        return true;
+    }
+    public function destroy(string $id): bool {
+        try { portal_pdo()->prepare('DELETE FROM portal_sessions WHERE id=?')->execute([$id]); } catch (Throwable $e) {}
+        return true;
+    }
+    public function gc(int $max_lifetime): int|false {
+        try {
+            $st = portal_pdo()->prepare('DELETE FROM portal_sessions WHERE last_activity < ?');
+            $st->execute([time() - $max_lifetime]);
+            return $st->rowCount();
+        } catch (Throwable $e) { return false; }
+    }
+}
+session_set_save_handler(new DbSessionHandler(), true);
 if (session_status() !== PHP_SESSION_ACTIVE) session_start();
 
 function csp_nonce(): string { if (empty($_SESSION['csp_nonce'])) $_SESSION['csp_nonce']=bin2hex(random_bytes(16)); return $_SESSION['csp_nonce']; }
@@ -57,7 +110,6 @@ function pdo(?string $schema=null): PDO {
     return $pool[$db];
 }
 function portal_pdo(): PDO { return pdo(app_config('portal_db')); }
-
 
 function ensure_portal_runtime_schema(): void {
     try {
