@@ -433,6 +433,11 @@ function audit(string $action, ?string $schema=null, ?string $table=null, ?strin
 function table_names(string $schema): array { $st=pdo($schema)->query("SELECT TABLE_NAME AS table_name FROM information_schema.TABLES WHERE TABLE_SCHEMA=".pdo($schema)->quote($schema)." ORDER BY TABLE_NAME"); return array_column($st->fetchAll(),'table_name'); }
 function table_exists(string $schema,string $table): bool { return in_array($table, table_names($schema), true); }
 function columns(string $schema,string $table): array { $st=pdo($schema)->prepare('SELECT COLUMN_NAME AS name, COLUMN_TYPE AS type, DATA_TYPE AS data_type, IS_NULLABLE AS nullable, COLUMN_KEY AS ckey, EXTRA AS extra, COLUMN_DEFAULT AS def FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? ORDER BY ORDINAL_POSITION'); $st->execute([$schema,$table]); return $st->fetchAll(); }
+function column_exists(string $schema, string $table, string $col): bool {
+    $st = pdo($schema)->prepare('SELECT COUNT(*) c FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND COLUMN_NAME=?');
+    $st->execute([$schema, $table, $col]);
+    return (int)$st->fetch()['c'] > 0;
+}
 function primary_columns(string $schema,string $table): array { $cols=columns($schema,$table); $pk=array_values(array_map(fn($c)=>$c['name'], array_filter($cols, fn($c)=>$c['ckey']==='PRI'))); if (!$pk && $cols) $pk=[$cols[0]['name']]; return $pk; }
 function table_count(string $schema,string $table): int { try { return (int)pdo($schema)->query('SELECT COUNT(*) c FROM '.ident($table))->fetch()['c']; } catch(Throwable $e) { return 0; } }
 // Estimate only (InnoDB's cached statistics, no table scan) — safe to call once per table on every
@@ -790,6 +795,11 @@ function offer_performance_report(string $schema, array $offerCodes, string $cha
         $directWhere[] = "offer_code IN ($ph)"; $directParams = $offerCodes;
         $otherWhere[] = "offer_code IN ($ph)"; $otherParams = $offerCodes;
     }
+    // txn_offer_suffix is a generated column + index added manually as a DBA operation (see
+    // docs/ARCHITECTURE.md or the deploy history) — use it when present for an indexed join instead
+    // of computing RIGHT(transaction_id,5) per row; fall back gracefully where it hasn't been added
+    // yet (local dev, HeraTesting) rather than hard-requiring it everywhere.
+    $txnSuffixExpr = column_exists($schema, 'subscription', 'txn_offer_suffix') ? 's.txn_offer_suffix' : 'RIGHT(s.transaction_id, 5)';
 
     $sql = "SELECT DATE(s.date) AS ReportDate, s.channel AS Channel, m.base_offer_code AS OfferCode, m.offer_code_used AS TransactionOfferCode, m.purchase_type AS PurchaseType, v.name AS OfferName,
         CASE WHEN s.result_desc = 'Operation successfully.' THEN 'Successful' ELSE 'Unsuccessful' END AS ResultStatus,
@@ -803,7 +813,7 @@ function offer_performance_report(string $schema, array $offerCodes, string $cha
             SELECT offer_code AS offer_code_used, offer_code AS base_offer_code, 'Direct' AS purchase_type FROM vas_offers WHERE ".implode(' AND ',$directWhere)."
             UNION ALL
             SELECT offer_code_for_other, offer_code, 'Buy for Other' FROM vas_offers WHERE ".implode(' AND ',$otherWhere)."
-        ) m ON RIGHT(s.transaction_id, 5) = m.offer_code_used
+        ) m ON $txnSuffixExpr = m.offer_code_used
         INNER JOIN vas_offers v ON m.base_offer_code = v.offer_code
         WHERE s.date >= ? AND s.date < ?";
     $params = array_merge($directParams, $otherParams, [$dateFrom.' 00:00:00', date('Y-m-d', strtotime($dateTo.' +1 day')).' 00:00:00']);
