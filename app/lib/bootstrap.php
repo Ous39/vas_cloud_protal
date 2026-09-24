@@ -487,10 +487,30 @@ function get_confirmation(string $token): ?array { $st=portal_pdo()->prepare('SE
 function mark_confirmation(string $token,string $status): void { portal_pdo()->prepare('UPDATE operation_confirmations SET status=?, confirmed_at=NOW() WHERE token=?')->execute([$status,$token]); }
 
 const SQL_READONLY_KINDS = ['SELECT','SHOW','DESCRIBE','EXPLAIN'];
+// A "WITH ... AS (...) SELECT ..." (or INSERT/UPDATE) common table expression starts with WITH, not
+// its real statement type, so safe_sql_kind() needs to see past the CTE header to classify it
+// correctly — a paren-depth scan rather than assuming WITH always means SELECT, since MySQL also
+// allows "WITH x AS (...) INSERT/UPDATE ...", which must still go through the write/confirmation path.
+function sql_after_cte_header(string $sql): string {
+    $s = preg_replace('/^WITH\s+(RECURSIVE\s+)?/i', '', ltrim($sql), 1);
+    $len = strlen($s); $i = 0; $depth = 0;
+    while ($i < $len) {
+        if ($s[$i] === '(') {
+            $depth = 1; $i++;
+            while ($i < $len && $depth > 0) { if ($s[$i]==='(') $depth++; elseif ($s[$i]===')') $depth--; $i++; }
+            while ($i < $len && ctype_space($s[$i])) $i++;
+            if ($i < $len && $s[$i] === ',') { $i++; continue; }
+            break;
+        }
+        $i++;
+    }
+    return ltrim(substr($s, $i));
+}
 function safe_sql_kind(string $sql): string {
     $trim=ltrim($sql);
     if (substr_count(rtrim(trim($sql), ';'), ';') > 0) throw new RuntimeException('Only a single statement is allowed per run.');
-    if(!preg_match('/^(SELECT|SHOW|DESCRIBE|EXPLAIN|INSERT|UPDATE|REPLACE|CREATE|ALTER)\b/i',$trim,$m)) throw new RuntimeException('Only SELECT, SHOW, DESCRIBE, EXPLAIN, INSERT, UPDATE, REPLACE, CREATE and ALTER are allowed. DELETE, DROP and TRUNCATE are disabled.');
+    $effective = preg_match('/^WITH\s+/i', $trim) ? sql_after_cte_header($trim) : $trim;
+    if(!preg_match('/^(SELECT|SHOW|DESCRIBE|EXPLAIN|INSERT|UPDATE|REPLACE|CREATE|ALTER)\b/i',$effective,$m)) throw new RuntimeException('Only SELECT, SHOW, DESCRIBE, EXPLAIN, INSERT, UPDATE, REPLACE, CREATE and ALTER (optionally preceded by a WITH common table expression) are allowed. DELETE, DROP and TRUNCATE are disabled.');
     if(preg_match('/\b(DELETE|DROP|TRUNCATE|GRANT|REVOKE|LOAD_FILE|INTO\s+OUTFILE|INTO\s+DUMPFILE)\b/i',$sql)) throw new RuntimeException('Dangerous SQL command blocked. Delete/drop/truncate are disabled in this portal.');
     return strtoupper($m[1]);
 }
