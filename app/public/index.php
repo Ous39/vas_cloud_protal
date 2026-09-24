@@ -5,6 +5,11 @@ function asset_version(): string { static $v=null; if($v===null) $v=(string)(@fi
 try { verify_csrf(); } catch(Throwable $e){ flash('danger',$e->getMessage()); redirect('?'); }
 $page=$_GET['page'] ?? 'dashboard';
 if ($page==='switch_schema' && isset($_GET['schema'])) { set_current_schema($_GET['schema']); redirect($_SERVER['HTTP_REFERER'] ?? '?'); }
+if ($page==='alert_cron') {
+    if (!hash_equals(alert_cron_token(), (string)($_GET['token']??''))) { http_response_code(403); header('Content-Type: text/plain'); exit('forbidden'); }
+    foreach (['HeraProduction','HeraTesting'] as $s) dispatch_pending_alert_notifications($s);
+    header('Content-Type: text/plain'); exit('OK');
+}
 if ($page==='logout') { logout(); redirect('?page=login'); }
 if ($page==='login') {
     if ($_SERVER['REQUEST_METHOD']==='POST') { if(login_attempt($_POST['username']??'', $_POST['password']??'')) redirect('?page=dashboard'); flash('danger','Invalid username or password.'); }
@@ -83,6 +88,7 @@ if ($page==='dashboard') {
     require_perm('view_dashboard'); $schema=current_schema();
     $kpis=dashboard_kpis($schema); $topVendors=top_vendors_today($schema);
     $alerts = can('view_reports') ? compute_alerts($schema) : [];
+    if ($alerts) dispatch_pending_alert_notifications($schema);
     layout_start('Executive Dashboard');
     ?>
     <?php if ($alerts): foreach($alerts as $a):?><div class="alert alert-<?=e($a['level'])?> shadow-sm">⚠ <?=e($a['message'])?> <a class="alert-link" href="?page=alerts">View alerts</a></div><?php endforeach; endif;?>
@@ -287,12 +293,13 @@ if ($page==='subscriptions_export') {
 if ($page==='alerts') {
     require_perm('view_reports'); $schema=current_schema();
     $alerts=compute_alerts($schema);
+    if ($alerts) dispatch_pending_alert_notifications($schema);
     $failureReasons=failure_reasons_breakdown($schema, 1, 8);
     layout_start('Alerts & Monitoring');
     ?>
     <div class="cardx">
         <h3><i class="fa-solid fa-triangle-exclamation me-2"></i>Alerts</h3>
-        <p class="text-muted">Computed on page load from <?=e(AUDIT_LOG_TABLE)?> — high failure rate in the last hour, and vendors that were active this time yesterday but silent in the last hour. This is not a push notification; visit this page (or the dashboard) to see current state.</p>
+        <p class="text-muted">Computed on page load from <?=e(AUDIT_LOG_TABLE)?> — high failure rate in the last hour, and vendors that were active this time yesterday but silent in the last hour. Also pushed to Slack (at most every <?=ALERT_RENOTIFY_MINUTES?> minutes per alert) if a monitoring integration is configured below, and via a scheduled check if one's set up — see Push Alerting Setup.</p>
         <?php if(!$alerts):?><div class="alert alert-success mb-0">No active alerts.</div><?php else: foreach($alerts as $a):?><div class="alert alert-<?=e($a['level'])?>"><?=e($a['message'])?></div><?php endforeach; endif;?>
     </div>
     <?php if($failureReasons):?>
@@ -303,6 +310,14 @@ if ($page==='alerts') {
             <div class="col-md-3 col-sm-6"><div class="cardx h-100"><div class="text-muted small text-uppercase"><?=e($fr['reason'])?></div><div class="fs-3 fw-bold"><?=number_format((int)$fr['c'])?></div></div></div>
             <?php endforeach;?>
         </div>
+    </div>
+    <?php endif;?>
+    <?php if(can('manage_api_keys')):?>
+    <div class="cardx mt-3">
+        <h3>Push Alerting Setup <small class="text-muted">(admin only)</small></h3>
+        <p class="text-muted mb-2">1. Add a Slack Incoming Webhook as an Integration (Service type: <b>Monitoring</b>, Base URL: your webhook URL, Status: Active) — Integrations page. Alerts fire there whenever this page or the Dashboard is viewed while an alert is active.</p>
+        <p class="text-muted mb-0">2. For alerts even when nobody has the app open, point a scheduler (e.g. a Kubernetes CronJob — see deploy/k8s/05-alert-cronjob.yaml) at this URL every few minutes:</p>
+        <pre class="mb-0 mt-2"><?=e($_SERVER['REQUEST_SCHEME'] ?? 'https').'://'.e($_SERVER['HTTP_HOST'] ?? '').e(strtok($_SERVER['REQUEST_URI'] ?? '','?')).'?page=alert_cron&token='.e(alert_cron_token())?></pre>
     </div>
     <?php endif;?>
     <?php layout_end(); exit;

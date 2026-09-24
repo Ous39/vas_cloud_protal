@@ -196,6 +196,14 @@ function ensure_portal_runtime_schema(): void {
             }
         }
 
+        // De-dupes push alerts (see send_slack_alert()/dispatch_pending_alert_notifications()) so an
+        // ongoing incident re-notifies at most every ALERT_RENOTIFY_MINUTES instead of once per page
+        // load or per cron tick.
+        $db->exec("CREATE TABLE IF NOT EXISTS alert_notification_log (
+            alert_key VARCHAR(191) NOT NULL PRIMARY KEY,
+            last_sent_at DATETIME NOT NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
         $db->exec("CREATE TABLE IF NOT EXISTS saved_queries (
             id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
             name VARCHAR(150) NOT NULL,
@@ -652,7 +660,7 @@ function compute_alerts(string $schema): array {
     if ($total >= ALERT_FAILURE_MIN_SAMPLE) {
         $rate = $failed / $total;
         if ($rate > ALERT_FAILURE_RATE_THRESHOLD) {
-            $alerts[] = ['level'=>'danger', 'message'=>sprintf('High failure rate in the last hour: %d of %d transactions failed (%.0f%%).', $failed, $total, $rate*100)];
+            $alerts[] = ['key'=>'high_failure_rate:'.$schema, 'level'=>'danger', 'message'=>sprintf('High failure rate in the last hour: %d of %d transactions failed (%.0f%%).', $failed, $total, $rate*100)];
         }
     }
 
@@ -663,11 +671,60 @@ function compute_alerts(string $schema): array {
         $activeNow = array_column($st->fetchAll(), 'vendor_entity_name');
         foreach ($baseline as $vendor => $count) {
             if (!in_array($vendor, $activeNow, true)) {
-                $alerts[] = ['level'=>'warning', 'message'=>sprintf('%s sent %d transactions in this hour yesterday but none in the last hour — may be down.', $vendor, $count)];
+                $alerts[] = ['key'=>'vendor_silent:'.$schema.':'.$vendor, 'level'=>'warning', 'message'=>sprintf('%s sent %d transactions in this hour yesterday but none in the last hour — may be down.', $vendor, $count)];
             }
         }
     }
     return $alerts;
+}
+
+const ALERT_RENOTIFY_MINUTES = 30;
+
+function alert_cron_token(): string {
+    static $token = null;
+    if ($token !== null) return $token;
+    $st = portal_pdo()->prepare('SELECT value FROM app_secrets WHERE name=?');
+    $st->execute(['alert_cron_token']);
+    $row = $st->fetch();
+    if (!$row) {
+        portal_pdo()->prepare('INSERT IGNORE INTO app_secrets(name,value) VALUES(?,?)')->execute(['alert_cron_token', bin2hex(random_bytes(24))]);
+        $st->execute(['alert_cron_token']); $row = $st->fetch();
+    }
+    $token = $row['value'];
+    return $token;
+}
+
+function send_slack_alert(string $schema, string $message): void {
+    if (!table_exists($schema, 'integrations')) return;
+    $st = pdo($schema)->prepare("SELECT base_url FROM integrations WHERE service_type='monitoring' AND status='active' AND base_url IS NOT NULL AND base_url != ''");
+    $st->execute();
+    foreach ($st->fetchAll() as $row) {
+        $ch = curl_init($row['base_url']);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 5, CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_POST => true, CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+            CURLOPT_POSTFIELDS => json_encode(['text' => $message]),
+        ]);
+        curl_exec($ch); curl_close($ch);
+    }
+}
+
+// Called both opportunistically (whenever a logged-in user views the Dashboard/Alerts page) and via
+// the unauthenticated ?page=alert_cron endpoint (a Kubernetes CronJob hits that on a schedule so
+// alerts go out even if nobody has the app open) — see deploy/k8s/05-alert-cronjob.yaml.
+function dispatch_pending_alert_notifications(string $schema): void {
+    $alerts = compute_alerts($schema);
+    if (!$alerts) return;
+    $db = portal_pdo();
+    foreach ($alerts as $a) {
+        if (empty($a['key'])) continue;
+        $st = $db->prepare('SELECT last_sent_at FROM alert_notification_log WHERE alert_key=?');
+        $st->execute([$a['key']]);
+        $row = $st->fetch();
+        if ($row && strtotime($row['last_sent_at']) > time() - ALERT_RENOTIFY_MINUTES * 60) continue;
+        send_slack_alert($schema, '['.$schema.'] '.$a['message']);
+        $db->prepare('INSERT INTO alert_notification_log(alert_key,last_sent_at) VALUES(?,NOW()) ON DUPLICATE KEY UPDATE last_sent_at=NOW()')->execute([$a['key']]);
+    }
 }
 
 function failure_reasons_breakdown(string $schema, int $hours = 1, int $limit = 8): array {

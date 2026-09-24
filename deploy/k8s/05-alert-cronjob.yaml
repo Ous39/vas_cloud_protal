@@ -1,0 +1,40 @@
+# Hits the app's internal ?page=alert_cron endpoint every 5 minutes so Slack alerts go out even if
+# nobody has the app open. Uses the in-cluster service DNS (not the public ingress) — no TLS/hostname
+# needed for this internal-only traffic. The token must match the one shown on the Alerts &
+# Monitoring page (admin only, under "Push Alerting Setup") — it's generated automatically by the
+# app on first use and stored in vas_portal.app_secrets, not something you invent yourself:
+#
+#   kubectl create secret generic vas-cloud-alert-cron-secret -n vas-cloud \
+#     --from-literal=TOKEN='<paste the token from the Alerts page>'
+#
+# Apply this file only after that secret exists.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vas-cloud-alert-cron
+  namespace: vas-cloud
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 30
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: alert-cron
+              image: curlimages/curl:8.10.1
+              env:
+                - name: TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: vas-cloud-alert-cron-secret
+                      key: TOKEN
+              command:
+                - sh
+                - -c
+                - 'curl -fsS "http://vas-cloud-app.vas-cloud.svc.cluster.local/?page=alert_cron&token=$TOKEN"'
+              resources:
+                requests: { cpu: 10m, memory: 16Mi }
+                limits: { cpu: 100m, memory: 32Mi }
