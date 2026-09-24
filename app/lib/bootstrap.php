@@ -163,6 +163,7 @@ function ensure_portal_runtime_schema(): void {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
 
         $db->exec("INSERT IGNORE INTO role_permissions(role_name, permission_key) VALUES ('admin','manage_ussd_menus'),('manager','manage_ussd_menus'),('operator','manage_ussd_menus')");
+        $db->exec("INSERT IGNORE INTO role_permissions(role_name, permission_key) VALUES ('admin','manage_promotions'),('manager','manage_promotions')");
 
         // USSD/IVR menu tree — a self-referencing hierarchy (root nodes have parent_id NULL). This is
         // a design/staging tool: it defines and previews the menu structure and exports it as JSON.
@@ -210,6 +211,27 @@ function ensure_portal_runtime_schema(): void {
         $db->exec("CREATE TABLE IF NOT EXISTS alert_notification_log (
             alert_key VARCHAR(191) NOT NULL PRIMARY KEY,
             last_sent_at DATETIME NOT NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+        // Named groups of offer codes for the Promotion Performance report — portal governance data
+        // (which offer codes belong to "Summer Promo"), never Hera business data. offer_code_for_other
+        // is deliberately NOT duplicated here; the report pulls it live from vas_offers so an edit to
+        // an offer's other-network code is reflected immediately instead of going stale.
+        $db->exec("CREATE TABLE IF NOT EXISTS promotions (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(150) NOT NULL,
+            schema_name ENUM('HeraTesting','HeraProduction') NOT NULL DEFAULT 'HeraTesting',
+            created_by VARCHAR(80) NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_promotion_name_schema (name, schema_name)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+        $db->exec("CREATE TABLE IF NOT EXISTS promotion_offers (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            promotion_id INT NOT NULL,
+            offer_code VARCHAR(80) NOT NULL,
+            UNIQUE KEY uq_promotion_offer (promotion_id, offer_code),
+            CONSTRAINT fk_promo_offer_promotion FOREIGN KEY (promotion_id) REFERENCES promotions(id) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
 
         $db->exec("CREATE TABLE IF NOT EXISTS saved_queries (
@@ -641,6 +663,83 @@ function subscription_status(array $row): array {
         return $ts >= $now ? 'active' : 'expired';
     };
     return ['data' => $check($row['data_expiry'] ?? null), 'sms' => $check($row['sms_expiry'] ?? null), 'minutes' => $check($row['minutes_expiry'] ?? null)];
+}
+
+// ===================== Promotions + Promotion Performance report =====================
+// A promotion is just a named group of offer codes (portal governance data, vas_portal, never Hera).
+// The report below joins that group against subscription — same shape as the "Buy for Other" report
+// operators were hand-writing in the SQL Console, but generated, and offer_code_for_other is read
+// live from vas_offers instead of being duplicated into the promotion.
+const PROMOTION_REPORT_MAX_RANGE_DAYS = 31;
+
+function list_promotions(string $schema): array {
+    $st = portal_pdo()->prepare('SELECT id,name FROM promotions WHERE schema_name=? ORDER BY name');
+    $st->execute([$schema]);
+    return $st->fetchAll();
+}
+function get_promotion(int $id): ?array {
+    $st = portal_pdo()->prepare('SELECT * FROM promotions WHERE id=?');
+    $st->execute([$id]);
+    $row = $st->fetch();
+    if (!$row) return null;
+    $st2 = portal_pdo()->prepare('SELECT offer_code FROM promotion_offers WHERE promotion_id=? ORDER BY offer_code');
+    $st2->execute([$id]);
+    $row['offer_codes'] = array_column($st2->fetchAll(), 'offer_code');
+    return $row;
+}
+function save_promotion(string $schema, string $name, array $offerCodes, ?int $id = null): int {
+    $name = trim($name);
+    if ($name === '') throw new RuntimeException('Promotion name is required.');
+    $offerCodes = array_values(array_unique(array_filter(array_map('trim', $offerCodes), fn($c) => $c !== '')));
+    if (!$offerCodes) throw new RuntimeException('Select at least one offer code.');
+    $db = portal_pdo();
+    $db->beginTransaction();
+    try {
+        if ($id) {
+            $db->prepare('UPDATE promotions SET name=? WHERE id=?')->execute([$name, $id]);
+            $db->prepare('DELETE FROM promotion_offers WHERE promotion_id=?')->execute([$id]);
+        } else {
+            $db->prepare('INSERT INTO promotions(name,schema_name,created_by) VALUES(?,?,?)')->execute([$name, $schema, user()['username'] ?? null]);
+            $id = (int)$db->lastInsertId();
+        }
+        $ins = $db->prepare('INSERT INTO promotion_offers(promotion_id,offer_code) VALUES(?,?)');
+        foreach ($offerCodes as $code) $ins->execute([$id, $code]);
+        $db->commit();
+    } catch (Throwable $e) { $db->rollBack(); throw $e; }
+    audit('save_promotion', $schema, 'promotions', (string)$id, $name.': '.implode(',', $offerCodes));
+    return $id;
+}
+
+function promotion_performance_report(string $schema, int $promotionId, string $channel, string $dateFrom, string $dateTo): array {
+    if (strtotime($dateFrom) === false || strtotime($dateTo) === false) throw new RuntimeException('Invalid date.');
+    if (strtotime($dateTo) < strtotime($dateFrom)) throw new RuntimeException('"Date to" must not be before "date from".');
+    if ((strtotime($dateTo) - strtotime($dateFrom)) / 86400 > PROMOTION_REPORT_MAX_RANGE_DAYS) throw new RuntimeException('Date range cannot exceed '.PROMOTION_REPORT_MAX_RANGE_DAYS.' days — subscription has no supporting index, so a wider scan would be very slow.');
+    $promo = get_promotion($promotionId) ?: throw new RuntimeException('Promotion not found.');
+    if (!table_exists($schema, 'subscription') || !table_exists($schema, 'vas_offers')) return [];
+    $codes = $promo['offer_codes'];
+    $ph = implode(',', array_fill(0, count($codes), '?'));
+    $db = pdo($schema);
+    $sql = "SELECT DATE(s.date) AS ReportDate, s.channel AS Channel, m.base_offer_code AS OfferCode, m.offer_code_used AS TransactionOfferCode, m.purchase_type AS PurchaseType, v.name AS OfferName,
+        CASE WHEN s.result_desc = 'Operation successfully.' THEN 'Successful' ELSE 'Unsuccessful' END AS ResultStatus,
+        CASE WHEN s.result_desc = 'Operation successfully.' THEN 'N/A' WHEN s.result_desc IS NULL OR TRIM(s.result_desc) = '' THEN 'Unknown failure reason' ELSE s.result_desc END AS FailureReason,
+        COUNT(*) AS TotalAttempts,
+        SUM(CASE WHEN s.result_desc = 'Operation successfully.' THEN 1 ELSE 0 END) AS SuccessfulAttempts,
+        SUM(CASE WHEN s.result_desc = 'Operation successfully.' THEN 0 ELSE 1 END) AS UnsuccessfulAttempts,
+        COUNT(DISTINCT s.subscriber_msisdn) AS TotalDistinctUsers
+        FROM subscription s
+        INNER JOIN (
+            SELECT offer_code AS offer_code_used, offer_code AS base_offer_code, 'Direct' AS purchase_type FROM vas_offers WHERE offer_code IN ($ph)
+            UNION ALL
+            SELECT offer_code_for_other, offer_code, 'Buy for Other' FROM vas_offers WHERE offer_code IN ($ph) AND offer_code_for_other IS NOT NULL AND offer_code_for_other != ''
+        ) m ON RIGHT(s.transaction_id, 5) = m.offer_code_used
+        INNER JOIN vas_offers v ON m.base_offer_code = v.offer_code
+        WHERE s.date >= ? AND s.date < ?";
+    $params = array_merge($codes, $codes, [$dateFrom.' 00:00:00', date('Y-m-d', strtotime($dateTo.' +1 day')).' 00:00:00']);
+    if ($channel !== '') { $sql .= ' AND s.channel = ?'; $params[] = $channel; }
+    $sql .= " GROUP BY ReportDate, Channel, OfferCode, TransactionOfferCode, PurchaseType, OfferName, s.result_desc ORDER BY ReportDate, OfferName, PurchaseType, ResultStatus, FailureReason";
+    $st = $db->prepare($sql);
+    $st->execute($params);
+    return $st->fetchAll();
 }
 
 // ===================== Operational dashboard + alerts =====================
