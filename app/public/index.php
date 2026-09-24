@@ -76,6 +76,14 @@ function confirmAction(msg){return confirm(msg||'Please confirm before saving th
 document.getElementById('add-filter-btn')?.addEventListener('click', addFilter);
 document.querySelectorAll('form[data-confirm]').forEach(f => f.addEventListener('submit', e => { if (!confirmAction(f.dataset.confirm)) e.preventDefault(); }));
 document.querySelectorAll('[data-autosubmit]').forEach(el => el.addEventListener('change', () => el.form.submit()));
+document.querySelectorAll('[data-filter-select]').forEach(input => {
+    const sel = document.getElementById(input.dataset.filterSelect);
+    if (!sel) return;
+    input.addEventListener('input', () => {
+        const q = input.value.toLowerCase();
+        Array.from(sel.options).forEach(opt => { opt.hidden = q !== '' && !opt.textContent.toLowerCase().includes(q); });
+    });
+});
 // Close an open nav dropdown when clicking outside it.
 document.addEventListener('click', e => { document.querySelectorAll('.topnav-group[open]').forEach(d => { if (!d.contains(e.target)) d.removeAttribute('open'); }); });
 // Mobile nav toggle.
@@ -278,7 +286,8 @@ if ($page==='promotions') {
                 <input type="hidden" name="id" value="<?=e($edit['id']??'')?>">
                 <label>Name</label><input class="form-control mb-2" name="name" value="<?=e($edit['name']??'')?>" required>
                 <label>Offer Codes</label>
-                <select class="form-select" name="offer_codes[]" multiple size="10">
+                <input class="form-control mb-1" type="text" placeholder="Search by code or name…" data-filter-select="promotion_offer_codes">
+                <select class="form-select" id="promotion_offer_codes" name="offer_codes[]" multiple size="10">
                     <?php foreach($offers as $o): $selected = $edit && in_array($o['offer_code'],$edit['offer_codes'],true); ?>
                     <option value="<?=e($o['offer_code'])?>" <?=$selected?'selected':''?>><?=e($o['offer_code'])?> — <?=e($o['name'])?></option>
                     <?php endforeach;?>
@@ -316,7 +325,9 @@ if ($page==='offer_report') {
         $result = offer_performance_report($schema, $selectedCodes, $channel, $dateFrom, $dateTo);
         if (($_GET['format']??'')==='csv') {
             audit('offer_report_export',$schema,'vas_offers',null,"offers=".implode(',',$selectedCodes)." range=$dateFrom..$dateTo channel=$channel");
-            header('Content-Type:text/csv'); header('Content-Disposition: attachment; filename="offer_performance_report.csv"');
+            $codesForFilename = $selectedCodes ? implode('_', array_map(fn($c)=>preg_replace('/[^A-Za-z0-9]/','',$c), $selectedCodes)) : 'all';
+            if (strlen($codesForFilename) > 80) $codesForFilename = substr($codesForFilename, 0, 80).'_etc';
+            header('Content-Type:text/csv'); header('Content-Disposition: attachment; filename="offer_performance_'.$codesForFilename.'_report.csv"');
             $out=fopen('php://output','w'); $first=true;
             foreach($result as $row){ if($first){fputcsv($out,array_keys($row));$first=false;} fputcsv($out,$row); }
             if($first) fputcsv($out,['(no rows returned)']);
@@ -335,7 +346,7 @@ if ($page==='offer_report') {
         <?php endif;?>
         <form method="get" class="row g-2">
             <input type="hidden" name="page" value="offer_report">
-            <div class="col-md-4"><label class="small text-muted mb-0">Offers <small>(empty = all)</small></label><select class="form-select" name="offer_codes[]" multiple size="6"><?php foreach($offers as $o):?><option value="<?=e($o['offer_code'])?>" <?=in_array($o['offer_code'],$selectedCodes,true)?'selected':''?>><?=e($o['offer_code'])?> — <?=e($o['name'])?></option><?php endforeach;?></select></div>
+            <div class="col-md-4"><label class="small text-muted mb-0">Offers <small>(empty = all)</small></label><input class="form-control form-control-sm mb-1" type="text" placeholder="Search by code or name…" data-filter-select="offer_report_codes"><select class="form-select" id="offer_report_codes" name="offer_codes[]" multiple size="6"><?php foreach($offers as $o):?><option value="<?=e($o['offer_code'])?>" <?=in_array($o['offer_code'],$selectedCodes,true)?'selected':''?>><?=e($o['offer_code'])?> — <?=e($o['name'])?></option><?php endforeach;?></select></div>
             <div class="col-md-2"><label class="small text-muted mb-0">Channel</label><input class="form-control" name="channel" list="dl_channel" value="<?=e($channel)?>" placeholder="Any"><datalist id="dl_channel"><?php foreach($channels as $c):?><option value="<?=e($c)?>"><?php endforeach;?></datalist></div>
             <div class="col-md-2"><label class="small text-muted mb-0">Date from</label><input type="date" class="form-control" name="date_from" value="<?=e($dateFrom)?>"></div>
             <div class="col-md-2"><label class="small text-muted mb-0">Date to</label><input type="date" class="form-control" name="date_to" value="<?=e($dateTo)?>"></div>
