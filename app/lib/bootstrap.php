@@ -449,6 +449,17 @@ function distinct_column_values(string $schema, string $table, string $col, int 
     $st->execute();
     return array_column($st->fetchAll(), 'v');
 }
+// distinct_column_values() with no filter does a full scan on a table subscription's size (~89M rows,
+// no supporting index for an unbounded DISTINCT) — fine for vas_offers, not fine here. Bounded to a
+// recent window so it can use the (date, channel) index instead of scanning the whole table; channel
+// is a small, stable set of values, so recent history is all a dropdown actually needs.
+function distinct_recent_channels(string $schema, int $days = 30): array {
+    if (!table_exists($schema, 'subscription')) return [];
+    $st = pdo($schema)->prepare("SELECT DISTINCT channel v FROM subscription WHERE date >= NOW() - INTERVAL ? DAY AND channel IS NOT NULL AND channel != '' ORDER BY v LIMIT 50");
+    $st->bindValue(1, $days, PDO::PARAM_INT);
+    $st->execute();
+    return array_column($st->fetchAll(), 'v');
+}
 function normalize_free_data_to_mb(string $raw): string {
     $raw = trim($raw);
     if ($raw === '') return $raw;

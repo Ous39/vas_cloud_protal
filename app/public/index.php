@@ -303,7 +303,7 @@ if ($page==='promotions') {
 if ($page==='offer_report') {
     require_perm('view_reports'); $schema=current_schema();
     $promotions=list_promotions($schema);
-    $channels=distinct_column_values($schema,'subscription','channel');
+    $channels=distinct_recent_channels($schema);
     $offers = table_exists($schema,'vas_offers') ? pdo($schema)->query("SELECT offer_code, name FROM vas_offers ORDER BY name")->fetchAll() : [];
     $promotionId=(int)($_GET['promotion_id']??0);
     $selectedCodes = $_GET['offer_codes'] ?? null;
