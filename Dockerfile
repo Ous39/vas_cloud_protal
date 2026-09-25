@@ -9,5 +9,12 @@ COPY docker/wait-for-db-and-start.php /usr/local/bin/wait-for-db-and-start.php
 RUN chown -R www-data:www-data /var/www/html /var/www/config /var/www/lib \
     && find /var/www/html /var/www/config /var/www/lib -type f -exec chmod 0644 {} \; \
     && find /var/www/html /var/www/config /var/www/lib -type d -exec chmod 0755 {} \;
+# Production PHP settings (no errors shown to users, no PHP version header) and no Apache version banner
+RUN cp "$PHP_INI_DIR/php.ini-production" "$PHP_INI_DIR/php.ini" \
+    && sed -i "s/^expose_php = On/expose_php = Off/" "$PHP_INI_DIR/php.ini" \
+    && echo "ServerTokens Prod" > /etc/apache2/conf-available/zz-hardening.conf \
+    && echo "ServerSignature Off" >> /etc/apache2/conf-available/zz-hardening.conf \
+    && echo "ServerName localhost" >> /etc/apache2/conf-available/zz-hardening.conf \
+    && a2enconf zz-hardening
 WORKDIR /var/www/html
 CMD ["php", "/usr/local/bin/wait-for-db-and-start.php"]

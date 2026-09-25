@@ -4,10 +4,10 @@ metadata:
   name: vas-cloud-app
   namespace: vas-cloud
 spec:
-  replicas: 2 # login sessions are stored in PHP's default file-based session store per-pod, so with
-              # >1 replica a user can get logged out when their next request lands on a different
-              # pod. Fine for an internal tool at low usage; see README.md "Known limitation" if
-              # this bites your team before it's worth fixing properly (shared session storage).
+  replicas: 2 # sessions are stored in the vas_portal database (portal_sessions), so any replica can serve any request.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } # never drop below 2 ready pods during a rollout
   selector:
     matchLabels:
       app: vas-cloud-app

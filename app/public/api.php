@@ -48,6 +48,9 @@ try {
     else {
         api_error(404, 'Unknown action. Available: offers, subscriber, transactions, esim');
     }
+} catch (PDOException $e) {
+    error_log('api.php: '.$e->getMessage());
+    api_error(500, 'Internal error.');
 } catch (Throwable $e) {
     api_error(400, $e->getMessage());
 }

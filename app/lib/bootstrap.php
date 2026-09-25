@@ -64,6 +64,7 @@ class DbSessionHandler implements SessionHandlerInterface {
         } catch (Throwable $e) { return false; }
     }
 }
+ini_set('session.gc_maxlifetime', '3600'); // keep in step with SESSION_IDLE_SECONDS
 session_set_save_handler(new DbSessionHandler(), true);
 if (session_status() !== PHP_SESSION_ACTIVE) session_start();
 
@@ -436,7 +437,23 @@ function ident(string $name): string { if (!preg_match('/^[A-Za-z0-9_]+$/',$name
 function full_ident(string $schema,string $table): string { return ident($schema).'.'.ident($table); }
 
 function user(): ?array { return $_SESSION['user'] ?? null; }
-function require_login(): void { if (!user()) redirect('?page=login'); }
+const SESSION_IDLE_SECONDS = 3600;
+// Re-reads the user on every request so disabling a user or changing their role takes effect immediately
+// instead of only after their session expires, and signs out sessions idle for more than an hour.
+function require_login(): void {
+    $u = user();
+    if (!$u) redirect('?page=login');
+    if (time() - (int)($_SESSION['last_seen'] ?? time()) > SESSION_IDLE_SECONDS) {
+        unset($_SESSION['user'], $_SESSION['last_seen']); flash('info', 'You were signed out after a period of inactivity.'); redirect('?page=login');
+    }
+    $_SESSION['last_seen'] = time();
+    try {
+        $st = portal_pdo()->prepare('SELECT id,full_name,username,role,status,default_schema_name FROM portal_users WHERE id=?');
+        $st->execute([(int)$u['id']]); $fresh = $st->fetch();
+    } catch (Throwable $e) { return; }
+    if (!$fresh || $fresh['status'] !== 'active') { unset($_SESSION['user'], $_SESSION['last_seen']); flash('danger', 'Your account is no longer active.'); redirect('?page=login'); }
+    $_SESSION['user'] = array_merge($u, $fresh);
+}
 
 const LOGIN_MAX_ATTEMPTS = 5;
 const LOGIN_LOCKOUT_MINUTES = 15;
@@ -461,7 +478,7 @@ function is_login_locked_out(string $username): bool {
 function login_attempt(string $username,string $password): bool {
     if ($username === '' || is_login_locked_out($username)) { record_login_attempt($username, false); return false; }
     $st=portal_pdo()->prepare('SELECT * FROM portal_users WHERE username=? AND status="active" LIMIT 1'); $st->execute([$username]); $u=$st->fetch();
-    if ($u && password_verify($password,$u['password_hash'])) { record_login_attempt($username, true); session_regenerate_id(true); $_SESSION['user']=$u; set_current_schema($u['default_schema_name'] ?? app_config('default_schema')); portal_pdo()->prepare('UPDATE portal_users SET last_login=NOW() WHERE id=?')->execute([$u['id']]); audit('login',null,null,null,'User logged in'); return true; }
+    if ($u && password_verify($password,$u['password_hash'])) { record_login_attempt($username, true); session_regenerate_id(true); $_SESSION['user']=array_diff_key($u,['password_hash'=>1]); $_SESSION['last_seen']=time(); set_current_schema($u['default_schema_name'] ?? app_config('default_schema')); portal_pdo()->prepare('UPDATE portal_users SET last_login=NOW() WHERE id=?')->execute([$u['id']]); audit('login',null,null,null,'User logged in'); return true; }
     record_login_attempt($username, false);
     return false;
 }
@@ -584,8 +601,14 @@ function export_records(string $schema,string $table,array $filters,int $limit=1
 function normalize_value($v){ return $v === '' ? null : $v; }
 function insert_record(string $schema,string $table,array $data): void { $cols=editable_columns($schema,$table,false); $names=[];$vals=[];$params=[]; foreach($cols as $c){ if(array_key_exists($c['name'],$data)){ $names[]=ident($c['name']); $vals[]='?'; $params[]=normalize_value($data[$c['name']]); }} if(!$names) throw new RuntimeException('Nothing to insert'); pdo($schema)->prepare('INSERT INTO '.ident($table).'('.implode(',',$names).') VALUES('.implode(',',$vals).')')->execute($params); audit('insert',$schema,$table,null,json_encode($data)); }
 function update_record(string $schema,string $table,array $keys,array $data): void { $set=[];$params=[]; foreach(editable_columns($schema,$table,false) as $c){ if(in_array($c['name'],primary_columns($schema,$table),true)) continue; if(array_key_exists($c['name'],$data)){ $set[]=ident($c['name']).'=?'; $params[]=normalize_value($data[$c['name']]); }} if(!$set) throw new RuntimeException('Nothing to update'); $where=build_pk_where($schema,$table,$keys,$params); pdo($schema)->prepare('UPDATE '.ident($table).' SET '.implode(',',$set).' WHERE '.$where.' LIMIT 1')->execute($params); audit('update',$schema,$table,json_encode($keys),json_encode($data)); }
-function copy_record(string $from,string $to,string $table,array $keys,array $overrides=[]): void { $row=fetch_record($from,$table,$keys); if(!$row) throw new RuntimeException('Source record not found'); foreach($overrides as $k=>$v) if(array_key_exists($k,$row)) $row[$k]=normalize_value($v); $cols=columns($to,$table); $names=[];$vals=[];$params=[]; foreach($cols as $c){ if(is_auto_col($c)) continue; if(array_key_exists($c['name'],$row)){ $names[]=ident($c['name']); $vals[]='?'; $params[]=$row[$c['name']]; }} pdo($to)->prepare('REPLACE INTO '.ident($table).'('.implode(',',$names).') VALUES('.implode(',',$vals).')')->execute($params); audit('copy_record',$to,$table,json_encode($keys),"from=$from to=$to"); }
+function copy_record(string $from,string $to,string $table,array $keys,array $overrides=[]): void { assert_copy_schemas($from,$to,false); if(!table_exists($to,$table)) throw new RuntimeException('Table does not exist in the destination schema.'); $row=fetch_record($from,$table,$keys); if(!$row) throw new RuntimeException('Source record not found'); foreach($overrides as $k=>$v) if(array_key_exists($k,$row)) $row[$k]=normalize_value($v); $cols=columns($to,$table); $names=[];$vals=[];$params=[]; foreach($cols as $c){ if(is_auto_col($c)) continue; if(array_key_exists($c['name'],$row)){ $names[]=ident($c['name']); $vals[]='?'; $params[]=$row[$c['name']]; }} pdo($to)->prepare('REPLACE INTO '.ident($table).'('.implode(',',$names).') VALUES('.implode(',',$vals).')')->execute($params); audit('copy_record',$to,$table,json_encode($keys),"from=$from to=$to"); }
+function assert_copy_schemas(string $from, string $to, bool $mustDiffer): void {
+    if (!in_array($from, allowed_schemas(), true) || !in_array($to, allowed_schemas(), true)) throw new RuntimeException('Unknown source or destination schema.');
+    if ($mustDiffer && $from === $to) throw new RuntimeException('Source and destination must be different schemas.');
+}
 function sync_table(string $from,string $to,string $table): int {
+    assert_copy_schemas($from, $to, true);
+    if (!table_exists($from, $table) || !table_exists($to, $table)) throw new RuntimeException('Table must exist in both schemas.');
     // Destructive TRUNCATE+reload is only ever allowed when the destination is HeraTesting.
     // HeraProduction can only be updated via merge_table(), which never deletes existing rows.
     if ($to === 'HeraProduction') throw new RuntimeException('Full-table sync cannot target HeraProduction (would truncate live data). Use "Merge into Production" instead.');
@@ -599,6 +622,8 @@ function sync_table(string $from,string $to,string $table): int {
 }
 
 function merge_table(string $from,string $to,string $table): int {
+    assert_copy_schemas($from, $to, true);
+    if (!table_exists($from, $table) || !table_exists($to, $table)) throw new RuntimeException('Table must exist in both schemas.');
     // Non-destructive alternative: upserts rows by primary key, never deletes/truncates.
     $pk = primary_columns($from,$table);
     if (!$pk) throw new RuntimeException('Table has no primary key; merge requires one to avoid duplicating rows.');
@@ -619,7 +644,7 @@ function save_shortcode(array $data, ?int $id=null): void { $payload=[normalize_
 function save_project(array $data, array $channelIds=[], ?int $id=null): void { $payload=[normalize_value($data['project_name']??''), normalize_value($data['short_code']??''), normalize_value($data['status']??'Planning'), normalize_value($data['start_date']??''), normalize_value($data['launch_date']??''), normalize_value($data['description']??'')]; if(!$payload[0]) throw new RuntimeException('Project Name is required.'); $db=portal_pdo(); if($id){ $payload[]=$id; $db->prepare('UPDATE portal_projects SET project_name=?, short_code=?, status=?, start_date=?, launch_date=?, description=?, updated_at=NOW() WHERE id=?')->execute($payload); } else { $db->prepare('INSERT INTO portal_projects(project_name,short_code,status,start_date,launch_date,description) VALUES(?,?,?,?,?,?)')->execute($payload); $id=(int)$db->lastInsertId(); } $db->prepare('DELETE FROM portal_project_channels WHERE project_id=?')->execute([$id]); foreach($channelIds as $cid){ $cid=(int)$cid; if($cid<=0) continue; $st=$db->prepare('SELECT short_code FROM portal_short_codes WHERE id=?'); $st->execute([$cid]); $row=$st->fetch(); if($row) $db->prepare('INSERT IGNORE INTO portal_project_channels(project_id,channel_id,short_code) VALUES(?,?,?)')->execute([$id,$cid,$row['short_code']]); } audit('save_project','vas_portal','portal_projects',(string)$id,json_encode(['data'=>$data,'channels'=>$channelIds])); }
 
 function make_confirmation(string $action,array $payload): string { $token=bin2hex(random_bytes(24)); portal_pdo()->prepare('INSERT INTO operation_confirmations(token,username,action,payload) VALUES(?,?,?,?)')->execute([$token,user()['username']??'guest',$action,json_encode($payload)]); return $token; }
-function get_confirmation(string $token): ?array { $st=portal_pdo()->prepare('SELECT * FROM operation_confirmations WHERE token=? AND status="pending" LIMIT 1'); $st->execute([$token]); return $st->fetch() ?: null; }
+function get_confirmation(string $token): ?array { $st=portal_pdo()->prepare('SELECT * FROM operation_confirmations WHERE token=? AND status="pending" AND created_at > (NOW() - INTERVAL 30 MINUTE) LIMIT 1'); $st->execute([$token]); return $st->fetch() ?: null; }
 function mark_confirmation(string $token,string $status): void { portal_pdo()->prepare('UPDATE operation_confirmations SET status=?, confirmed_at=NOW() WHERE token=?')->execute([$status,$token]); }
 
 const SQL_READONLY_KINDS = ['SELECT','SHOW','DESCRIBE','EXPLAIN'];
@@ -650,7 +675,10 @@ function safe_sql_kind(string $sql): string {
     if(preg_match('/\b(DELETE|DROP|TRUNCATE|GRANT|REVOKE|LOAD_FILE|INTO\s+OUTFILE|INTO\s+DUMPFILE)\b/i',$sql)) throw new RuntimeException('Dangerous SQL command blocked. Delete/drop/truncate are disabled in this portal.');
     return strtoupper($m[1]);
 }
-function run_sql(string $schema,string $sql): array {
+const SQL_CONSOLE_MAX_ROWS = 1000;
+const SQL_CONSOLE_CSV_MAX_ROWS = 100000;
+const SQL_CONSOLE_TIMEOUT_MS = 30000;
+function run_sql(string $schema,string $sql,int $maxRows=SQL_CONSOLE_MAX_ROWS): array {
     $kind=safe_sql_kind($sql);
     // HeraProduction is read-only from the free-form SQL console; production writes must go through the
     // audited, confirmation-gated record forms (insert_record/update_record/copy_record), which are scoped
@@ -659,7 +687,18 @@ function run_sql(string $schema,string $sql): array {
         throw new RuntimeException('HeraProduction is read-only in the SQL Console. Use the record forms (Add/Edit/Copy) for production writes.');
     }
     $db=pdo($schema);
-    if(in_array($kind,SQL_READONLY_KINDS,true)){ $st=$db->query($sql); return ['kind'=>$kind,'rows'=>$st->fetchAll(),'affected'=>null]; }
+    if(in_array($kind,SQL_READONLY_KINDS,true)){
+        // Read only what will be shown (unbuffered, so the rest is never held in memory) and cap the run time;
+        // otherwise SELECT * on audit_log/subscription would exhaust PHP memory or pin the production server.
+        try { $db->exec('SET SESSION max_execution_time='.SQL_CONSOLE_TIMEOUT_MS); } catch (Throwable $e) {}
+        $db->setAttribute(PDO::MYSQL_ATTR_USE_BUFFERED_QUERY,false);
+        try {
+            $st=$db->query($sql); $rows=[]; $truncated=false;
+            while (($r=$st->fetch())!==false) { if (count($rows)>=$maxRows) { $truncated=true; break; } $rows[]=$r; }
+            $st->closeCursor();
+        } finally { $db->setAttribute(PDO::MYSQL_ATTR_USE_BUFFERED_QUERY,true); }
+        return ['kind'=>$kind,'rows'=>$rows,'affected'=>null,'truncated'=>$truncated,'limit'=>$maxRows];
+    }
     $affected=$db->exec($sql); audit('sql_'.$kind,$schema,null,null,$sql); return ['kind'=>$kind,'rows'=>[],'affected'=>$affected];
 }
 
