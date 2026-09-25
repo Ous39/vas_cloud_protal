@@ -298,6 +298,23 @@ function ensure_portal_runtime_schema(): void {
             UNIQUE KEY uq_alert_recipient_email (email)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
 
+        // Mail server for alert email, edited on the Alerts page (single row, id=1). The password is
+        // encrypted at rest with the same key/mechanism as Integrations credentials and is never
+        // rendered back to the page. Environment variables (SMTP_*) remain a fallback when this row
+        // has no host.
+        $db->exec("CREATE TABLE IF NOT EXISTS alert_smtp (
+            id TINYINT NOT NULL PRIMARY KEY,
+            host VARCHAR(255) NOT NULL DEFAULT '',
+            port INT NOT NULL DEFAULT 587,
+            secure ENUM('tls','ssl','none') NOT NULL DEFAULT 'tls',
+            username VARCHAR(190) NOT NULL DEFAULT '',
+            password_enc TEXT NULL,
+            from_email VARCHAR(190) NOT NULL DEFAULT '',
+            tls_verify TINYINT(1) NOT NULL DEFAULT 1,
+            updated_by VARCHAR(80) NULL,
+            updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
         $db->exec("CREATE TABLE IF NOT EXISTS saved_queries (
             id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
             name VARCHAR(150) NOT NULL,
@@ -972,10 +989,11 @@ function send_slack_alert(string $schema, string $message): void {
 }
 
 // Email alerts. The container has no mail transport (PHP's mail() has nothing to hand off to), so
-// this speaks SMTP directly. All settings come from environment variables — the password never
-// touches the database or the UI: SMTP_HOST, SMTP_PORT (default 587), SMTP_SECURE (tls = STARTTLS,
-// ssl = implicit TLS, none), SMTP_USER / SMTP_PASSWORD (optional, AUTH LOGIN), SMTP_FROM,
-// ALERT_EMAIL_TO (comma-separated), SMTP_TLS_VERIFY=0 to accept an internal self-signed certificate.
+// this speaks SMTP directly. The mail server is configured on the Alerts page (password encrypted
+// at rest); SMTP_HOST / SMTP_PORT / SMTP_SECURE (tls = STARTTLS, ssl = implicit TLS, none) /
+// SMTP_USER / SMTP_PASSWORD / SMTP_FROM / SMTP_TLS_VERIFY=0 environment variables still work as a
+// fallback when nothing is saved there. Recipients live in alert_recipients (plus optional
+// ALERT_EMAIL_TO).
 function alert_recipients(): array {
     try { return portal_pdo()->query('SELECT id,email,active FROM alert_recipients ORDER BY email')->fetchAll(); }
     catch (Throwable $e) { return []; }
@@ -991,8 +1009,38 @@ function toggle_alert_recipient(int $id): void {
     $st->execute([$id]);
     audit('alert_recipient_toggle', null, 'alert_recipients', (string)$id, null);
 }
-// Mail server only (host/port/credentials from the environment) — null if no SMTP_HOST.
+function smtp_db_row(): ?array {
+    try { $r = portal_pdo()->query('SELECT * FROM alert_smtp WHERE id=1')->fetch(); return $r && trim((string)$r['host']) !== '' ? $r : null; }
+    catch (Throwable $e) { return null; }
+}
+function save_smtp_settings(array $d): void {
+    $host = trim((string)($d['host'] ?? ''));
+    if ($host === '' || !preg_match('/^[A-Za-z0-9._-]+$/', $host)) throw new RuntimeException('Enter the mail server hostname (letters, numbers, dots and dashes only).');
+    $port = (int)($d['port'] ?? 0);
+    if ($port < 1 || $port > 65535) throw new RuntimeException('Port must be between 1 and 65535.');
+    $secure = in_array($d['secure'] ?? '', ['tls', 'ssl', 'none'], true) ? $d['secure'] : 'tls';
+    $user = trim((string)($d['username'] ?? ''));
+    $from = trim((string)($d['from_email'] ?? ''));
+    if ($from !== '' && !filter_var($from, FILTER_VALIDATE_EMAIL)) throw new RuntimeException('"From" must be a valid email address.');
+    $pass = (string)($d['password'] ?? '');
+    $existing = smtp_db_row();
+    $passEnc = $pass !== '' ? encrypt_secret($pass) : ($existing['password_enc'] ?? null);
+    portal_pdo()->prepare('INSERT INTO alert_smtp(id,host,port,secure,username,password_enc,from_email,tls_verify,updated_by) VALUES(1,?,?,?,?,?,?,?,?)
+        ON DUPLICATE KEY UPDATE host=VALUES(host),port=VALUES(port),secure=VALUES(secure),username=VALUES(username),password_enc=VALUES(password_enc),from_email=VALUES(from_email),tls_verify=VALUES(tls_verify),updated_by=VALUES(updated_by)')
+        ->execute([$host, $port, $secure, $user, $passEnc, $from, empty($d['tls_verify']) ? 0 : 1, user()['username'] ?? null]);
+    audit('alert_smtp_save', null, 'alert_smtp', '1', "$host:$port $secure user=".($user !== '' ? $user : '(none)').($pass !== '' ? ' password changed' : ''));
+}
+// Mail server: the settings saved on the Alerts page win; SMTP_* environment variables are the
+// fallback. Returns null if neither has a host. 'source' says which one is in effect.
 function smtp_server_settings(): ?array {
+    if ($r = smtp_db_row()) {
+        $user = (string)$r['username'];
+        $from = trim((string)$r['from_email']) ?: $user;
+        if (!filter_var($from, FILTER_VALIDATE_EMAIL)) $from = 'vas-cloud@localhost';
+        return ['host' => $r['host'], 'port' => (int)$r['port'], 'secure' => $r['secure'], 'user' => $user,
+            'pass' => decrypt_secret($r['password_enc'] ?? ''), 'from' => $from, 'verify' => (int)$r['tls_verify'] === 1,
+            'source' => 'app', 'has_password' => !empty($r['password_enc'])];
+    }
     $host = trim((string)getenv('SMTP_HOST'));
     if ($host === '') return null;
     $user = (string)getenv('SMTP_USER');
@@ -1003,6 +1051,7 @@ function smtp_server_settings(): ?array {
         'secure' => strtolower(trim((string)(getenv('SMTP_SECURE') ?: 'tls'))),
         'user' => $user, 'pass' => (string)getenv('SMTP_PASSWORD'),
         'from' => $from, 'verify' => getenv('SMTP_TLS_VERIFY') !== '0',
+        'source' => 'environment', 'has_password' => getenv('SMTP_PASSWORD') !== false && getenv('SMTP_PASSWORD') !== '',
     ];
 }
 // Server + recipients (enabled ones from the Alerts page, plus ALERT_EMAIL_TO if set) — null unless both exist.

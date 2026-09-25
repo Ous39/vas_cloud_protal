@@ -431,9 +431,10 @@ if ($page==='subscriptions_export') {
 
 if ($page==='alerts') {
     require_perm('view_reports'); $schema=current_schema();
-    if ($_SERVER['REQUEST_METHOD']==='POST' && in_array($_POST['do']??'',['add_recipient','toggle_recipient'],true)) {
+    if ($_SERVER['REQUEST_METHOD']==='POST' && in_array($_POST['do']??'',['add_recipient','toggle_recipient','save_smtp'],true)) {
         require_perm('manage_api_keys');
-        if ($_POST['do']==='add_recipient') { save_alert_recipient((string)($_POST['email']??'')); flash('success','Recipient saved.'); }
+        if ($_POST['do']==='save_smtp') { save_smtp_settings($_POST); flash('success','Mail server saved. Use "Send test email" to check it.'); }
+        elseif ($_POST['do']==='add_recipient') { save_alert_recipient((string)($_POST['email']??'')); flash('success','Recipient saved.'); }
         else { toggle_alert_recipient((int)($_POST['id']??0)); flash('success','Recipient updated.'); }
         redirect('?page=alerts');
     }
@@ -496,10 +497,21 @@ if ($page==='alerts') {
         <p class="text-muted mb-2">1a. <b>Slack:</b> add a Slack Incoming Webhook as an Integration (Service type: <b>Monitoring</b>, Base URL: your webhook URL, Status: Active) — Integrations page. Alerts fire there whenever this page or the Dashboard is viewed while an alert is active.</p>
         <?php $smtpServer = smtp_server_settings(); $smtp = smtp_settings(); $recipients = alert_recipients(); $envTo = array_filter(array_map('trim', explode(',', (string)getenv('ALERT_EMAIL_TO')))); ?>
         <p class="text-muted mb-2">1b. <b>Email:</b>
-            <?php if(!$smtpServer):?><span class="badge bg-secondary">mail server not configured</span> the mail server is set by whoever deploys the app, via environment variables (<code>SMTP_HOST</code>, <code>SMTP_PORT</code>, <code>SMTP_SECURE</code> = tls / ssl / none, <code>SMTP_USER</code>, <code>SMTP_PASSWORD</code>, <code>SMTP_FROM</code>) — the password is deliberately not entered here. Once that's set, add the recipients below.
+            <?php if(!$smtpServer):?><span class="badge bg-secondary">mail server not configured</span> fill in the mail server below, then add recipients.
             <?php elseif(!$smtp):?><span class="badge bg-warning text-dark">no recipients</span> mail server <?=e($smtpServer['host'].':'.$smtpServer['port'])?> (<?=e($smtpServer['secure'])?>) is configured — add at least one recipient below.
-            <?php else:?><span class="badge bg-success">configured</span> sends via <?=e($smtp['host'].':'.$smtp['port'])?> (<?=e($smtp['secure'])?>) to <?=count($smtp['to'])?> recipient(s).
+            <?php else:?><span class="badge bg-success">configured</span> sends via <?=e($smtp['host'].':'.$smtp['port'])?> (<?=e($smtp['secure'])?>, settings from <?=e($smtp['source'])?>) to <?=count($smtp['to'])?> recipient(s).
             <form method="post" class="d-inline"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="test_email"><button class="btn btn-sm btn-outline-primary ms-2">Send test email</button></form><?php endif;?></p>
+        <details class="mb-3" <?=$smtpServer?'':'open'?>><summary class="fw-semibold">Mail server settings</summary>
+        <form method="post" class="row g-2 mt-1"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="save_smtp">
+            <div class="col-md-5"><label class="small text-muted mb-0">SMTP host</label><input class="form-control" name="host" value="<?=e($smtpServer['host']??'')?>" placeholder="mail.company.com" required></div>
+            <div class="col-md-2"><label class="small text-muted mb-0">Port</label><input class="form-control" type="number" name="port" value="<?=e($smtpServer['port']??587)?>" required></div>
+            <div class="col-md-3"><label class="small text-muted mb-0">Security</label><select class="form-select" name="secure"><?php foreach(['tls'=>'STARTTLS (587)','ssl'=>'SSL/TLS (465)','none'=>'None (25)'] as $v=>$lbl):?><option value="<?=$v?>" <?=($smtpServer['secure']??'tls')===$v?'selected':''?>><?=$lbl?></option><?php endforeach;?></select></div>
+            <div class="col-md-2 d-flex align-items-end"><div class="form-check"><input class="form-check-input" type="checkbox" name="tls_verify" value="1" id="tlsv" <?=($smtpServer['verify']??true)?'checked':''?>><label class="form-check-label small" for="tlsv">Verify certificate</label></div></div>
+            <div class="col-md-4"><label class="small text-muted mb-0">Username <small>(blank if none)</small></label><input class="form-control" name="username" value="<?=e($smtpServer['user']??'')?>" autocomplete="off"></div>
+            <div class="col-md-4"><label class="small text-muted mb-0">Password</label><input class="form-control" type="password" name="password" autocomplete="new-password" placeholder="<?=!empty($smtpServer['has_password'])?'saved — leave blank to keep':'password'?>"></div>
+            <div class="col-md-4"><label class="small text-muted mb-0">From address</label><input class="form-control" type="email" name="from_email" value="<?=e(($smtpServer['from']??'')==='vas-cloud@localhost'?'':($smtpServer['from']??''))?>" placeholder="alerts@company.com"></div>
+            <div class="col-12"><button class="btn btn-primary">Save mail server</button> <small class="text-muted">The password is stored encrypted and is never shown again.<?php if(($smtpServer['source']??'')==='environment'):?> Currently using the environment's settings; saving here overrides them.<?php endif;?></small></div>
+        </form></details>
         <form method="post" class="row g-2 mb-2"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="add_recipient">
             <div class="col-md-6"><input class="form-control" type="email" name="email" placeholder="name@company.com" required></div>
             <div class="col-md-3"><button class="btn btn-primary">Add recipient</button></div>
