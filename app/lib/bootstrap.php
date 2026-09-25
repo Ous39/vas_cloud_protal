@@ -959,6 +959,77 @@ function send_slack_alert(string $schema, string $message): void {
     }
 }
 
+// Email alerts. The container has no mail transport (PHP's mail() has nothing to hand off to), so
+// this speaks SMTP directly. All settings come from environment variables — the password never
+// touches the database or the UI: SMTP_HOST, SMTP_PORT (default 587), SMTP_SECURE (tls = STARTTLS,
+// ssl = implicit TLS, none), SMTP_USER / SMTP_PASSWORD (optional, AUTH LOGIN), SMTP_FROM,
+// ALERT_EMAIL_TO (comma-separated), SMTP_TLS_VERIFY=0 to accept an internal self-signed certificate.
+function smtp_settings(): ?array {
+    $host = trim((string)getenv('SMTP_HOST'));
+    $to = array_values(array_filter(array_map('trim', explode(',', (string)getenv('ALERT_EMAIL_TO'))), fn($a) => filter_var($a, FILTER_VALIDATE_EMAIL)));
+    if ($host === '' || !$to) return null;
+    $user = (string)getenv('SMTP_USER');
+    $from = trim((string)getenv('SMTP_FROM')) ?: $user;
+    if (!filter_var($from, FILTER_VALIDATE_EMAIL)) $from = 'vas-cloud@localhost';
+    return [
+        'host' => $host, 'port' => (int)(getenv('SMTP_PORT') ?: 587),
+        'secure' => strtolower(trim((string)(getenv('SMTP_SECURE') ?: 'tls'))),
+        'user' => $user, 'pass' => (string)getenv('SMTP_PASSWORD'),
+        'from' => $from, 'to' => $to, 'verify' => getenv('SMTP_TLS_VERIFY') !== '0',
+    ];
+}
+// Returns null on success, or a short error string (server response text only — never credentials).
+function smtp_send(array $c, string $subject, string $body): ?string {
+    $ctx = stream_context_create(['ssl' => ['verify_peer' => $c['verify'], 'verify_peer_name' => $c['verify'], 'allow_self_signed' => !$c['verify']]]);
+    $fp = @stream_socket_client(($c['secure'] === 'ssl' ? 'ssl://' : 'tcp://').$c['host'].':'.$c['port'], $errno, $errstr, 8, STREAM_CLIENT_CONNECT, $ctx);
+    if (!$fp) return "could not connect to {$c['host']}:{$c['port']} ($errstr)";
+    stream_set_timeout($fp, 8);
+    $read = function () use ($fp): string {
+        $resp = '';
+        while (($line = fgets($fp, 1024)) !== false) { $resp .= $line; if (strlen($line) < 4 || $line[3] !== '-') break; }
+        return $resp;
+    };
+    $cmd = function (string $line, array $ok) use ($fp, $read): string {
+        if ($line !== '') fwrite($fp, $line."\r\n");
+        $r = $read();
+        if (!in_array((int)substr($r, 0, 3), $ok, true)) throw new RuntimeException($r === '' ? 'no response from mail server (timed out)' : trim(preg_replace('/\s+/', ' ', $r)));
+        return $r;
+    };
+    try {
+        $helo = preg_replace('/[^A-Za-z0-9.-]/', '', (string)gethostname()) ?: 'vas-cloud';
+        $cmd('', [220]);
+        $cmd("EHLO $helo", [250]);
+        if ($c['secure'] === 'tls') {
+            $cmd('STARTTLS', [220]);
+            if (!@stream_socket_enable_crypto($fp, true, STREAM_CRYPTO_METHOD_TLS_CLIENT)) throw new RuntimeException('TLS handshake failed (if the server uses an internal certificate, set SMTP_TLS_VERIFY=0)');
+            $cmd("EHLO $helo", [250]);
+        }
+        if ($c['user'] !== '') {
+            $cmd('AUTH LOGIN', [334]);
+            $cmd(base64_encode($c['user']), [334]);
+            $cmd(base64_encode($c['pass']), [235]);
+        }
+        $cmd('MAIL FROM:<'.$c['from'].'>', [250]);
+        foreach ($c['to'] as $rcpt) $cmd('RCPT TO:<'.$rcpt.'>', [250, 251]);
+        $cmd('DATA', [354]);
+        $headers = [
+            'Date: '.date('r'), 'From: '.$c['from'], 'To: '.implode(', ', $c['to']),
+            'Subject: =?UTF-8?B?'.base64_encode(str_replace(["\r", "\n"], ' ', $subject)).'?=',
+            'Message-ID: <'.bin2hex(random_bytes(8)).'@'.$helo.'>', 'MIME-Version: 1.0',
+            'Content-Type: text/plain; charset=UTF-8', 'Content-Transfer-Encoding: base64',
+        ];
+        fwrite($fp, implode("\r\n", $headers)."\r\n\r\n".chunk_split(base64_encode($body))."\r\n.\r\n");
+        $cmd('', [250]);
+        @fwrite($fp, "QUIT\r\n");
+        return null;
+    } catch (Throwable $e) { return $e->getMessage(); }
+    finally { @fclose($fp); }
+}
+function send_email_alert(string $subject, string $body): ?string {
+    $c = smtp_settings();
+    return $c ? smtp_send($c, $subject, $body) : 'email is not configured (SMTP_HOST / ALERT_EMAIL_TO)';
+}
+
 // Called both opportunistically (whenever a logged-in user views the Dashboard/Alerts page) and via
 // the unauthenticated ?page=alert_cron endpoint (a Kubernetes CronJob hits that on a schedule so
 // alerts go out even if nobody has the app open) — see deploy/k8s/05-alert-cronjob.yaml.
@@ -973,6 +1044,7 @@ function dispatch_pending_alert_notifications(string $schema): void {
         $row = $st->fetch();
         if ($row && strtotime($row['last_sent_at']) > time() - ALERT_RENOTIFY_MINUTES * 60) continue;
         send_slack_alert($schema, '['.$schema.'] '.$a['message']);
+        if (smtp_settings()) { try { send_email_alert('[VAS Cloud] '.$schema.' alert', '['.$schema.'] '.$a['message']); } catch (Throwable $e) {} }
         audit('alert_fired', $schema, null, $a['key'], $a['message']);
         $db->prepare('INSERT INTO alert_notification_log(alert_key,last_sent_at) VALUES(?,NOW()) ON DUPLICATE KEY UPDATE last_sent_at=NOW()')->execute([$a['key']]);
     }

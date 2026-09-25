@@ -42,6 +42,15 @@ services:
       # the Hera schemas do. Leave unset to keep using the local Docker MySQL for everything, as today.
       HERA_DB_HOST: ${HERA_DB_HOST:-}
       HERA_DB_PORT: ${HERA_DB_PORT:-}
+      # Alert email (optional) — see the Push Alerting Setup card on the Alerts page.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-tls}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-}
+      SMTP_TLS_VERIFY: ${SMTP_TLS_VERIFY:-1}
       HERA_DB_USER: ${HERA_DB_USER:-}
       HERA_DB_PASSWORD: ${HERA_DB_PASSWORD:-}
     ports:
