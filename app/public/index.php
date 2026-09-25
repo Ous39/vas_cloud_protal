@@ -482,7 +482,8 @@ if ($page==='alerts') {
         <h3>Push Alerting Setup <small class="text-muted">(admin only)</small></h3>
         <p class="text-muted mb-2">1. Add a Slack Incoming Webhook as an Integration (Service type: <b>Monitoring</b>, Base URL: your webhook URL, Status: Active) — Integrations page. Alerts fire there whenever this page or the Dashboard is viewed while an alert is active.</p>
         <p class="text-muted mb-0">2. For alerts even when nobody has the app open, point a scheduler (e.g. a Kubernetes CronJob — see deploy/k8s/05-alert-cronjob.yaml) at this URL every few minutes:</p>
-        <pre class="mb-0 mt-2"><?=e($_SERVER['REQUEST_SCHEME'] ?? 'https').'://'.e($_SERVER['HTTP_HOST'] ?? '').e(strtok($_SERVER['REQUEST_URI'] ?? '','?')).'?page=alert_cron&token='.e(alert_cron_token())?></pre>
+        <p class="text-muted small mb-1">In-cluster URL (what the CronJob calls — no public hostname or /portal prefix involved):</p>
+        <pre class="mb-0"><?='http://vas-cloud-app.vas-cloud.svc.cluster.local/?page=alert_cron&token='.e(alert_cron_token())?></pre>
     </div>
     <?php endif;?>
     <?php layout_end(); exit;
