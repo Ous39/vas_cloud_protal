@@ -431,14 +431,36 @@ function ensure_portal_runtime_schema(): void {
             $type = $st->fetchColumn();
             if ($type === 'enum') $db->exec("ALTER TABLE `$t` MODIFY `$col` VARCHAR(64) NOT NULL DEFAULT 'HeraTesting'");
         }
+        if (!$columnExists('portal_users', 'allowed_schemas')) {
+            $db->exec("ALTER TABLE portal_users ADD COLUMN allowed_schemas VARCHAR(255) NULL AFTER default_schema_name");
+        }
+        // Older installs were created with ENUM('admin','operator','viewer'); the Manager role (and its permissions) needs the wider list.
+        $st = $db->prepare("SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME='portal_users' AND COLUMN_NAME='role'");
+        $st->execute([$schema]);
+        if (($t = $st->fetchColumn()) && stripos((string)$t, "'manager'") === false) {
+            $db->exec("ALTER TABLE portal_users MODIFY role ENUM('admin','manager','operator','viewer') NOT NULL DEFAULT 'viewer'");
+        }
         $db->exec("UPDATE portal_users SET default_schema_name='HeraTesting' WHERE default_schema_name IS NULL OR default_schema_name='' ");
     } catch (Throwable $e) {
         // Do not block the whole portal if migration fails; the visible page will show the real DB error.
     }
 }
 function allowed_schemas(): array { return app_config('allowed_schemas'); }
-function current_schema(): string { $s=$_SESSION['schema'] ?? app_config('default_schema'); return in_array($s, allowed_schemas(), true) ? $s : app_config('default_schema'); }
-function set_current_schema(string $s): void { if (in_array($s, allowed_schemas(), true)) $_SESSION['schema']=$s; }
+// Databases this user may open. Admins always get every allowed database; anyone else gets the ones an admin
+// ticked on the Users page (portal_users.allowed_schemas, comma-separated). NULL = all, so existing users are unchanged.
+function user_schemas(): array {
+    $all = allowed_schemas(); $u = user();
+    if (!$u || ($u['role'] ?? '') === 'admin' || ($u['allowed_schemas'] ?? null) === null || trim((string)$u['allowed_schemas']) === '') return $all;
+    $mine = array_values(array_intersect($all, array_map('trim', explode(',', (string)$u['allowed_schemas']))));
+    return $mine ?: [$all[0]];
+}
+function current_schema(): string {
+    $mine = user_schemas(); $s = $_SESSION['schema'] ?? app_config('default_schema');
+    if (in_array($s, $mine, true)) return $s;
+    $d = app_config('default_schema');
+    return in_array($d, $mine, true) ? $d : $mine[0];
+}
+function set_current_schema(string $s): void { if (in_array($s, user_schemas(), true)) $_SESSION['schema']=$s; }
 function opposite_schema(string $s): string { return is_protected_schema($s) ? 'HeraTesting' : 'HeraProduction'; }
 // Live databases: no free-form SQL writes, never the target of a truncating sync. Anything else
 // (HeraTesting, HeraStaging) is a scratch/pre-prod copy.
@@ -463,7 +485,7 @@ function require_login(): void {
     }
     $_SESSION['last_seen'] = time();
     try {
-        $st = portal_pdo()->prepare('SELECT id,full_name,username,role,status,default_schema_name FROM portal_users WHERE id=?');
+        $st = portal_pdo()->prepare('SELECT id,full_name,username,role,status,default_schema_name,allowed_schemas FROM portal_users WHERE id=?');
         $st->execute([(int)$u['id']]); $fresh = $st->fetch();
     } catch (Throwable $e) { return; }
     if (!$fresh || $fresh['status'] !== 'active') { unset($_SESSION['user'], $_SESSION['last_seen']); flash('danger', 'Your account is no longer active.'); redirect('?page=login'); }
@@ -618,7 +640,7 @@ function insert_record(string $schema,string $table,array $data): void { $cols=e
 function update_record(string $schema,string $table,array $keys,array $data): void { $set=[];$params=[]; foreach(editable_columns($schema,$table,false) as $c){ if(in_array($c['name'],primary_columns($schema,$table),true)) continue; if(array_key_exists($c['name'],$data)){ $set[]=ident($c['name']).'=?'; $params[]=normalize_value($data[$c['name']]); }} if(!$set) throw new RuntimeException('Nothing to update'); $where=build_pk_where($schema,$table,$keys,$params); pdo($schema)->prepare('UPDATE '.ident($table).' SET '.implode(',',$set).' WHERE '.$where.' LIMIT 1')->execute($params); audit('update',$schema,$table,json_encode($keys),json_encode($data)); }
 function copy_record(string $from,string $to,string $table,array $keys,array $overrides=[]): void { assert_copy_schemas($from,$to,false); if(!table_exists($to,$table)) throw new RuntimeException('Table does not exist in the destination schema.'); $row=fetch_record($from,$table,$keys); if(!$row) throw new RuntimeException('Source record not found'); foreach($overrides as $k=>$v) if(array_key_exists($k,$row)) $row[$k]=normalize_value($v); $cols=columns($to,$table); $names=[];$vals=[];$params=[]; foreach($cols as $c){ if(is_auto_col($c)) continue; if(array_key_exists($c['name'],$row)){ $names[]=ident($c['name']); $vals[]='?'; $params[]=$row[$c['name']]; }} pdo($to)->prepare('REPLACE INTO '.ident($table).'('.implode(',',$names).') VALUES('.implode(',',$vals).')')->execute($params); audit('copy_record',$to,$table,json_encode($keys),"from=$from to=$to"); }
 function assert_copy_schemas(string $from, string $to, bool $mustDiffer): void {
-    if (!in_array($from, allowed_schemas(), true) || !in_array($to, allowed_schemas(), true)) throw new RuntimeException('Unknown source or destination schema.');
+    if (!in_array($from, user_schemas(), true) || !in_array($to, user_schemas(), true)) throw new RuntimeException('Unknown source or destination schema, or you do not have access to it.');
     if ($mustDiffer && $from === $to) throw new RuntimeException('Source and destination must be different schemas.');
 }
 function sync_table(string $from,string $to,string $table): int {
@@ -727,6 +749,12 @@ const AUDIT_LOG_TABLE = 'audit_log';
 // 'SUCCESS' and 'active'. Accept both so neither environment reads as "everything failed".
 const AUDIT_SUCCESS_SQL = "COALESCE(UPPER(CAST(result_status AS CHAR)) IN ('0','SUCCESS'), 0)";
 const OFFER_ACTIVE_SQL = "status IN ('1','active')";
+// A cell that starts with = + - @ (or a tab/CR) is run as a formula when the CSV is opened in Excel/Sheets, and these
+// exports contain text supplied by subscribers and vendors. Prefix such text with ' so it stays plain text.
+function csv_safe_row(array $row): array {
+    foreach ($row as $k => $v) if (is_string($v) && $v !== '' && preg_match('/^[=+\-@\t\r]/', $v) && !is_numeric($v)) $row[$k] = "'".$v;
+    return $row;
+}
 function is_success_status($v): bool { return in_array(strtoupper(trim((string)$v)), ['0','SUCCESS'], true); }
 function offer_is_active($v): bool { return in_array(strtolower(trim((string)$v)), ['1','active'], true); }
 const AUDIT_LOG_MAX_RANGE_DAYS = 31;

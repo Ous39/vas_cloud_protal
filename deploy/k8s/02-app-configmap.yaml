@@ -19,3 +19,5 @@ data:
   # HeraProduction/HeraTesting on the in-cluster MySQL above, same as an unconfigured local install.
   HERA_DB_HOST: "192.168.164.138"
   HERA_DB_PORT: "31241"
+  # Databases the portal can open (default shown). Admin > Users controls which ones each person sees.
+  # ALLOWED_SCHEMAS: "HeraTesting,HeraStaging,HeraProduction,Hera"
