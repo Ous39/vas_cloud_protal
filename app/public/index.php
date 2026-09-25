@@ -52,7 +52,7 @@ function layout_start(string $title): void {
             if (!$children) continue;
             $groupActive = in_array($current, array_column($children,0), true);
     ?>
-        <details class="topnav-group"<?=$groupActive?' open':''?>><summary><i class="fa-solid <?=$icon?>"></i><?=e($label)?> <i class="fa-solid fa-chevron-down" style="font-size:.7rem;"></i></summary>
+        <details class="topnav-group<?=$groupActive?' has-active':''?>"><summary><i class="fa-solid <?=$icon?>"></i><?=e($label)?> <i class="fa-solid fa-chevron-down" style="font-size:.7rem;"></i></summary>
             <div class="topnav-menu"><?php foreach($children as $c):?><a class="<?=$current===$c[0]?'active':''?>" href="?page=<?=$c[0]?>"><i class="fa-solid <?=$c[1]?>"></i><?=e($c[2])?></a><?php endforeach;?></div>
         </details>
     <?php } else {
@@ -195,7 +195,7 @@ if ($page==='offers') {
     layout_start('Offer Management');
     ?>
     <div class="row g-3">
-        <div class="col-lg-4">
+        <div class="col-12 col-xl-7 order-<?=$edit?0:2?>">
             <div class="cardx">
                 <h3><?= $edit?'Edit Offer':'Add Offer' ?></h3>
                 <p class="text-muted">Saving requires confirmation. Toggling status also requires confirmation.</p>
@@ -229,7 +229,7 @@ if ($page==='offers') {
                 </form>
             </div>
         </div>
-        <div class="col-lg-8">
+        <div class="col-12 order-1">
             <div class="cardx">
                 <div class="d-flex justify-content-between align-items-center"><h3>Offer Catalog</h3><span class="badge bg-primary"><?=number_format($data['total'])?> offers</span></div>
                 <form method="get" class="row g-2 mt-1">
@@ -242,7 +242,7 @@ if ($page==='offers') {
                     <div class="col-md-2"><label class="form-label small text-muted mb-0">Per page</label><select class="form-select" name="per_page" data-autosubmit><?php foreach(PAGE_SIZE_OPTIONS as $ps):?><option value="<?=$ps?>" <?=$perPage===$ps?'selected':''?>><?=$ps?></option><?php endforeach;?></select></div>
                     <div class="col-12"><button class="btn btn-outline-primary">Search</button> <a class="btn btn-outline-secondary" href="?page=offers">Reset</a></div>
                 </form>
-                <div class="table-scroll mt-3"><table class="table table-hover"><thead><tr><th>Name</th><th>Offer Code</th><th>Vendor</th><th>Category</th><th>Price</th><th>Validity</th><th>Status</th><th></th></tr></thead><tbody>
+                <div class="table-scroll mt-3"><table class="table table-hover table-sm"><thead><tr><th>Name</th><th>Offer Code</th><th>Vendor</th><th>Category</th><th>Price</th><th>Validity</th><th>Status</th><th></th></tr></thead><tbody>
                 <?php foreach($data['rows'] as $r):?><tr>
                     <td><strong><?=e($r['name'])?></strong><div class="text-muted small"><?=e(mb_strimwidth((string)$r['description'],0,60,'...'))?></div></td>
                     <td><?=e($r['offer_code'])?></td>
@@ -251,10 +251,10 @@ if ($page==='offers') {
                     <td><?=e($r['one_time_price'])?></td>
                     <td><?=e($r['validity_amount'])?> day(s)</td>
                     <td><span class="badge <?=offer_is_active($r['status'])?'bg-success':'bg-secondary'?>"><?=offer_is_active($r['status'])?'Active':'Inactive'?></span></td>
-                    <td class="sticky-actions d-flex gap-1">
-                        <a class="btn btn-sm btn-warning" href="?page=offers&id=<?=e($r['id'])?>">Edit</a>
-                        <?php if(can('edit_records')):?><form method="post" class="d-inline"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="action" value="toggle"><input type="hidden" name="id" value="<?=e($r['id'])?>"><button class="btn btn-sm btn-outline-dark">Toggle</button></form><?php endif;?>
-                    </td>
+                    <td><div class="d-flex gap-1">
+                        <a class="btn btn-sm btn-warning" href="?page=offers&id=<?=e($r['id'])?>" title="Edit offer" aria-label="Edit offer"><i class="fa-solid fa-pen"></i></a>
+                        <?php if(can('edit_records')):?><form method="post" class="d-inline"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="action" value="toggle"><input type="hidden" name="id" value="<?=e($r['id'])?>"><button class="btn btn-sm btn-outline-dark" title="Activate / deactivate" aria-label="Activate or deactivate"><i class="fa-solid fa-power-off"></i></button></form><?php endif;?>
+                    </div></td>
                 </tr><?php endforeach;?>
                 </tbody></table></div>
                 <?php $pages=max(1,(int)ceil($data['total']/$perPage));?>
@@ -949,7 +949,7 @@ if ($page==='integrations') {
         <p class="text-muted mb-0">One registry for every external system this platform talks to — SMSC, USSD gateway, IVR platform, monitoring endpoints, or anything you add later. "Test" performs a real live check right now: an HTTP request to the configured URL, or a raw TCP connect for socket-based systems (e.g. SMPP) — it does not simulate a result.</p>
     </div>
     <div class="row g-3 mt-1">
-        <div class="col-lg-5"><div class="cardx"><h3><?= $edit?'Edit Integration':'Add Integration' ?></h3>
+        <div class="col-12 col-xl-7 order-<?=$edit?0:2?>"><div class="cardx"><h3><?= $edit?'Edit Integration':'Add Integration' ?></h3>
             <form method="post"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="id" value="<?=e($edit['id']??'')?>">
                 <div class="row g-2">
                     <div class="col-6"><label>Service Type</label><select class="form-select mb-2" name="data[service_type]"><?php foreach(INTEGRATION_TYPES as $v):?><option value="<?=e($v)?>" <?=($edit['service_type']??'other')===$v?'selected':''?>><?=e(ucfirst($v))?></option><?php endforeach;?></select></div>
@@ -969,7 +969,7 @@ if ($page==='integrations') {
                 <?php if($edit):?><a class="btn btn-outline-secondary w-100 mt-2" href="?page=integrations">Cancel Edit</a><?php endif;?>
             </form>
         </div></div>
-        <div class="col-lg-7"><div class="cardx">
+        <div class="col-12 order-1"><div class="cardx">
             <div class="d-flex justify-content-between align-items-center"><h3>Connections</h3><div class="btn-group btn-group-sm"><a class="btn btn-outline-primary <?=!$typeFilter?'active':''?>" href="?page=integrations">All</a><?php foreach(INTEGRATION_TYPES as $t):?><a class="btn btn-outline-primary <?=$typeFilter===$t?'active':''?>" href="?page=integrations&type=<?=e($t)?>"><?=e(ucfirst($t))?></a><?php endforeach;?></div></div>
             <?php if(!$connections):?><p class="text-muted mb-0 mt-2">No integrations registered<?=$typeFilter?" for $typeFilter":''?> yet.</p><?php else:?>
             <div class="table-scroll mt-2"><table class="table table-hover table-sm"><thead><tr><th>Type</th><th>Name</th><th>Target</th><th>Status</th><th>Last Check</th><th>Last 10 / 24h Uptime</th><th></th></tr></thead><tbody>
@@ -990,10 +990,10 @@ if ($page==='integrations') {
                 <td><span class="badge <?=$c['status']==='active'?'bg-success':($c['status']==='testing'?'bg-warning text-dark':'bg-secondary')?>"><?=e($c['status'])?></span></td>
                 <td><?=$lastCheck?></td>
                 <td><span title="Oldest to newest, left to right" style="letter-spacing:2px;color:#22aa55;"><?=e($sparkline)?></span><br><small class="text-muted"><?=$uptime!==null?$uptime.'% up (24h)':'no data yet'?></small></td>
-                <td class="d-flex gap-1">
+                <td><div class="d-flex gap-1">
                     <a class="btn btn-sm btn-warning" href="?page=integrations&id=<?=e($c['id'])?>">Edit</a>
                     <form method="post"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="action" value="test"><input type="hidden" name="id" value="<?=e($c['id'])?>"><button class="btn btn-sm btn-outline-dark">Test</button></form>
-                </td>
+                </div></td>
             </tr><?php endforeach;?>
             </tbody></table></div><?php endif;?>
         </div></div>
