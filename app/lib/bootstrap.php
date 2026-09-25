@@ -293,9 +293,26 @@ function ensure_portal_runtime_schema(): void {
             id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
             email VARCHAR(190) NOT NULL,
             active TINYINT(1) NOT NULL DEFAULT 1,
+            notify_failure TINYINT(1) NOT NULL DEFAULT 1,
+            notify_vendor TINYINT(1) NOT NULL DEFAULT 1,
             created_by VARCHAR(80) NULL,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE KEY uq_alert_recipient_email (email)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+        // Databases created before per-recipient preferences existed.
+        if (!$columnExists('alert_recipients', 'notify_failure')) {
+            $db->exec("ALTER TABLE alert_recipients ADD COLUMN notify_failure TINYINT(1) NOT NULL DEFAULT 1, ADD COLUMN notify_vendor TINYINT(1) NOT NULL DEFAULT 1");
+        }
+
+        // What the alerts fire on (edited on the Alert Settings page): on/off and limits per alert
+        // type, plus failure reasons that shouldn't count toward the failure-rate alert (e.g. a
+        // customer having no credit is not an outage).
+        $db->exec("CREATE TABLE IF NOT EXISTS alert_config (
+            name VARCHAR(60) NOT NULL PRIMARY KEY,
+            value VARCHAR(60) NOT NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+        $db->exec("CREATE TABLE IF NOT EXISTS alert_ignored_reasons (
+            reason VARCHAR(500) NOT NULL PRIMARY KEY
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
 
         // Mail server for alert email, edited on the Alerts page (single row, id=1). The password is
@@ -925,32 +942,81 @@ function recent_alert_history(string $schema, int $limit = 15): array {
     return $st->fetchAll();
 }
 
-const ALERT_FAILURE_RATE_THRESHOLD = 0.20;
-const ALERT_FAILURE_MIN_SAMPLE = 20;
-const ALERT_VENDOR_SILENCE_MIN_BASELINE = 5;
+const ALERT_CONFIG_DEFAULTS = ['failure_rate_enabled' => 1, 'failure_rate_pct' => 20, 'failure_min_sample' => 20, 'vendor_silent_enabled' => 1, 'vendor_silent_min_baseline' => 5];
+function alert_config(): array {
+    $cfg = ALERT_CONFIG_DEFAULTS;
+    try { foreach (portal_pdo()->query('SELECT name,value FROM alert_config')->fetchAll() as $r) if (isset($cfg[$r['name']])) $cfg[$r['name']] = (int)$r['value']; }
+    catch (Throwable $e) {}
+    return $cfg;
+}
+function save_alert_config(array $d): void {
+    $int = function (string $k, int $min, int $max, string $label) use ($d): int {
+        $v = filter_var($d[$k] ?? null, FILTER_VALIDATE_INT);
+        if ($v === false || $v < $min || $v > $max) throw new RuntimeException("$label must be a whole number between $min and $max.");
+        return $v;
+    };
+    $vals = [
+        'failure_rate_enabled' => empty($d['failure_rate_enabled']) ? 0 : 1,
+        'failure_rate_pct' => $int('failure_rate_pct', 1, 100, 'Failure rate %'),
+        'failure_min_sample' => $int('failure_min_sample', 1, 1000000, 'Minimum transactions'),
+        'vendor_silent_enabled' => empty($d['vendor_silent_enabled']) ? 0 : 1,
+        'vendor_silent_min_baseline' => $int('vendor_silent_min_baseline', 1, 1000000, 'Vendor baseline'),
+    ];
+    $st = portal_pdo()->prepare('INSERT INTO alert_config(name,value) VALUES(?,?) ON DUPLICATE KEY UPDATE value=VALUES(value)');
+    foreach ($vals as $k => $v) $st->execute([$k, (string)$v]);
+    audit('alert_config_save', null, 'alert_config', null, json_encode($vals));
+}
+function alert_ignored_reasons(): array {
+    try { return array_column(portal_pdo()->query('SELECT reason FROM alert_ignored_reasons ORDER BY reason')->fetchAll(), 'reason'); }
+    catch (Throwable $e) { return []; }
+}
+function save_alert_ignored_reasons(array $reasons): void {
+    $reasons = array_values(array_unique(array_filter(array_map(fn($r) => trim((string)$r), $reasons), fn($r) => $r !== '' && mb_strlen($r) <= 500)));
+    $db = portal_pdo();
+    $db->beginTransaction();
+    try {
+        $db->exec('DELETE FROM alert_ignored_reasons');
+        $ins = $db->prepare('INSERT INTO alert_ignored_reasons(reason) VALUES(?)');
+        foreach ($reasons as $r) $ins->execute([$r]);
+        $db->commit();
+    } catch (Throwable $e) { $db->rollBack(); throw $e; }
+    audit('alert_ignored_save', null, 'alert_ignored_reasons', null, count($reasons).' reason(s) ignored');
+}
 
 function compute_alerts(string $schema): array {
     $alerts = [];
     if (!table_exists($schema, AUDIT_LOG_TABLE)) return $alerts;
     $db = pdo($schema);
+    $cfg = alert_config();
 
-    $st = $db->query("SELECT COUNT(*) total, SUM(CASE WHEN NOT ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) failed FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL 1 HOUR");
-    $r = $st->fetch(); $total = (int)($r['total'] ?? 0); $failed = (int)($r['failed'] ?? 0);
-    if ($total >= ALERT_FAILURE_MIN_SAMPLE) {
-        $rate = $failed / $total;
-        if ($rate > ALERT_FAILURE_RATE_THRESHOLD) {
-            $alerts[] = ['key'=>'high_failure_rate:'.$schema, 'level'=>'danger', 'message'=>sprintf('High failure rate in the last hour: %d of %d transactions failed (%.0f%%).', $failed, $total, $rate*100)];
+    if ($cfg['failure_rate_enabled']) {
+        // Reasons the admin chose to ignore (customer-side failures such as insufficient balance)
+        // still count in the total but not as failures, so they can't trip the alert on their own.
+        $ignored = alert_ignored_reasons();
+        $skip = ''; $params = [];
+        if ($ignored) { $skip = " AND COALESCE(result_description,'') NOT IN (".implode(',', array_fill(0, count($ignored), '?')).")"; $params = $ignored; }
+        $st = $db->prepare("SELECT COUNT(*) total, SUM(CASE WHEN (NOT ".AUDIT_SUCCESS_SQL.")".$skip." THEN 1 ELSE 0 END) failed FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL 1 HOUR");
+        $st->execute($params);
+        $r = $st->fetch(); $total = (int)($r['total'] ?? 0); $failed = (int)($r['failed'] ?? 0);
+        if ($total >= $cfg['failure_min_sample']) {
+            $rate = $failed / $total;
+            if ($rate * 100 > $cfg['failure_rate_pct']) {
+                $alerts[] = ['key'=>'high_failure_rate:'.$schema, 'type'=>'failure_rate', 'level'=>'danger', 'message'=>sprintf('High failure rate in the last hour: %d of %d transactions failed (%.0f%%).%s', $failed, $total, $rate*100, $ignored ? ' Failure reasons you chose to ignore are not counted.' : '')];
+            }
         }
     }
 
-    $st = $db->query("SELECT vendor_entity_name, COUNT(*) c FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL 1 HOUR - INTERVAL 1 DAY AND create_date < NOW() - INTERVAL 1 DAY GROUP BY vendor_entity_name HAVING c >= ".ALERT_VENDOR_SILENCE_MIN_BASELINE);
-    $baseline = array_column($st->fetchAll(), 'c', 'vendor_entity_name');
-    if ($baseline) {
-        $st = $db->query("SELECT DISTINCT vendor_entity_name FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL 1 HOUR");
-        $activeNow = array_column($st->fetchAll(), 'vendor_entity_name');
-        foreach ($baseline as $vendor => $count) {
-            if (!in_array($vendor, $activeNow, true)) {
-                $alerts[] = ['key'=>'vendor_silent:'.$schema.':'.$vendor, 'level'=>'warning', 'message'=>sprintf('%s sent %d transactions in this hour yesterday but none in the last hour — may be down.', $vendor, $count)];
+    if ($cfg['vendor_silent_enabled']) {
+        $st = $db->prepare("SELECT vendor_entity_name, COUNT(*) c FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL 1 HOUR - INTERVAL 1 DAY AND create_date < NOW() - INTERVAL 1 DAY GROUP BY vendor_entity_name HAVING c >= ?");
+        $st->execute([$cfg['vendor_silent_min_baseline']]);
+        $baseline = array_column($st->fetchAll(), 'c', 'vendor_entity_name');
+        if ($baseline) {
+            $st = $db->query("SELECT DISTINCT vendor_entity_name FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL 1 HOUR");
+            $activeNow = array_column($st->fetchAll(), 'vendor_entity_name');
+            foreach ($baseline as $vendor => $count) {
+                if (!in_array($vendor, $activeNow, true)) {
+                    $alerts[] = ['key'=>'vendor_silent:'.$schema.':'.$vendor, 'type'=>'vendor_silent', 'level'=>'warning', 'message'=>sprintf('%s sent %d transactions in this hour yesterday but none in the last hour — may be down.', $vendor, $count)];
+                }
             }
         }
     }
@@ -995,7 +1061,7 @@ function send_slack_alert(string $schema, string $message): void {
 // fallback when nothing is saved there. Recipients live in alert_recipients (plus optional
 // ALERT_EMAIL_TO).
 function alert_recipients(): array {
-    try { return portal_pdo()->query('SELECT id,email,active FROM alert_recipients ORDER BY email')->fetchAll(); }
+    try { return portal_pdo()->query('SELECT id,email,active,notify_failure,notify_vendor FROM alert_recipients ORDER BY email')->fetchAll(); }
     catch (Throwable $e) { return []; }
 }
 function save_alert_recipient(string $email): void {
@@ -1003,6 +1069,10 @@ function save_alert_recipient(string $email): void {
     if (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 190) throw new RuntimeException('Enter a valid email address.');
     portal_pdo()->prepare('INSERT INTO alert_recipients(email,created_by) VALUES(?,?) ON DUPLICATE KEY UPDATE active=1')->execute([$email, user()['username'] ?? null]);
     audit('alert_recipient_add', null, 'alert_recipients', $email, 'enabled');
+}
+function update_alert_recipient_prefs(int $id, bool $failure, bool $vendor): void {
+    portal_pdo()->prepare('UPDATE alert_recipients SET notify_failure=?, notify_vendor=? WHERE id=?')->execute([$failure ? 1 : 0, $vendor ? 1 : 0, $id]);
+    audit('alert_recipient_prefs', null, 'alert_recipients', (string)$id, 'failure='.(int)$failure.' vendor='.(int)$vendor);
 }
 function toggle_alert_recipient(int $id): void {
     $st = portal_pdo()->prepare('UPDATE alert_recipients SET active = 1 - active WHERE id=?');
@@ -1055,11 +1125,14 @@ function smtp_server_settings(): ?array {
     ];
 }
 // Server + recipients (enabled ones from the Alerts page, plus ALERT_EMAIL_TO if set) — null unless both exist.
-function smtp_settings(): ?array {
+// $type limits recipients to those who chose that alert type ('failure_rate' / 'vendor_silent');
+// null means everyone enabled (used by the test email). ALERT_EMAIL_TO addresses get every type.
+function smtp_settings(?string $type = null): ?array {
     $c = smtp_server_settings();
     if (!$c) return null;
     $env = array_map('trim', explode(',', (string)getenv('ALERT_EMAIL_TO')));
-    $db = array_column(array_filter(alert_recipients(), fn($r) => (int)$r['active'] === 1), 'email');
+    $want = ['failure_rate' => 'notify_failure', 'vendor_silent' => 'notify_vendor'][$type ?? ''] ?? null;
+    $db = array_column(array_filter(alert_recipients(), fn($r) => (int)$r['active'] === 1 && ($want === null || (int)$r[$want] === 1)), 'email');
     $to = array_values(array_unique(array_filter(array_map('strtolower', array_merge($db, $env)), fn($a) => filter_var($a, FILTER_VALIDATE_EMAIL))));
     if (!$to) return null;
     $c['to'] = $to;
@@ -1112,8 +1185,8 @@ function smtp_send(array $c, string $subject, string $body): ?string {
     } catch (Throwable $e) { return $e->getMessage(); }
     finally { @fclose($fp); }
 }
-function send_email_alert(string $subject, string $body): ?string {
-    $c = smtp_settings();
+function send_email_alert(string $subject, string $body, ?string $type = null): ?string {
+    $c = smtp_settings($type);
     return $c ? smtp_send($c, $subject, $body) : 'email is not configured (SMTP_HOST / ALERT_EMAIL_TO)';
 }
 
@@ -1131,7 +1204,7 @@ function dispatch_pending_alert_notifications(string $schema): void {
         $row = $st->fetch();
         if ($row && strtotime($row['last_sent_at']) > time() - ALERT_RENOTIFY_MINUTES * 60) continue;
         send_slack_alert($schema, '['.$schema.'] '.$a['message']);
-        if (smtp_settings()) { try { send_email_alert('[VAS Cloud] '.$schema.' alert', '['.$schema.'] '.$a['message']); } catch (Throwable $e) {} }
+        if (smtp_settings($a['type'] ?? null)) { try { send_email_alert('[VAS Cloud] '.$schema.' alert', '['.$schema.'] '.$a['message'], $a['type'] ?? null); } catch (Throwable $e) {} }
         audit('alert_fired', $schema, null, $a['key'], $a['message']);
         $db->prepare('INSERT INTO alert_notification_log(alert_key,last_sent_at) VALUES(?,NOW()) ON DUPLICATE KEY UPDATE last_sent_at=NOW()')->execute([$a['key']]);
     }

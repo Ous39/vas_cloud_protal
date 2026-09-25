@@ -432,10 +432,13 @@ if ($page==='subscriptions_export') {
 
 if ($page==='alert_settings') {
     require_perm('manage_api_keys'); $schema=current_schema();
-    if ($_SERVER['REQUEST_METHOD']==='POST' && in_array($_POST['do']??'',['add_recipient','toggle_recipient','save_smtp'],true)) {
+    if ($_SERVER['REQUEST_METHOD']==='POST' && in_array($_POST['do']??'',['add_recipient','toggle_recipient','save_smtp','save_rules','save_ignored','update_prefs'],true)) {
         require_perm('manage_api_keys');
         if ($_POST['do']==='save_smtp') { save_smtp_settings($_POST); flash('success','Mail server saved. Use "Send test email" to check it.'); }
         elseif ($_POST['do']==='add_recipient') { save_alert_recipient((string)($_POST['email']??'')); flash('success','Recipient saved.'); }
+        elseif ($_POST['do']==='save_rules') { save_alert_config($_POST); flash('success','Alert rules saved.'); }
+        elseif ($_POST['do']==='save_ignored') { save_alert_ignored_reasons((array)($_POST['ignored']??[])); flash('success','Ignored failure reasons saved.'); }
+        elseif ($_POST['do']==='update_prefs') { update_alert_recipient_prefs((int)($_POST['id']??0), !empty($_POST['notify_failure']), !empty($_POST['notify_vendor'])); flash('success','Recipient preferences saved.'); }
         else { toggle_alert_recipient((int)($_POST['id']??0)); flash('success','Recipient updated.'); }
         redirect('?page=alert_settings');
     }
@@ -446,9 +449,42 @@ if ($page==='alert_settings') {
         flash($err===null?'success':'danger', $err===null?'Test email sent — check the inbox(es) below.':'Test email failed: '.$err);
         redirect('?page=alert_settings');
     }
+    $cfg = alert_config(); $ignoredReasons = alert_ignored_reasons();
+    $seenReasons = array_column(failure_reasons_breakdown($schema, 24, 30), 'c', 'reason');
+    unset($seenReasons['(no reason given)']);
+    $allReasons = array_values(array_unique(array_merge(array_keys($seenReasons), $ignoredReasons)));
     layout_start('Alert Settings');
     ?>
     <div class="cardx">
+        <h3>What to be alerted about</h3>
+        <form method="post" class="row g-3"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="save_rules">
+            <div class="col-lg-6"><div class="border rounded p-3 h-100">
+                <div class="form-check form-switch mb-2"><input class="form-check-input" type="checkbox" name="failure_rate_enabled" value="1" id="fre" <?=$cfg['failure_rate_enabled']?'checked':''?>><label class="form-check-label fw-semibold" for="fre">High failure rate</label></div>
+                <p class="text-muted small">Alert when more than this share of the last hour's transactions failed.</p>
+                <div class="row g-2"><div class="col-6"><label class="small text-muted mb-0">Failure rate above (%)</label><input class="form-control" type="number" min="1" max="100" name="failure_rate_pct" value="<?=e($cfg['failure_rate_pct'])?>"></div>
+                <div class="col-6"><label class="small text-muted mb-0">Only if at least this many transactions</label><input class="form-control" type="number" min="1" name="failure_min_sample" value="<?=e($cfg['failure_min_sample'])?>"></div></div>
+            </div></div>
+            <div class="col-lg-6"><div class="border rounded p-3 h-100">
+                <div class="form-check form-switch mb-2"><input class="form-check-input" type="checkbox" name="vendor_silent_enabled" value="1" id="vse" <?=$cfg['vendor_silent_enabled']?'checked':''?>><label class="form-check-label fw-semibold" for="vse">Vendor gone silent</label></div>
+                <p class="text-muted small">Alert when a vendor that was active this time yesterday sent nothing in the last hour.</p>
+                <label class="small text-muted mb-0">Vendor must have sent at least this many yesterday</label><input class="form-control" type="number" min="1" name="vendor_silent_min_baseline" value="<?=e($cfg['vendor_silent_min_baseline'])?>">
+            </div></div>
+            <div class="col-12"><button class="btn btn-primary">Save alert rules</button> <small class="text-muted">Turning an alert off also removes it from the Dashboard and Alerts page.</small></div>
+        </form>
+    </div>
+    <div class="cardx mt-3">
+        <h3>Failure reasons that count toward the failure-rate alert</h3>
+        <p class="text-muted">Tick <b>Ignore</b> on reasons that aren't a system problem — for example a customer with no credit — so they can't trigger a failure-rate alert. They still show up in the Dashboard and reports. Reasons shown are the ones seen in the last 24 hours plus anything you've already ignored.</p>
+        <?php if(!$allReasons):?><p class="text-muted mb-0">No failures in the last 24 hours to choose from.</p><?php else:?>
+        <form method="post"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="save_ignored">
+            <div class="table-scroll"><table class="table table-sm align-middle"><thead><tr><th style="width:90px">Ignore</th><th>Failure reason</th><th>Last 24h</th></tr></thead><tbody>
+            <?php foreach($allReasons as $i=>$reason):?><tr><td><input class="form-check-input" type="checkbox" name="ignored[]" value="<?=e($reason)?>" id="ig<?=$i?>" <?=in_array($reason,$ignoredReasons,true)?'checked':''?>></td><td><label for="ig<?=$i?>" class="mb-0"><?=e($reason)?></label></td><td><?=isset($seenReasons[$reason])?number_format((int)$seenReasons[$reason]):'—'?></td></tr><?php endforeach;?>
+            </tbody></table></div>
+            <button class="btn btn-primary">Save ignored reasons</button>
+        </form>
+        <?php endif;?>
+    </div>
+    <div class="cardx mt-3">
         <h3>Push Alerting Setup</h3>
         <p class="text-muted mb-2">1a. <b>Slack:</b> add a Slack Incoming Webhook as an Integration (Service type: <b>Monitoring</b>, Base URL: your webhook URL, Status: Active) — Integrations page. Alerts fire there whenever the Alerts page or the Dashboard is viewed while an alert is active.</p>
         <?php $smtpServer = smtp_server_settings(); $smtp = smtp_settings(); $recipients = alert_recipients(); $envTo = array_filter(array_map('trim', explode(',', (string)getenv('ALERT_EMAIL_TO')))); ?>
@@ -473,10 +509,13 @@ if ($page==='alert_settings') {
             <div class="col-md-3"><button class="btn btn-primary">Add recipient</button></div>
         </form>
         <?php if($recipients || $envTo):?>
-        <div class="table-scroll mb-3"><table class="table table-sm mb-0"><thead><tr><th>Email</th><th>Status</th><th></th></tr></thead><tbody>
+        <div class="table-scroll mb-3"><table class="table table-sm mb-0"><thead><tr><th>Email</th><th>Status</th><th>Receives</th><th></th></tr></thead><tbody>
         <?php foreach($recipients as $r):?><tr><td><?=e($r['email'])?></td><td><span class="badge <?=(int)$r['active']?'bg-success':'bg-secondary'?>"><?=(int)$r['active']?'Enabled':'Disabled'?></span></td>
+            <td><form method="post" class="d-flex gap-3"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="update_prefs"><input type="hidden" name="id" value="<?=e($r['id'])?>">
+                <label class="form-check small mb-0"><input class="form-check-input" type="checkbox" name="notify_failure" value="1" data-autosubmit <?=(int)$r['notify_failure']?'checked':''?>> Failure rate</label>
+                <label class="form-check small mb-0"><input class="form-check-input" type="checkbox" name="notify_vendor" value="1" data-autosubmit <?=(int)$r['notify_vendor']?'checked':''?>> Vendor silent</label></form></td>
             <td><form method="post" class="d-inline"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="toggle_recipient"><input type="hidden" name="id" value="<?=e($r['id'])?>"><button class="btn btn-sm btn-outline-dark"><?=(int)$r['active']?'Disable':'Enable'?></button></form></td></tr><?php endforeach;?>
-        <?php foreach($envTo as $addr):?><tr><td><?=e($addr)?></td><td><span class="badge bg-info text-dark">From environment</span></td><td><small class="text-muted">set via ALERT_EMAIL_TO</small></td></tr><?php endforeach;?>
+        <?php foreach($envTo as $addr):?><tr><td><?=e($addr)?></td><td><span class="badge bg-info text-dark">From environment</span></td><td><small class="text-muted">all alerts</small></td><td><small class="text-muted">set via ALERT_EMAIL_TO</small></td></tr><?php endforeach;?>
         </tbody></table></div>
         <?php endif;?>
         <p class="text-muted mb-0">2. For alerts even when nobody has the app open, point a scheduler (e.g. a Kubernetes CronJob — see deploy/k8s/05-alert-cronjob.yaml) at this URL every few minutes:</p>
