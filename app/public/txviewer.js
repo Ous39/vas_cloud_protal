@@ -65,11 +65,11 @@ if (typeof document !== 'undefined') {
         function shown() {
             return 'Transaction ' + cur.transaction_id + '\n' + [cur.create_date, cur.msisdn, cur.vendor, cur.channel].filter(Boolean).join(' | ') +
                 '\nResult: ' + cur.result_status + ' ' + (cur.result_description || '') +
-                '\n\n=== REQUEST (input) ===\n' + $('txInput').textContent +
-                '\n\n=== RESPONSE (output) ===\n' + $('txOutput').textContent + '\n';
+                '\n\n=== ' + ((cur.labels && cur.labels.input) || 'REQUEST (input)').toUpperCase() + ' ===\n' + $('txInput').textContent +
+                '\n\n=== ' + ((cur.labels && cur.labels.output) || 'RESPONSE (output)').toUpperCase() + ' ===\n' + $('txOutput').textContent + '\n';
         }
 
-        async function openTx(id, date) {
+        async function openTx(id, date, source) {
             cur = null;
             $('txTitle').textContent = 'Loading…';
             $('txMeta').textContent = '';
@@ -78,10 +78,13 @@ if (typeof document !== 'undefined') {
             $('txNoteIn').textContent = ''; $('txNoteOut').textContent = '';
             bootstrap.Modal.getOrCreateInstance(modalEl).show();
             try {
-                const resp = await fetch('?page=investigate_detail&id=' + encodeURIComponent(id) + '&d=' + encodeURIComponent(date), { credentials: 'same-origin' });
+                const resp = await fetch('?page=investigate_detail&id=' + encodeURIComponent(id) + '&d=' + encodeURIComponent(date || '') + (source ? '&source=' + encodeURIComponent(source) : ''), { credentials: 'same-origin' });
                 const data = await resp.json();
                 if (!resp.ok || data.error) throw new Error(data.error || 'Could not load this transaction.');
                 cur = data;
+                const lab = data.labels || {};
+                $('txLblIn').textContent = lab.input || 'Request (input)';
+                $('txLblOut').textContent = lab.output || 'Response (output)';
                 $('txTitle').textContent = 'Transaction ' + (data.transaction_id || data.id);
                 $('txMeta').textContent = [data.create_date, data.msisdn, data.vendor, data.channel, data.response_time != null ? data.response_time + ' ms' : ''].filter(Boolean).join('  •  ');
                 const r = $('txResult');
@@ -101,7 +104,7 @@ if (typeof document !== 'undefined') {
             const c = e.target.closest('[data-copy]');
             if (c) { e.preventDefault(); copyText(c.dataset.copy, c); return; }
             const v = e.target.closest('[data-tx-view]');
-            if (v) { openTx(v.dataset.id, v.dataset.date); return; }
+            if (v) { openTx(v.dataset.id, v.dataset.date, v.dataset.source); return; }
             const a = e.target.closest('[data-tx-action]');
             if (!a || !cur) return;
             const act = a.dataset.txAction;

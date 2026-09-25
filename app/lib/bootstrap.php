@@ -751,6 +751,111 @@ function audit_log_detail(string $schema, int $id, string $createDate): ?array {
         'result_description' => $r['result_description'], 'response_time' => $r['response_time'] === null ? null : (int)$r['response_time'],
         'success' => is_success_status($r['result_status']), 'input' => $in, 'output' => $out, 'input_truncated' => $inCut, 'output_truncated' => $outCut, 'input_binary' => $inBad, 'output_binary' => $outBad];
 }
+// ===================== Complaint Investigation: choose where to look =====================
+// audit_log holds the full request/response but is trimmed over time to free disk; the subscription
+// table keeps the outcome of every subscription attempt for longer. Both can answer "what happened to
+// this customer's purchase", so the page lets you pick — and a complaint about a date audit_log no
+// longer covers can still be investigated from subscription.
+const INVESTIGATE_SOURCES = [
+    'audit_log' => 'audit_log — full request and response',
+    'subscription' => 'subscription — subscription attempts and results',
+];
+// subscription is ~100M+ rows and a filter like MSISDN can't narrow it beyond the date range (only
+// the date index helps), so the span is kept much shorter than audit_log's.
+const SUBSCRIPTION_LOG_MAX_RANGE_DAYS = 7;
+const SUBSCRIPTION_LOG_COLS = 'id, date, purchase_sequence, subscriber_msisdn, receiver_msisdn, transaction_id, subscription_type, channel, result_desc, data_volume, sms_volume, minutes_volume, data_expiry, sms_expiry, minutes_expiry';
+
+function investigate_sources(string $schema): array {
+    return array_filter(INVESTIGATE_SOURCES, fn($k) => table_exists($schema, $k), ARRAY_FILTER_USE_KEY);
+}
+function investigate_source(array $q, string $schema): string {
+    $want = (string)($q['source'] ?? 'audit_log');
+    return isset(investigate_sources($schema)[$want]) ? $want : 'audit_log';
+}
+function is_subscription_success($desc): bool {
+    return (bool)preg_match('/^\s*(operation succe|success)/i', (string)$desc);
+}
+// Tabs to switch source. Carries over the fields both sources share, and clamps the date range to what
+// the target allows, so switching never lands on a "date range too wide" error.
+function investigate_source_tabs(array $sources, string $current, array $get): string {
+    if (count($sources) < 2) return '';
+    $carry = [];
+    foreach (['msisdn', 'transaction_id', 'channel', 'result_desc'] as $k) if (trim((string)($get[$k] ?? '')) !== '') $carry[$k] = trim((string)$get[$k]);
+    $to = strtotime((string)($get['date_to'] ?? '')) ?: strtotime('today');
+    $from = strtotime((string)($get['date_from'] ?? '')) ?: $to;
+    $html = '<ul class="nav nav-pills mb-3">';
+    foreach ($sources as $key => $label) {
+        $max = $key === 'subscription' ? SUBSCRIPTION_LOG_MAX_RANGE_DAYS : AUDIT_LOG_MAX_RANGE_DAYS;
+        $q = array_merge(['page' => 'investigate', 'source' => $key, 'date_from' => date('Y-m-d', max($from, $to - ($max - 1) * 86400)), 'date_to' => date('Y-m-d', $to)], $carry);
+        $html .= '<li class="nav-item"><a class="nav-link '.($key === $current ? 'active' : '').'" href="?'.e(http_build_query($q)).'">'.e($label).'</a></li>';
+    }
+    return $html.'</ul>';
+}
+
+function subscription_log_filters_from_request(array $q): array {
+    $today = date('Y-m-d');
+    $from = trim((string)($q['date_from'] ?? '')) ?: $today;
+    $to = trim((string)($q['date_to'] ?? '')) ?: $today;
+    if (strtotime($from) === false || strtotime($to) === false) throw new RuntimeException('Invalid date.');
+    if (strtotime($to) < strtotime($from)) throw new RuntimeException('"Date to" must not be before "date from".');
+    if ((strtotime($to) - strtotime($from)) / 86400 > SUBSCRIPTION_LOG_MAX_RANGE_DAYS) throw new RuntimeException('Date range too wide for subscription (max '.SUBSCRIPTION_LOG_MAX_RANGE_DAYS.' days) — it is a very large table; narrow the range, or use audit_log for a longer span.');
+    $msisdn = trim((string)($q['msisdn'] ?? ''));
+    if ($msisdn !== '') {
+        $msisdn = preg_replace('/\D+/', '', $msisdn);
+        if ($msisdn === '' || strlen($msisdn) > 15) throw new RuntimeException('MSISDN must be digits only.');
+    }
+    return [
+        'date_from' => $from, 'date_to' => $to, 'msisdn' => $msisdn,
+        'transaction_id' => trim((string)($q['transaction_id'] ?? '')),
+        'channel' => trim((string)($q['channel'] ?? '')),
+        'subscription_type' => trim((string)($q['subscription_type'] ?? '')),
+        'result_desc' => trim((string)($q['result_desc'] ?? '')),
+    ];
+}
+function subscription_log_where(array $f, array &$params): string {
+    $where = ['date >= ? AND date < ?'];
+    $params[] = $f['date_from'].' 00:00:00'; $params[] = date('Y-m-d', strtotime($f['date_to'].' +1 day')).' 00:00:00';
+    if ($f['msisdn'] !== '') { $where[] = '(subscriber_msisdn = ? OR receiver_msisdn = ?)'; $params[] = $f['msisdn']; $params[] = $f['msisdn']; }
+    if ($f['transaction_id'] !== '') { $where[] = 'transaction_id = ?'; $params[] = $f['transaction_id']; }
+    if ($f['channel'] !== '') { $where[] = 'channel = ?'; $params[] = $f['channel']; }
+    if ($f['subscription_type'] !== '') { $where[] = 'subscription_type = ?'; $params[] = $f['subscription_type']; }
+    if ($f['result_desc'] !== '') { $where[] = 'result_desc LIKE ?'; $params[] = '%'.$f['result_desc'].'%'; }
+    return implode(' AND ', $where);
+}
+function search_subscription_log(string $schema, array $f, int $page, int $perPage): array {
+    if (!table_exists($schema, 'subscription')) throw new RuntimeException('subscription does not exist in '.$schema);
+    $db = pdo($schema);
+    $params = []; $where = subscription_log_where($f, $params);
+    $c = $db->prepare('SELECT COUNT(*) c FROM subscription WHERE '.$where); $c->execute($params);
+    $total = (int)$c->fetch()['c'];
+    $offset = max(0, ($page - 1) * $perPage);
+    $st = $db->prepare('SELECT '.SUBSCRIPTION_LOG_COLS.' FROM subscription WHERE '.$where.' ORDER BY date DESC, id DESC LIMIT '.(int)$perPage.' OFFSET '.(int)$offset);
+    $st->execute($params);
+    return ['rows' => $st->fetchAll(), 'total' => $total];
+}
+function export_subscription_log(string $schema, array $f, int $limit = 20000): array {
+    $params = []; $where = subscription_log_where($f, $params);
+    $st = pdo($schema)->prepare('SELECT '.SUBSCRIPTION_LOG_COLS.' FROM subscription WHERE '.$where.' ORDER BY date DESC, id DESC LIMIT '.(int)$limit);
+    $st->execute($params);
+    return $st->fetchAll();
+}
+// Same JSON shape as audit_log_detail() so the viewer window works for both; `labels` renames its panes.
+function subscription_log_detail(string $schema, int $id): ?array {
+    if (!table_exists($schema, 'subscription')) throw new RuntimeException('subscription does not exist in '.$schema);
+    $st = pdo($schema)->prepare('SELECT '.SUBSCRIPTION_LOG_COLS.' FROM subscription WHERE id=? LIMIT 1');
+    $st->execute([$id]);
+    $r = $st->fetch();
+    if (!$r) return null;
+    $lines = [];
+    foreach ($r as $k => $v) $lines[] = str_pad($k, 18).' '.($v === null ? '' : $v);
+    $ok = is_subscription_success($r['result_desc']);
+    return ['id' => (int)$r['id'], 'transaction_id' => $r['transaction_id'], 'create_date' => $r['date'], 'msisdn' => $r['subscriber_msisdn'],
+        'vendor' => null, 'channel' => $r['channel'], 'result_status' => $ok ? 'Success' : 'Failed', 'result_description' => $r['result_desc'],
+        'response_time' => null, 'success' => $ok, 'input' => implode("\n", $lines), 'output' => (string)$r['result_desc'],
+        'input_truncated' => false, 'output_truncated' => false, 'input_binary' => false, 'output_binary' => false,
+        'labels' => ['input' => 'Subscription record', 'output' => 'Result']];
+}
+
 function export_audit_log(string $schema, array $f, int $limit = 20000): array {
     if (!table_exists($schema, AUDIT_LOG_TABLE)) throw new RuntimeException(AUDIT_LOG_TABLE.' does not exist in '.$schema);
     $params = []; $where = audit_log_where($f, $params);

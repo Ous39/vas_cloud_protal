@@ -1070,9 +1070,10 @@ if ($page==='investigate_detail') {
     header('Content-Type: application/json; charset=utf-8');
     try {
         require_perm('view_reports');
-        $row = audit_log_detail(current_schema(), (int)($_GET['id'] ?? 0), (string)($_GET['d'] ?? ''));
+        $src = investigate_source($_GET, current_schema());
+        $row = $src === 'subscription' ? subscription_log_detail(current_schema(), (int)($_GET['id'] ?? 0)) : audit_log_detail(current_schema(), (int)($_GET['id'] ?? 0), (string)($_GET['d'] ?? ''));
         if (!$row) { http_response_code(404); echo json_encode(['error' => 'Transaction not found.']); exit; }
-        audit('investigate_view', current_schema(), AUDIT_LOG_TABLE, (string)$row['id'], 'viewed payload of '.$row['transaction_id']);
+        audit('investigate_view', current_schema(), $src === 'subscription' ? 'subscription' : AUDIT_LOG_TABLE, (string)$row['id'], 'viewed '.$src.' record of '.$row['transaction_id']);
         echo json_encode($row, JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_UNICODE);
     } catch (Throwable $e) { http_response_code(400); echo json_encode(['error' => $e->getMessage()]); }
     exit;
@@ -1081,12 +1082,62 @@ if ($page==='investigate_detail') {
 if ($page==='investigate') {
     require_perm('view_reports');
     $schema=current_schema();
+    $sources=investigate_sources($schema); $source=investigate_source($_GET,$schema);
+    if ($source==='subscription') {
+        $f=subscription_log_filters_from_request($_GET);
+        $pageNo=max(1,(int)($_GET['p']??1));
+        $data=search_subscription_log($schema,$f,$pageNo,25);
+        layout_start('Complaint Investigation');
+        $qs=$_GET; unset($qs['p']);
+        ?>
+        <?=investigate_source_tabs($sources,$source,$_GET)?>
+        <div class="cardx">
+            <h3><i class="fa-solid fa-headset me-2"></i>Complaint / Subscription Investigation</h3>
+            <p class="text-muted">Searches <code><?=e($schema)?>.subscription</code> — one row per subscription attempt with its result. It has no request/response text (use <b>audit_log</b> for that), but it keeps the outcome for dates audit_log may no longer cover. A date range is required (max <?=SUBSCRIPTION_LOG_MAX_RANGE_DAYS?> days) — this table is very large.</p>
+            <form method="get" class="row g-2">
+                <input type="hidden" name="page" value="investigate"><input type="hidden" name="source" value="subscription">
+                <div class="col-md-2"><label>Date from</label><input type="date" name="date_from" class="form-control" value="<?=e($f['date_from'])?>" required></div>
+                <div class="col-md-2"><label>Date to</label><input type="date" name="date_to" class="form-control" value="<?=e($f['date_to'])?>" required></div>
+                <div class="col-md-2"><label>MSISDN <small class="text-muted">(subscriber or receiver)</small></label><input class="form-control" name="msisdn" value="<?=e($f['msisdn'])?>"></div>
+                <div class="col-md-3"><label>Transaction ID</label><input class="form-control" name="transaction_id" value="<?=e($f['transaction_id'])?>"></div>
+                <div class="col-md-1"><label>Channel</label><input class="form-control" name="channel" value="<?=e($f['channel'])?>"></div>
+                <div class="col-md-2"><label>Type</label><input class="form-control" name="subscription_type" value="<?=e($f['subscription_type'])?>"></div>
+                <div class="col-md-6"><label>Result contains</label><input class="form-control" name="result_desc" value="<?=e($f['result_desc'])?>"></div>
+                <div class="col-md-6 d-flex align-items-end gap-2">
+                    <button class="btn btn-primary flex-fill"><i class="fa fa-search"></i> Search</button>
+                    <a class="btn btn-outline-primary flex-fill" href="?<?=http_build_query(array_merge($qs,['page'=>'investigate_export','source'=>'subscription']))?>"><i class="fa fa-file-csv"></i> Export CSV</a>
+                </div>
+            </form>
+        </div>
+        <div class="cardx table-card mt-3">
+            <p class="text-muted px-3 pt-3 mb-0"><?=number_format($data['total'])?> matching records</p>
+            <div class="table-scroll"><table class="table table-hover table-sm align-middle">
+                <thead><tr><th>Details</th><th>Date</th><th>Transaction ID</th><th>Subscriber</th><th>Receiver</th><th>Type</th><th>Channel</th><th>Result</th></tr></thead>
+                <tbody><?php foreach($data['rows'] as $r): $ok=is_subscription_success($r['result_desc']);?><tr>
+                    <td><button type="button" class="btn btn-sm btn-outline-primary" data-tx-view data-source="subscription" data-id="<?=e($r['id'])?>"><i class="fa-solid fa-eye me-1"></i>View</button></td>
+                    <td class="text-nowrap"><?=e($r['date'])?></td>
+                    <td class="cell-full" style="min-width:300px"><button type="button" class="btn btn-sm btn-link p-0 me-1 align-baseline" title="Copy transaction ID" data-copy="<?=e($r['transaction_id'])?>"><i class="fa-regular fa-copy"></i></button><span class="txid"><?=e($r['transaction_id'])?></span></td>
+                    <td class="text-nowrap"><?=e($r['subscriber_msisdn'])?> <button type="button" class="btn btn-sm btn-link p-0 ms-1" title="Copy MSISDN" data-copy="<?=e($r['subscriber_msisdn'])?>"><i class="fa-regular fa-copy"></i></button></td>
+                    <td class="text-nowrap"><?=e($r['receiver_msisdn'])?></td>
+                    <td><?=e($r['subscription_type'])?></td>
+                    <td><?=e($r['channel'])?></td>
+                    <td title="<?=e($r['result_desc'])?>"><span class="badge <?=$ok?'bg-success':'bg-danger'?> me-1"><?=$ok?'Success':'Failed'?></span><?=e(mb_strimwidth((string)$r['result_desc'],0,70,'...'))?></td>
+                </tr><?php endforeach;?></tbody>
+            </table></div>
+            <?php $pages=max(1,(int)ceil($data['total']/25));?>
+            <div class="p-3 d-flex justify-content-between"><span>Page <?=$pageNo?> of <?=$pages?></span><div><?php if($pageNo>1):?><a class="btn btn-sm btn-outline-primary" href="?<?=http_build_query(array_merge($qs,['page'=>'investigate','p'=>$pageNo-1]))?>">Prev</a><?php endif;?> <?php if($pageNo<$pages):?><a class="btn btn-sm btn-outline-primary" href="?<?=http_build_query(array_merge($qs,['page'=>'investigate','p'=>$pageNo+1]))?>">Next</a><?php endif;?></div></div>
+        </div>
+        <?php include_once __DIR__.'/../lib/txviewer_modal.php'; ?>
+        <script src="txviewer.js?v=<?=e((string)(@filemtime(__DIR__.'/txviewer.js') ?: time()))?>"></script>
+        <?php layout_end(); exit;
+    }
     $f=audit_log_filters_from_request($_GET);
     $pageNo=max(1,(int)($_GET['p']??1));
     $data=search_audit_log($schema,$f,$pageNo,25);
     layout_start('Complaint Investigation');
     $qs=$_GET; unset($qs['p']);
     ?>
+    <?=investigate_source_tabs($sources,$source,$_GET)?>
     <div class="cardx">
         <h3><i class="fa-solid fa-headset me-2"></i>Complaint / Transaction Investigation</h3>
         <p class="text-muted">Searches <code><?=e($schema)?>.<?=e(AUDIT_LOG_TABLE)?></code>. A date range is required (max <?=AUDIT_LOG_MAX_RANGE_DAYS?> days) — this table is very large and partitioned by date.</p>
@@ -1125,25 +1176,7 @@ if ($page==='investigate') {
         <?php $pages=max(1,(int)ceil($data['total']/25));?>
         <div class="p-3 d-flex justify-content-between"><span>Page <?=$pageNo?> of <?=$pages?></span><div><?php if($pageNo>1):?><a class="btn btn-sm btn-outline-primary" href="?<?=http_build_query(array_merge($qs,['page'=>'investigate','p'=>$pageNo-1]))?>">Prev</a><?php endif;?> <?php if($pageNo<$pages):?><a class="btn btn-sm btn-outline-primary" href="?<?=http_build_query(array_merge($qs,['page'=>'investigate','p'=>$pageNo+1]))?>">Next</a><?php endif;?></div></div>
     </div>
-    <div class="modal fade" id="txModal" tabindex="-1" aria-hidden="true"><div class="modal-dialog modal-xl modal-dialog-scrollable"><div class="modal-content">
-        <div class="modal-header flex-wrap gap-2">
-            <div class="me-auto"><h5 class="modal-title mb-0" id="txTitle">Transaction</h5><div class="text-muted small" id="txMeta"></div><span id="txResult" class="badge bg-secondary mt-1"></span></div>
-            <div class="d-flex flex-wrap gap-3 align-items-center small">
-                <div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" id="txFormat" checked><label class="form-check-label" for="txFormat">Format JSON / XML</label></div>
-                <div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" id="txWrap" checked><label class="form-check-label" for="txWrap">Wrap lines</label></div>
-                <button type="button" class="btn btn-sm btn-primary" data-tx-action="copy-both">Copy both</button>
-                <button type="button" class="btn btn-sm btn-outline-primary" data-tx-action="download">Download .txt</button>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-        </div>
-        <div class="modal-body">
-            <div class="alert alert-danger d-none" id="txErr"></div>
-            <div class="row g-3">
-                <div class="col-lg-6"><div class="d-flex justify-content-between align-items-center mb-1"><strong>Request (input)</strong><button type="button" class="btn btn-sm btn-outline-secondary" data-tx-action="copy-input">Copy</button></div><div class="text-muted small" id="txNoteIn"></div><pre class="border rounded p-2 bg-light mb-0" id="txInput" style="max-height:62vh;overflow:auto;font-size:.82rem"></pre></div>
-                <div class="col-lg-6"><div class="d-flex justify-content-between align-items-center mb-1"><strong>Response (output)</strong><button type="button" class="btn btn-sm btn-outline-secondary" data-tx-action="copy-output">Copy</button></div><div class="text-muted small" id="txNoteOut"></div><pre class="border rounded p-2 bg-light mb-0" id="txOutput" style="max-height:62vh;overflow:auto;font-size:.82rem"></pre></div>
-            </div>
-        </div>
-    </div></div></div>
+    <?php include_once __DIR__.'/../lib/txviewer_modal.php'; ?>
     <script src="txviewer.js?v=<?=e((string)(@filemtime(__DIR__.'/txviewer.js') ?: time()))?>"></script>
     <?php layout_end(); exit;
 }
@@ -1151,6 +1184,17 @@ if ($page==='investigate') {
 if ($page==='investigate_export') {
     require_perm('view_reports');
     $schema=current_schema();
+    if (investigate_source($_GET,$schema)==='subscription') {
+        $f=subscription_log_filters_from_request($_GET);
+        audit('export',$schema,'subscription',null,'Complaint investigation (subscription) CSV export: '.json_encode($f));
+        $rows=export_subscription_log($schema,$f);
+        header('Content-Type:text/csv');
+        header('Content-Disposition: attachment; filename="'.$schema.'_subscription_'.$f['date_from'].'_to_'.$f['date_to'].'.csv"');
+        $out=fopen('php://output','w');
+        fputcsv($out, array_map('trim', explode(',', SUBSCRIPTION_LOG_COLS)));
+        foreach($rows as $row) fputcsv($out,$row);
+        exit;
+    }
     $f=audit_log_filters_from_request($_GET);
     audit('export',$schema,AUDIT_LOG_TABLE,null,'Complaint investigation CSV export: '.json_encode($f));
     $rows=export_audit_log($schema,$f);
