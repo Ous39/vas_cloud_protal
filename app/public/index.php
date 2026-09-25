@@ -1038,6 +1038,18 @@ if ($page==='audit') { require_perm('view_audit'); layout_start('Audit Trail'); 
 
 if ($page==='reports') { require_perm('view_reports'); layout_start('Reports & Monitoring'); $schema=current_schema(); $tables=table_names($schema); ?><div class="cardx mb-3"><h3><i class="fa-solid fa-headset me-2"></i>Complaint / Transaction Investigation</h3><p class="text-muted mb-2">Look up what happened for a specific subscriber or transaction — filter <?=e(AUDIT_LOG_TABLE)?> by MSISDN, transaction ID, date range, vendor or result, view the full vendor request/response, and export the filtered results to CSV.</p><a class="btn btn-primary" href="?page=investigate">Open Investigation Tool</a></div><div class="metric-grid"><?php foreach(array_slice($tables,0,8) as $t):?><div class="metric"><span><?=e($t)?></span><strong><?=number_format(approx_table_count($schema,$t))?></strong></div><?php endforeach;?></div><div class="cardx"><h3>Operational Monitoring</h3><p class="text-muted">Use this page for quick health checks across VAS tables. Future integration can include API latency, transaction success rates, partner dashboards and alerts.</p></div><?php layout_end(); exit; }
 
+if ($page==='investigate_detail') {
+    header('Content-Type: application/json; charset=utf-8');
+    try {
+        require_perm('view_reports');
+        $row = audit_log_detail(current_schema(), (int)($_GET['id'] ?? 0), (string)($_GET['d'] ?? ''));
+        if (!$row) { http_response_code(404); echo json_encode(['error' => 'Transaction not found.']); exit; }
+        audit('investigate_view', current_schema(), AUDIT_LOG_TABLE, (string)$row['id'], 'viewed payload of '.$row['transaction_id']);
+        echo json_encode($row, JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_UNICODE);
+    } catch (Throwable $e) { http_response_code(400); echo json_encode(['error' => $e->getMessage()]); }
+    exit;
+}
+
 if ($page==='investigate') {
     require_perm('view_reports');
     $schema=current_schema();
@@ -1072,22 +1084,39 @@ if ($page==='investigate') {
             <thead><tr><th>Date</th><th>Transaction ID</th><th>MSISDN</th><th>Vendor</th><th>Channel</th><th>Status</th><th>Result</th><th>Response (ms)</th><th>Request / Response</th></tr></thead>
             <tbody><?php foreach($data['rows'] as $r):?><tr>
                 <td><?=e($r['create_date'])?></td>
-                <td><?=e($r['transaction_id'])?></td>
-                <td><?=e($r['msisdn'])?></td>
+                <td class="text-nowrap"><?=e($r['transaction_id'])?> <button type="button" class="btn btn-sm btn-link p-0 ms-1" title="Copy transaction ID" data-copy="<?=e($r['transaction_id'])?>"><i class="fa-regular fa-copy"></i></button></td>
+                <td class="text-nowrap"><?=e($r['msisdn'])?> <button type="button" class="btn btn-sm btn-link p-0 ms-1" title="Copy MSISDN" data-copy="<?=e($r['msisdn'])?>"><i class="fa-regular fa-copy"></i></button></td>
                 <td><?=e($r['vendor_entity_name'])?></td>
                 <td><?=e($r['channel'])?></td>
                 <td><span class="badge <?=is_success_status($r['result_status'])?'bg-success':'bg-danger'?>"><?=e($r['result_status'])?></span></td>
                 <td><?=e(mb_strimwidth((string)$r['result_description'],0,80,'...'))?></td>
                 <td><?=e($r['response_time'])?></td>
-                <td>
-                    <details><summary>input</summary><pre class="mb-1"><?=e($r['input_text'])?></pre></details>
-                    <details><summary>output</summary><pre class="mb-0"><?=e($r['output_text'])?></pre></details>
-                </td>
+                <td><button type="button" class="btn btn-sm btn-outline-primary" data-tx-view data-id="<?=e($r['id'])?>" data-date="<?=e($r['create_date'])?>"><i class="fa-solid fa-eye me-1"></i>View</button></td>
             </tr><?php endforeach;?></tbody>
         </table></div>
         <?php $pages=max(1,(int)ceil($data['total']/25));?>
         <div class="p-3 d-flex justify-content-between"><span>Page <?=$pageNo?> of <?=$pages?></span><div><?php if($pageNo>1):?><a class="btn btn-sm btn-outline-primary" href="?<?=http_build_query(array_merge($qs,['page'=>'investigate','p'=>$pageNo-1]))?>">Prev</a><?php endif;?> <?php if($pageNo<$pages):?><a class="btn btn-sm btn-outline-primary" href="?<?=http_build_query(array_merge($qs,['page'=>'investigate','p'=>$pageNo+1]))?>">Next</a><?php endif;?></div></div>
     </div>
+    <div class="modal fade" id="txModal" tabindex="-1" aria-hidden="true"><div class="modal-dialog modal-xl modal-dialog-scrollable"><div class="modal-content">
+        <div class="modal-header flex-wrap gap-2">
+            <div class="me-auto"><h5 class="modal-title mb-0" id="txTitle">Transaction</h5><div class="text-muted small" id="txMeta"></div><span id="txResult" class="badge bg-secondary mt-1"></span></div>
+            <div class="d-flex flex-wrap gap-3 align-items-center small">
+                <div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" id="txFormat" checked><label class="form-check-label" for="txFormat">Format JSON / XML</label></div>
+                <div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" id="txWrap" checked><label class="form-check-label" for="txWrap">Wrap lines</label></div>
+                <button type="button" class="btn btn-sm btn-primary" data-tx-action="copy-both">Copy both</button>
+                <button type="button" class="btn btn-sm btn-outline-primary" data-tx-action="download">Download .txt</button>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+        </div>
+        <div class="modal-body">
+            <div class="alert alert-danger d-none" id="txErr"></div>
+            <div class="row g-3">
+                <div class="col-lg-6"><div class="d-flex justify-content-between align-items-center mb-1"><strong>Request (input)</strong><button type="button" class="btn btn-sm btn-outline-secondary" data-tx-action="copy-input">Copy</button></div><div class="text-muted small" id="txNoteIn"></div><pre class="border rounded p-2 bg-light mb-0" id="txInput" style="max-height:62vh;overflow:auto;font-size:.82rem"></pre></div>
+                <div class="col-lg-6"><div class="d-flex justify-content-between align-items-center mb-1"><strong>Response (output)</strong><button type="button" class="btn btn-sm btn-outline-secondary" data-tx-action="copy-output">Copy</button></div><div class="text-muted small" id="txNoteOut"></div><pre class="border rounded p-2 bg-light mb-0" id="txOutput" style="max-height:62vh;overflow:auto;font-size:.82rem"></pre></div>
+            </div>
+        </div>
+    </div></div></div>
+    <script src="txviewer.js?v=<?=e((string)(@filemtime(__DIR__.'/txviewer.js') ?: time()))?>"></script>
     <?php layout_end(); exit;
 }
 

@@ -722,6 +722,35 @@ function search_audit_log(string $schema, array $f, int $page, int $perPage): ar
     return ['rows' => $st->fetchAll(), 'total' => $total];
 }
 
+// One transaction's full request/response for the Complaint Investigation viewer. audit_log's
+// primary key is (id, create_date) and it's partitioned by create_date, so looking a row up by both
+// touches a single partition instead of searching the table. Payloads are capped for display; the
+// CSV export still has the full text.
+const AUDIT_DETAIL_MAX_CHARS = 500000;
+function audit_log_detail(string $schema, int $id, string $createDate): ?array {
+    if (!table_exists($schema, AUDIT_LOG_TABLE)) throw new RuntimeException(AUDIT_LOG_TABLE.' does not exist in '.$schema);
+    if (!preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $createDate)) throw new RuntimeException('Invalid transaction date.');
+    // Raw bytes, decoded here: MySQL's CONVERT(... USING utf8mb4) returns nothing at all for a
+    // payload with an invalid byte, which would show as an empty request — misleading in an
+    // investigation. Invalid bytes are shown as '?' instead, with a flag so the page can say so.
+    $st = pdo($schema)->prepare('SELECT id, transaction_id, create_date, msisdn, vendor_entity_name, channel, result_status, result_description, response_time, input AS input_raw, output AS output_raw FROM '.ident(AUDIT_LOG_TABLE).' WHERE id=? AND create_date=? LIMIT 1');
+    $st->execute([$id, $createDate]);
+    $r = $st->fetch();
+    if (!$r) return null;
+    $decode = function ($v) {
+        $v = (string)$v;
+        $bad = !mb_check_encoding($v, 'UTF-8');
+        if ($bad) $v = mb_convert_encoding($v, 'UTF-8', 'UTF-8');
+        $cut = strlen($v) > AUDIT_DETAIL_MAX_CHARS;
+        if ($cut) $v = mb_strcut($v, 0, AUDIT_DETAIL_MAX_CHARS, 'UTF-8');
+        return [$v, $cut, $bad];
+    };
+    [$in, $inCut, $inBad] = $decode($r['input_raw']); [$out, $outCut, $outBad] = $decode($r['output_raw']);
+    return ['id' => (int)$r['id'], 'transaction_id' => $r['transaction_id'], 'create_date' => $r['create_date'], 'msisdn' => $r['msisdn'],
+        'vendor' => $r['vendor_entity_name'], 'channel' => $r['channel'], 'result_status' => (string)$r['result_status'],
+        'result_description' => $r['result_description'], 'response_time' => $r['response_time'] === null ? null : (int)$r['response_time'],
+        'success' => is_success_status($r['result_status']), 'input' => $in, 'output' => $out, 'input_truncated' => $inCut, 'output_truncated' => $outCut, 'input_binary' => $inBad, 'output_binary' => $outBad];
+}
 function export_audit_log(string $schema, array $f, int $limit = 20000): array {
     if (!table_exists($schema, AUDIT_LOG_TABLE)) throw new RuntimeException(AUDIT_LOG_TABLE.' does not exist in '.$schema);
     $params = []; $where = audit_log_where($f, $params);
