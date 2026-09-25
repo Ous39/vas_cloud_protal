@@ -14,7 +14,8 @@ return [
     'hera_db_user' => getenv('HERA_DB_USER') ?: getenv('DB_USER') ?: 'vas_user',
     'hera_db_pass' => getenv('HERA_DB_PASSWORD') ?: getenv('DB_PASSWORD') ?: 'vas_password',
     'portal_db' => getenv('PORTAL_DB') ?: 'vas_portal',
-    'allowed_schemas' => ['HeraTesting','HeraProduction'],
+    // Every database the portal may open. HeraProduction and Hera are treated as live (see protected_schemas()).
+    'allowed_schemas' => array_values(array_filter(array_map('trim', explode(',', getenv('ALLOWED_SCHEMAS') ?: 'HeraTesting,HeraStaging,HeraProduction,Hera')))),
     'default_schema' => getenv('DEFAULT_SCHEMA') ?: 'HeraTesting',
     'app_name' => 'VAS Cloud Control Center',
     'timezone' => getenv('APP_TZ') ?: 'UTC',

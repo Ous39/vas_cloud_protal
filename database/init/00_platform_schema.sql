@@ -1,10 +1,14 @@
 CREATE DATABASE IF NOT EXISTS HeraProduction CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE DATABASE IF NOT EXISTS HeraTesting CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE DATABASE IF NOT EXISTS HeraStaging CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE DATABASE IF NOT EXISTS Hera CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE DATABASE IF NOT EXISTS vas_portal CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- HeraProduction: no CREATE/ALTER — the app never issues DDL against production at
 -- runtime (see run_sql()'s production-read-only guard in app/lib/bootstrap.php).
 GRANT SELECT, INSERT, UPDATE ON HeraProduction.* TO 'vas_user'@'%';
+GRANT SELECT, INSERT, UPDATE ON Hera.* TO 'vas_user'@'%';
+GRANT SELECT, INSERT, UPDATE, CREATE, ALTER, INDEX, REFERENCES, LOCK TABLES, EXECUTE, SHOW VIEW ON HeraStaging.* TO 'vas_user'@'%';
 GRANT SELECT, INSERT, UPDATE, CREATE, ALTER, INDEX, REFERENCES, LOCK TABLES, EXECUTE, SHOW VIEW ON HeraTesting.* TO 'vas_user'@'%';
 GRANT ALL PRIVILEGES ON vas_portal.* TO 'vas_user'@'%';
 FLUSH PRIVILEGES;
@@ -18,7 +22,7 @@ CREATE TABLE IF NOT EXISTS portal_users (
   password_hash VARCHAR(255) NOT NULL,
   role ENUM('admin','manager','operator','viewer') NOT NULL DEFAULT 'viewer',
   status ENUM('active','disabled') NOT NULL DEFAULT 'active',
-  default_schema_name ENUM('HeraTesting','HeraProduction') NOT NULL DEFAULT 'HeraTesting',
+  default_schema_name VARCHAR(64) NOT NULL DEFAULT 'HeraTesting',
   last_login DATETIME NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
@@ -63,7 +67,7 @@ CREATE TABLE IF NOT EXISTS portal_audit_trail (
 CREATE TABLE IF NOT EXISTS saved_queries (
   id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
   name VARCHAR(150) NOT NULL,
-  schema_name ENUM('HeraTesting','HeraProduction') NOT NULL DEFAULT 'HeraTesting',
+  schema_name VARCHAR(64) NOT NULL DEFAULT 'HeraTesting',
   sql_text MEDIUMTEXT NOT NULL,
   category VARCHAR(80) NULL,
   created_by VARCHAR(80) NULL,

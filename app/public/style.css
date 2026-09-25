@@ -52,6 +52,23 @@ a{color:var(--brand-dark)}
 .topnav-menu a:hover{background:var(--surface-hover);color:var(--brand-dark)}
 .topnav-menu a.active{background:var(--brand);color:#fff}
 .topnav-side{display:flex;align-items:center;gap:12px;margin-left:auto}
+/* environment (database) selector */
+.env-menu{position:relative}
+.env-menu>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;font-weight:800;font-size:.8rem;padding:7px 12px;border-radius:var(--radius-pill);border:1px solid transparent;white-space:nowrap}
+.env-menu>summary::-webkit-details-marker{display:none}
+.env-menu>summary .fa-chevron-down{font-size:.65rem}
+.env-menu.env-prod>summary{background:#fff;color:var(--brand)}
+.env-menu.env-test>summary{background:var(--gold);color:#5c4400}
+.env-menu.env-stage>summary{background:#cfe2ff;color:#0a3d8f}
+.env-list{position:absolute;right:0;top:calc(100% + 8px);background:#fff;border-radius:var(--radius);box-shadow:var(--shadow-lg);padding:6px;min-width:230px;z-index:50}
+.env-list a{display:grid;grid-template-columns:14px 1fr;column-gap:10px;align-items:center;padding:9px 12px;border-radius:var(--radius-sm);text-decoration:none;color:var(--text)}
+.env-list a:hover{background:var(--surface-hover)}
+.env-list a.on{background:var(--brand-light)}
+.env-list a small{grid-column:2;color:var(--muted);font-size:.72rem}
+.env-list .dot{width:10px;height:10px;border-radius:50%;background:var(--gold)}
+.env-list a.env-prod .dot{background:var(--brand)}
+.env-list a.env-stage .dot{background:#3d7fe0}
+.pill.stage{background:#dbe8ff;color:#0a3d8f}
 .env-pill-group a{color:rgba(255,255,255,.85);text-decoration:none;font-weight:800;font-size:.78rem;padding:7px 12px;border-radius:var(--radius-pill);border:1px solid rgba(255,255,255,.4)}
 .env-pill-group a.on-test{background:var(--gold);color:#5c4400;border-color:transparent}
 .env-pill-group a.on-prod{background:#fff;color:var(--brand);border-color:transparent}
@@ -85,6 +102,22 @@ a{color:var(--brand-dark)}
 .table td{padding:10px 12px;vertical-align:middle;border-color:var(--line-soft);white-space:nowrap;max-width:320px;overflow:hidden;text-overflow:ellipsis}
 /* opt-out of the cell clipping above for values people need to read or copy in full (IDs) */
 .table td.cell-full{white-space:normal;max-width:none;overflow:visible;text-overflow:clip}
+/* dashboard quick links */
+.quick-links{display:flex;flex-direction:column;gap:8px}
+.quick-links a{display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--line);border-radius:var(--radius-sm);text-decoration:none;color:var(--text-strong);font-weight:650;background:var(--surface-alt);transition:background .12s,border-color .12s,transform .12s}
+.quick-links a:hover{background:var(--surface-hover);border-color:var(--brand);transform:translateX(2px)}
+.ql-icon{width:34px;height:34px;border-radius:9px;background:var(--brand-light);color:var(--brand-dark);display:inline-flex;align-items:center;justify-content:center;flex:none}
+.ql-label{flex:1}
+.ql-go{color:var(--muted);font-size:.75rem}
+/* Complaint Investigation source switch */
+.source-tabs{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+.source-tab{display:flex;align-items:center;gap:12px;padding:12px 18px;min-width:260px;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);text-decoration:none;color:var(--text);box-shadow:var(--shadow-sm,0 1px 2px rgba(0,0,0,.05))}
+.source-tab i{font-size:1.15rem;color:var(--muted)}
+.source-tab span{display:flex;flex-direction:column;line-height:1.25}
+.source-tab small{color:var(--muted)}
+.source-tab:hover{border-color:var(--brand)}
+.source-tab.active{border-color:var(--brand);background:var(--brand-light);box-shadow:inset 3px 0 0 var(--brand)}
+.source-tab.active i{color:var(--brand-dark)}
 /* auto table layout lets an overflow:hidden cell collapse to a few px next to wide neighbours (status badges vanished); keep cells that hold a badge/button at least their content width */
 .table td:has(>.badge),.table td:has(>.btn){overflow:visible;min-width:max-content}
 .txid{overflow-wrap:anywhere;user-select:all}

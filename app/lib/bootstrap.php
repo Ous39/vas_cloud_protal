@@ -132,7 +132,7 @@ function ensure_portal_runtime_schema(): void {
         }
 
         if (!$columnExists('portal_users', 'default_schema_name')) {
-            $db->exec("ALTER TABLE portal_users ADD COLUMN default_schema_name ENUM('HeraTesting','HeraProduction') NOT NULL DEFAULT 'HeraTesting' AFTER status");
+            $db->exec("ALTER TABLE portal_users ADD COLUMN default_schema_name VARCHAR(64) NOT NULL DEFAULT 'HeraTesting' AFTER status");
         }
         if (!$columnExists('portal_users', 'last_login')) {
             $db->exec('ALTER TABLE portal_users ADD COLUMN last_login DATETIME NULL AFTER default_schema_name');
@@ -273,7 +273,7 @@ function ensure_portal_runtime_schema(): void {
         $db->exec("CREATE TABLE IF NOT EXISTS promotions (
             id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
             name VARCHAR(150) NOT NULL,
-            schema_name ENUM('HeraTesting','HeraProduction') NOT NULL DEFAULT 'HeraTesting',
+            schema_name VARCHAR(64) NOT NULL DEFAULT 'HeraTesting',
             created_by VARCHAR(80) NULL,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE KEY uq_promotion_name_schema (name, schema_name)
@@ -336,7 +336,7 @@ function ensure_portal_runtime_schema(): void {
         $db->exec("CREATE TABLE IF NOT EXISTS saved_queries (
             id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
             name VARCHAR(150) NOT NULL,
-            schema_name ENUM('HeraTesting','HeraProduction') NOT NULL DEFAULT 'HeraTesting',
+            schema_name VARCHAR(64) NOT NULL DEFAULT 'HeraTesting',
             sql_text MEDIUMTEXT NOT NULL,
             category VARCHAR(80) NULL,
             created_by VARCHAR(80) NULL,
@@ -424,6 +424,13 @@ function ensure_portal_runtime_schema(): void {
         $safeExec("ALTER TABLE portal_projects MODIFY status ENUM('Planning','Development','Testing','Launched','Completed','Suspended') NOT NULL DEFAULT 'Planning'");
         if ($columnExists('portal_projects','project_code')) $safeExec("ALTER TABLE portal_projects MODIFY project_code VARCHAR(80) NULL");
 
+        // Older installs created these as ENUM('HeraTesting','HeraProduction'); widen so HeraStaging/Hera can be used.
+        foreach ([['portal_users', 'default_schema_name'], ['promotions', 'schema_name'], ['saved_queries', 'schema_name']] as [$t, $col]) {
+            $st = $db->prepare('SELECT DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND COLUMN_NAME=?');
+            $st->execute([$schema, $t, $col]);
+            $type = $st->fetchColumn();
+            if ($type === 'enum') $db->exec("ALTER TABLE `$t` MODIFY `$col` VARCHAR(64) NOT NULL DEFAULT 'HeraTesting'");
+        }
         $db->exec("UPDATE portal_users SET default_schema_name='HeraTesting' WHERE default_schema_name IS NULL OR default_schema_name='' ");
     } catch (Throwable $e) {
         // Do not block the whole portal if migration fails; the visible page will show the real DB error.
@@ -432,7 +439,15 @@ function ensure_portal_runtime_schema(): void {
 function allowed_schemas(): array { return app_config('allowed_schemas'); }
 function current_schema(): string { $s=$_SESSION['schema'] ?? app_config('default_schema'); return in_array($s, allowed_schemas(), true) ? $s : app_config('default_schema'); }
 function set_current_schema(string $s): void { if (in_array($s, allowed_schemas(), true)) $_SESSION['schema']=$s; }
-function opposite_schema(string $s): string { return $s==='HeraProduction' ? 'HeraTesting' : 'HeraProduction'; }
+function opposite_schema(string $s): string { return is_protected_schema($s) ? 'HeraTesting' : 'HeraProduction'; }
+// Live databases: no free-form SQL writes, never the target of a truncating sync. Anything else
+// (HeraTesting, HeraStaging) is a scratch/pre-prod copy.
+const PROTECTED_SCHEMAS = ['HeraProduction', 'Hera'];
+function is_protected_schema(string $s): bool { return in_array($s, PROTECTED_SCHEMAS, true); }
+function schema_label(string $s): string { return ['HeraProduction' => 'Production', 'HeraTesting' => 'Testing', 'HeraStaging' => 'Staging', 'Hera' => 'Hera (live)'][$s] ?? $s; }
+function schema_short(string $s): string { return ['HeraProduction' => 'PROD', 'HeraTesting' => 'TEST', 'HeraStaging' => 'STAGING', 'Hera' => 'HERA'][$s] ?? strtoupper($s); }
+// css class used for the environment pill: prod (red) for live databases, stage (blue), test (amber)
+function schema_kind(string $s): string { return is_protected_schema($s) ? 'prod' : ($s === 'HeraStaging' ? 'stage' : 'test'); }
 function ident(string $name): string { if (!preg_match('/^[A-Za-z0-9_]+$/',$name)) throw new InvalidArgumentException('Invalid identifier: '.$name); return '`'.$name.'`'; }
 function full_ident(string $schema,string $table): string { return ident($schema).'.'.ident($table); }
 
@@ -611,7 +626,7 @@ function sync_table(string $from,string $to,string $table): int {
     if (!table_exists($from, $table) || !table_exists($to, $table)) throw new RuntimeException('Table must exist in both schemas.');
     // Destructive TRUNCATE+reload is only ever allowed when the destination is HeraTesting.
     // HeraProduction can only be updated via merge_table(), which never deletes existing rows.
-    if ($to === 'HeraProduction') throw new RuntimeException('Full-table sync cannot target HeraProduction (would truncate live data). Use "Merge into Production" instead.');
+    if (is_protected_schema($to)) throw new RuntimeException('Full-table sync cannot target '.$to.' (would truncate live data). Use Merge instead.');
     pdo($to)->exec('SET FOREIGN_KEY_CHECKS=0');
     pdo($to)->exec('TRUNCATE TABLE '.ident($table));
     $cols=array_column(columns($from,$table),'name'); $colsql=implode(',',array_map('ident',$cols));
@@ -683,8 +698,8 @@ function run_sql(string $schema,string $sql,int $maxRows=SQL_CONSOLE_MAX_ROWS): 
     // HeraProduction is read-only from the free-form SQL console; production writes must go through the
     // audited, confirmation-gated record forms (insert_record/update_record/copy_record), which are scoped
     // to a single primary key and cannot run an unbounded UPDATE/CREATE/ALTER against live data.
-    if ($schema === 'HeraProduction' && !in_array($kind, SQL_READONLY_KINDS, true)) {
-        throw new RuntimeException('HeraProduction is read-only in the SQL Console. Use the record forms (Add/Edit/Copy) for production writes.');
+    if (is_protected_schema($schema) && !in_array($kind, SQL_READONLY_KINDS, true)) {
+        throw new RuntimeException($schema.' is read-only in the SQL Console. Use the record forms (Add/Edit/Copy) for production writes.');
     }
     $db=pdo($schema);
     if(in_array($kind,SQL_READONLY_KINDS,true)){
@@ -822,13 +837,16 @@ function investigate_source_tabs(array $sources, string $current, array $get): s
     foreach (['msisdn', 'transaction_id', 'channel', 'result_desc'] as $k) if (trim((string)($get[$k] ?? '')) !== '') $carry[$k] = trim((string)$get[$k]);
     $to = strtotime((string)($get['date_to'] ?? '')) ?: strtotime('today');
     $from = strtotime((string)($get['date_from'] ?? '')) ?: $to;
-    $html = '<ul class="nav nav-pills mb-3">';
+    $desc = ['audit_log' => 'Full request &amp; response', 'subscription' => 'Subscription attempts &amp; results'];
+    $icon = ['audit_log' => 'fa-file-lines', 'subscription' => 'fa-user-check'];
+    $html = '<div class="source-tabs">';
     foreach ($sources as $key => $label) {
         $max = $key === 'subscription' ? SUBSCRIPTION_LOG_MAX_RANGE_DAYS : AUDIT_LOG_MAX_RANGE_DAYS;
         $q = array_merge(['page' => 'investigate', 'source' => $key, 'date_from' => date('Y-m-d', max($from, $to - ($max - 1) * 86400)), 'date_to' => date('Y-m-d', $to)], $carry);
-        $html .= '<li class="nav-item"><a class="nav-link '.($key === $current ? 'active' : '').'" href="?'.e(http_build_query($q)).'">'.e($label).'</a></li>';
+        $name = explode(' — ', (string)$label)[0];
+        $html .= '<a class="source-tab'.($key === $current ? ' active' : '').'" href="?'.e(http_build_query($q)).'"><i class="fa-solid '.($icon[$key] ?? 'fa-database').'"></i><span><strong>'.e($name).'</strong><small>'.($desc[$key] ?? '').'</small></span></a>';
     }
-    return $html.'</ul>';
+    return $html.'</div>';
 }
 
 function subscription_log_filters_from_request(array $q): array {
