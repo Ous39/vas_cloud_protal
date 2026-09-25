@@ -286,6 +286,18 @@ function ensure_portal_runtime_schema(): void {
             CONSTRAINT fk_promo_offer_promotion FOREIGN KEY (promotion_id) REFERENCES promotions(id) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
 
+        // Who receives alert emails — managed on the Alerts page. Rows are enabled/disabled, never
+        // deleted (same no-hard-delete convention as the rest of the app). The mail SERVER settings
+        // and password stay in environment variables, not here.
+        $db->exec("CREATE TABLE IF NOT EXISTS alert_recipients (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            email VARCHAR(190) NOT NULL,
+            active TINYINT(1) NOT NULL DEFAULT 1,
+            created_by VARCHAR(80) NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_alert_recipient_email (email)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
         $db->exec("CREATE TABLE IF NOT EXISTS saved_queries (
             id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
             name VARCHAR(150) NOT NULL,
@@ -964,10 +976,25 @@ function send_slack_alert(string $schema, string $message): void {
 // touches the database or the UI: SMTP_HOST, SMTP_PORT (default 587), SMTP_SECURE (tls = STARTTLS,
 // ssl = implicit TLS, none), SMTP_USER / SMTP_PASSWORD (optional, AUTH LOGIN), SMTP_FROM,
 // ALERT_EMAIL_TO (comma-separated), SMTP_TLS_VERIFY=0 to accept an internal self-signed certificate.
-function smtp_settings(): ?array {
+function alert_recipients(): array {
+    try { return portal_pdo()->query('SELECT id,email,active FROM alert_recipients ORDER BY email')->fetchAll(); }
+    catch (Throwable $e) { return []; }
+}
+function save_alert_recipient(string $email): void {
+    $email = strtolower(trim($email));
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 190) throw new RuntimeException('Enter a valid email address.');
+    portal_pdo()->prepare('INSERT INTO alert_recipients(email,created_by) VALUES(?,?) ON DUPLICATE KEY UPDATE active=1')->execute([$email, user()['username'] ?? null]);
+    audit('alert_recipient_add', null, 'alert_recipients', $email, 'enabled');
+}
+function toggle_alert_recipient(int $id): void {
+    $st = portal_pdo()->prepare('UPDATE alert_recipients SET active = 1 - active WHERE id=?');
+    $st->execute([$id]);
+    audit('alert_recipient_toggle', null, 'alert_recipients', (string)$id, null);
+}
+// Mail server only (host/port/credentials from the environment) — null if no SMTP_HOST.
+function smtp_server_settings(): ?array {
     $host = trim((string)getenv('SMTP_HOST'));
-    $to = array_values(array_filter(array_map('trim', explode(',', (string)getenv('ALERT_EMAIL_TO'))), fn($a) => filter_var($a, FILTER_VALIDATE_EMAIL)));
-    if ($host === '' || !$to) return null;
+    if ($host === '') return null;
     $user = (string)getenv('SMTP_USER');
     $from = trim((string)getenv('SMTP_FROM')) ?: $user;
     if (!filter_var($from, FILTER_VALIDATE_EMAIL)) $from = 'vas-cloud@localhost';
@@ -975,8 +1002,19 @@ function smtp_settings(): ?array {
         'host' => $host, 'port' => (int)(getenv('SMTP_PORT') ?: 587),
         'secure' => strtolower(trim((string)(getenv('SMTP_SECURE') ?: 'tls'))),
         'user' => $user, 'pass' => (string)getenv('SMTP_PASSWORD'),
-        'from' => $from, 'to' => $to, 'verify' => getenv('SMTP_TLS_VERIFY') !== '0',
+        'from' => $from, 'verify' => getenv('SMTP_TLS_VERIFY') !== '0',
     ];
+}
+// Server + recipients (enabled ones from the Alerts page, plus ALERT_EMAIL_TO if set) — null unless both exist.
+function smtp_settings(): ?array {
+    $c = smtp_server_settings();
+    if (!$c) return null;
+    $env = array_map('trim', explode(',', (string)getenv('ALERT_EMAIL_TO')));
+    $db = array_column(array_filter(alert_recipients(), fn($r) => (int)$r['active'] === 1), 'email');
+    $to = array_values(array_unique(array_filter(array_map('strtolower', array_merge($db, $env)), fn($a) => filter_var($a, FILTER_VALIDATE_EMAIL))));
+    if (!$to) return null;
+    $c['to'] = $to;
+    return $c;
 }
 // Returns null on success, or a short error string (server response text only — never credentials).
 function smtp_send(array $c, string $subject, string $body): ?string {

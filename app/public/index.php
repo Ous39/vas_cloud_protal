@@ -431,6 +431,12 @@ if ($page==='subscriptions_export') {
 
 if ($page==='alerts') {
     require_perm('view_reports'); $schema=current_schema();
+    if ($_SERVER['REQUEST_METHOD']==='POST' && in_array($_POST['do']??'',['add_recipient','toggle_recipient'],true)) {
+        require_perm('manage_api_keys');
+        if ($_POST['do']==='add_recipient') { save_alert_recipient((string)($_POST['email']??'')); flash('success','Recipient saved.'); }
+        else { toggle_alert_recipient((int)($_POST['id']??0)); flash('success','Recipient updated.'); }
+        redirect('?page=alerts');
+    }
     if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['do']??'')==='test_email') {
         require_perm('manage_api_keys');
         $err = send_email_alert('[VAS Cloud] Test email', 'This is a test email from the VAS Cloud portal Alerts page. If you can read this, alert emails are working.');
@@ -488,10 +494,23 @@ if ($page==='alerts') {
     <div class="cardx mt-3">
         <h3>Push Alerting Setup <small class="text-muted">(admin only)</small></h3>
         <p class="text-muted mb-2">1a. <b>Slack:</b> add a Slack Incoming Webhook as an Integration (Service type: <b>Monitoring</b>, Base URL: your webhook URL, Status: Active) — Integrations page. Alerts fire there whenever this page or the Dashboard is viewed while an alert is active.</p>
-        <?php $smtp = smtp_settings(); ?>
-        <p class="text-muted mb-2">1b. <b>Email:</b> <?php if($smtp):?><span class="badge bg-success">configured</span> sends to <?=e(implode(', ',$smtp['to']))?> via <?=e($smtp['host'].':'.$smtp['port'])?> (<?=e($smtp['secure'])?>)
-            <form method="post" class="d-inline"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="test_email"><button class="btn btn-sm btn-outline-primary ms-2">Send test email</button></form>
-            <?php else:?><span class="badge bg-secondary">not configured</span> set <code>SMTP_HOST</code>, <code>SMTP_PORT</code>, <code>SMTP_SECURE</code> (tls / ssl / none), <code>SMTP_USER</code>, <code>SMTP_PASSWORD</code>, <code>SMTP_FROM</code> and <code>ALERT_EMAIL_TO</code> (comma-separated) as environment variables on the app, then restart it. Slack and email can be used together.<?php endif;?></p>
+        <?php $smtpServer = smtp_server_settings(); $smtp = smtp_settings(); $recipients = alert_recipients(); $envTo = array_filter(array_map('trim', explode(',', (string)getenv('ALERT_EMAIL_TO')))); ?>
+        <p class="text-muted mb-2">1b. <b>Email:</b>
+            <?php if(!$smtpServer):?><span class="badge bg-secondary">mail server not configured</span> the mail server is set by whoever deploys the app, via environment variables (<code>SMTP_HOST</code>, <code>SMTP_PORT</code>, <code>SMTP_SECURE</code> = tls / ssl / none, <code>SMTP_USER</code>, <code>SMTP_PASSWORD</code>, <code>SMTP_FROM</code>) — the password is deliberately not entered here. Once that's set, add the recipients below.
+            <?php elseif(!$smtp):?><span class="badge bg-warning text-dark">no recipients</span> mail server <?=e($smtpServer['host'].':'.$smtpServer['port'])?> (<?=e($smtpServer['secure'])?>) is configured — add at least one recipient below.
+            <?php else:?><span class="badge bg-success">configured</span> sends via <?=e($smtp['host'].':'.$smtp['port'])?> (<?=e($smtp['secure'])?>) to <?=count($smtp['to'])?> recipient(s).
+            <form method="post" class="d-inline"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="test_email"><button class="btn btn-sm btn-outline-primary ms-2">Send test email</button></form><?php endif;?></p>
+        <form method="post" class="row g-2 mb-2"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="add_recipient">
+            <div class="col-md-6"><input class="form-control" type="email" name="email" placeholder="name@company.com" required></div>
+            <div class="col-md-3"><button class="btn btn-primary">Add recipient</button></div>
+        </form>
+        <?php if($recipients || $envTo):?>
+        <div class="table-scroll mb-3"><table class="table table-sm mb-0"><thead><tr><th>Email</th><th>Status</th><th></th></tr></thead><tbody>
+        <?php foreach($recipients as $r):?><tr><td><?=e($r['email'])?></td><td><span class="badge <?=(int)$r['active']?'bg-success':'bg-secondary'?>"><?=(int)$r['active']?'Enabled':'Disabled'?></span></td>
+            <td><form method="post" class="d-inline"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="toggle_recipient"><input type="hidden" name="id" value="<?=e($r['id'])?>"><button class="btn btn-sm btn-outline-dark"><?=(int)$r['active']?'Disable':'Enable'?></button></form></td></tr><?php endforeach;?>
+        <?php foreach($envTo as $addr):?><tr><td><?=e($addr)?></td><td><span class="badge bg-info text-dark">From environment</span></td><td><small class="text-muted">set via ALERT_EMAIL_TO</small></td></tr><?php endforeach;?>
+        </tbody></table></div>
+        <?php endif;?>
         <p class="text-muted mb-0">2. For alerts even when nobody has the app open, point a scheduler (e.g. a Kubernetes CronJob — see deploy/k8s/05-alert-cronjob.yaml) at this URL every few minutes:</p>
         <p class="text-muted small mb-1">In-cluster URL (what the CronJob calls — no public hostname or /portal prefix involved):</p>
         <pre class="mb-0"><?='http://vas-cloud-app.vas-cloud.svc.cluster.local/?page=alert_cron&token='.e(alert_cron_token())?></pre>
