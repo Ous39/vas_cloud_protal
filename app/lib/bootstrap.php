@@ -622,6 +622,13 @@ function run_sql(string $schema,string $sql): array {
 // required to carry a bounded create_date range so MySQL can prune to the relevant partitions instead
 // of scanning the whole table, mirroring how this table is meant to be queried operationally.
 const AUDIT_LOG_TABLE = 'audit_log';
+// Real production stores result_status as a numeric code (0 = success; anything else is a failure
+// code with the reason in result_description), and vas_offers.status as 1/0 — the demo data used
+// 'SUCCESS' and 'active'. Accept both so neither environment reads as "everything failed".
+const AUDIT_SUCCESS_SQL = "COALESCE(UPPER(CAST(result_status AS CHAR)) IN ('0','SUCCESS'), 0)";
+const OFFER_ACTIVE_SQL = "status IN ('1','active')";
+function is_success_status($v): bool { return in_array(strtoupper(trim((string)$v)), ['0','SUCCESS'], true); }
+function offer_is_active($v): bool { return in_array(strtolower(trim((string)$v)), ['1','active'], true); }
 const AUDIT_LOG_MAX_RANGE_DAYS = 31;
 
 function audit_log_filters_from_request(array $q): array {
@@ -832,14 +839,14 @@ function dashboard_kpis(string $schema): array {
     $out = ['tx_today'=>0, 'tx_today_success'=>0, 'tx_today_failed'=>0, 'offers_active'=>0, 'offers_inactive'=>0, 'subscription_rows_est'=>0];
     if (table_exists($schema, AUDIT_LOG_TABLE)) {
         $db = pdo($schema);
-        $st = $db->query("SELECT COUNT(*) total, SUM(CASE WHEN UPPER(result_status)='SUCCESS' THEN 1 ELSE 0 END) ok FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= CURDATE()");
+        $st = $db->query("SELECT COUNT(*) total, SUM(CASE WHEN ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) ok FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= CURDATE()");
         $r = $st->fetch();
         $out['tx_today'] = (int)($r['total'] ?? 0);
         $out['tx_today_success'] = (int)($r['ok'] ?? 0);
         $out['tx_today_failed'] = $out['tx_today'] - $out['tx_today_success'];
     }
     if (table_exists($schema, 'vas_offers')) {
-        $st = pdo($schema)->query("SELECT SUM(status='active') active, SUM(status!='active' OR status IS NULL) inactive FROM ".ident('vas_offers'));
+        $st = pdo($schema)->query("SELECT SUM(".OFFER_ACTIVE_SQL.") active, SUM(NOT COALESCE(".OFFER_ACTIVE_SQL.",0)) inactive FROM ".ident('vas_offers'));
         $r = $st->fetch();
         $out['offers_active'] = (int)($r['active'] ?? 0);
         $out['offers_inactive'] = (int)($r['inactive'] ?? 0);
@@ -850,7 +857,7 @@ function dashboard_kpis(string $schema): array {
 
 function top_vendors_today(string $schema, int $limit = 6): array {
     if (!table_exists($schema, AUDIT_LOG_TABLE)) return [];
-    $st = pdo($schema)->prepare("SELECT vendor_entity_name, COUNT(*) total, SUM(CASE WHEN UPPER(result_status)!='SUCCESS' THEN 1 ELSE 0 END) failed FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= CURDATE() GROUP BY vendor_entity_name ORDER BY total DESC LIMIT ?");
+    $st = pdo($schema)->prepare("SELECT vendor_entity_name, COUNT(*) total, SUM(CASE WHEN NOT ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) failed FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= CURDATE() GROUP BY vendor_entity_name ORDER BY total DESC LIMIT ?");
     $st->bindValue(1, $limit, PDO::PARAM_INT); $st->execute();
     return $st->fetchAll();
 }
@@ -860,7 +867,7 @@ function top_vendors_today(string $schema, int $limit = 6): array {
 function hourly_transaction_trend(string $schema, int $hours = 24): array {
     if (!table_exists($schema, AUDIT_LOG_TABLE)) return [];
     $hours = max(1, min(168, $hours));
-    $st = pdo($schema)->query("SELECT DATE_FORMAT(create_date, '%Y-%m-%d %H:00') hr, COUNT(*) total, SUM(CASE WHEN UPPER(result_status)!='SUCCESS' THEN 1 ELSE 0 END) failed FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL $hours HOUR GROUP BY hr ORDER BY hr");
+    $st = pdo($schema)->query("SELECT DATE_FORMAT(create_date, '%Y-%m-%d %H:00') hr, COUNT(*) total, SUM(CASE WHEN NOT ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) failed FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL $hours HOUR GROUP BY hr ORDER BY hr");
     return $st->fetchAll();
 }
 
@@ -898,7 +905,7 @@ function compute_alerts(string $schema): array {
     if (!table_exists($schema, AUDIT_LOG_TABLE)) return $alerts;
     $db = pdo($schema);
 
-    $st = $db->query("SELECT COUNT(*) total, SUM(CASE WHEN UPPER(result_status)!='SUCCESS' THEN 1 ELSE 0 END) failed FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL 1 HOUR");
+    $st = $db->query("SELECT COUNT(*) total, SUM(CASE WHEN NOT ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) failed FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL 1 HOUR");
     $r = $st->fetch(); $total = (int)($r['total'] ?? 0); $failed = (int)($r['failed'] ?? 0);
     if ($total >= ALERT_FAILURE_MIN_SAMPLE) {
         $rate = $failed / $total;
@@ -974,7 +981,7 @@ function dispatch_pending_alert_notifications(string $schema): void {
 function failure_reasons_breakdown(string $schema, int $hours = 1, int $limit = 8): array {
     if (!table_exists($schema, AUDIT_LOG_TABLE)) return [];
     $hours = max(1, $hours); $limit = max(1, $limit);
-    $st = pdo($schema)->prepare("SELECT COALESCE(NULLIF(TRIM(result_description),''),'(no reason given)') reason, COUNT(*) c FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL $hours HOUR AND UPPER(result_status)!='SUCCESS' GROUP BY reason ORDER BY c DESC LIMIT $limit");
+    $st = pdo($schema)->prepare("SELECT COALESCE(NULLIF(TRIM(result_description),''),'(no reason given)') reason, COUNT(*) c FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL $hours HOUR AND NOT ".AUDIT_SUCCESS_SQL." GROUP BY reason ORDER BY c DESC LIMIT $limit");
     $st->execute();
     return $st->fetchAll();
 }
@@ -1089,7 +1096,7 @@ function agent_queue_snapshot(string $schema): array {
 function channel_activity_today(string $schema, array $channels): array {
     if (!table_exists($schema, AUDIT_LOG_TABLE)) return ['total' => 0, 'success' => 0, 'failed' => 0];
     $placeholders = implode(',', array_fill(0, count($channels), '?'));
-    $st = pdo($schema)->prepare("SELECT COUNT(*) total, SUM(CASE WHEN UPPER(result_status)='SUCCESS' THEN 1 ELSE 0 END) ok FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= CURDATE() AND channel IN ($placeholders)");
+    $st = pdo($schema)->prepare("SELECT COUNT(*) total, SUM(CASE WHEN ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) ok FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= CURDATE() AND channel IN ($placeholders)");
     $st->execute($channels);
     $r = $st->fetch();
     $total = (int)($r['total'] ?? 0); $ok = (int)($r['ok'] ?? 0);

@@ -169,7 +169,7 @@ if ($page==='offers') {
         if (($_POST['action']??'')==='toggle') {
             require_perm('edit_records');
             $row=fetch_record($schema,'vas_offers',['id'=>$id]) ?: throw new RuntimeException('Offer not found');
-            $newStatus = ($row['status']??'')==='active' ? 'inactive' : 'active';
+            $newStatus = offer_is_active($row['status']??'') ? '0' : '1';
             $token=make_confirmation('update',['schema'=>$schema,'table'=>'vas_offers','keys'=>['id'=>$id],'data'=>['status'=>$newStatus]]);
         } else {
             require_perm($id ? 'edit_records' : 'create_records');
@@ -222,7 +222,7 @@ if ($page==='offers') {
                         <div class="col-4"><label>Speed limit</label><input class="form-control mb-2" name="data[speed_limit]" list="dl_speed_limit" value="<?=e($edit['speed_limit']??'NA')?>"><datalist id="dl_speed_limit"><?php foreach($speedLimits as $v):?><option value="<?=e($v)?>"><?php endforeach;?></datalist></div>
                     </div>
                     <label>Status</label>
-                    <select class="form-select mb-2" name="data[status]"><?php foreach(['active','inactive'] as $v):?><option value="<?=e($v)?>" <?=($edit['status']??'inactive')===$v?'selected':''?>><?=e(ucfirst($v))?></option><?php endforeach;?></select>
+                    <select class="form-select mb-2" name="data[status]"><?php $editActive = offer_is_active($edit['status']??''); foreach(['1'=>'Active','0'=>'Inactive'] as $v=>$lbl):?><option value="<?=$v?>" <?=($editActive?'1':'0')===(string)$v?'selected':''?>><?=$lbl?></option><?php endforeach;?></select>
                     <button class="btn btn-primary w-100">Preview & Confirm Save</button>
                     <?php if($edit):?><a class="btn btn-outline-secondary w-100 mt-2" href="?page=offers">Cancel Edit</a><?php endif;?>
                 </form>
@@ -237,7 +237,7 @@ if ($page==='offers') {
                     <div class="col-md-3"><input class="form-control" name="offer_code" placeholder="Offer code" value="<?=e($_GET['offer_code']??'')?>"></div>
                     <div class="col-md-2"><input class="form-control" name="vendor" placeholder="Vendor" value="<?=e($_GET['vendor']??'')?>"></div>
                     <div class="col-md-2"><input class="form-control" name="category" placeholder="Category" value="<?=e($_GET['category']??'')?>"></div>
-                    <div class="col-md-2"><select class="form-select" name="status"><option value="">Any status</option><?php foreach(['active','inactive'] as $v):?><option value="<?=e($v)?>" <?=($_GET['status']??'')===$v?'selected':''?>><?=e(ucfirst($v))?></option><?php endforeach;?></select></div>
+                    <div class="col-md-2"><select class="form-select" name="status"><option value="">Any status</option><?php foreach(['1'=>'Active','0'=>'Inactive'] as $v=>$lbl):?><option value="<?=$v?>" <?=(string)($_GET['status']??'')===(string)$v?'selected':''?>><?=$lbl?></option><?php endforeach;?></select></div>
                     <div class="col-md-2"><label class="form-label small text-muted mb-0">Per page</label><select class="form-select" name="per_page" data-autosubmit><?php foreach(PAGE_SIZE_OPTIONS as $ps):?><option value="<?=$ps?>" <?=$perPage===$ps?'selected':''?>><?=$ps?></option><?php endforeach;?></select></div>
                     <div class="col-12"><button class="btn btn-outline-primary">Search</button> <a class="btn btn-outline-secondary" href="?page=offers">Reset</a></div>
                 </form>
@@ -249,7 +249,7 @@ if ($page==='offers') {
                     <td><?=e($r['category'])?></td>
                     <td><?=e($r['one_time_price'])?></td>
                     <td><?=e($r['validity_amount'])?> day(s)</td>
-                    <td><span class="badge <?=$r['status']==='active'?'bg-success':'bg-secondary'?>"><?=e($r['status'])?></span></td>
+                    <td><span class="badge <?=offer_is_active($r['status'])?'bg-success':'bg-secondary'?>"><?=offer_is_active($r['status'])?'Active':'Inactive'?></span></td>
                     <td class="sticky-actions d-flex gap-1">
                         <a class="btn btn-sm btn-warning" href="?page=offers&id=<?=e($r['id'])?>">Edit</a>
                         <?php if(can('edit_records')):?><form method="post" class="d-inline"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="action" value="toggle"><input type="hidden" name="id" value="<?=e($r['id'])?>"><button class="btn btn-sm btn-outline-dark">Toggle</button></form><?php endif;?>
@@ -753,7 +753,7 @@ if ($page==='ussd_menu') {
     $edit=null; if(isset($_GET['id'])){ $edit=menu_node((int)$_GET['id']); }
     $tree = $shortCode!=='' ? menu_tree($shortCode) : [];
     $flatNodes = $shortCode!=='' ? menu_nodes_flat($shortCode) : [];
-    $offers = table_exists(current_schema(),'vas_offers') ? pdo(current_schema())->query("SELECT offer_code, name FROM vas_offers WHERE status='active' ORDER BY name")->fetchAll() : [];
+    $offers = table_exists(current_schema(),'vas_offers') ? pdo(current_schema())->query("SELECT offer_code, name FROM vas_offers WHERE ".OFFER_ACTIVE_SQL." ORDER BY name")->fetchAll() : [];
     layout_start('USSD Menu Builder');
     ?>
     <div class="cardx">
@@ -966,7 +966,7 @@ if ($page==='investigate') {
             <div class="col-md-2"><label>Date to</label><input type="date" name="date_to" class="form-control" value="<?=e($f['date_to'])?>" required></div>
             <div class="col-md-2"><label>MSISDN</label><input class="form-control" name="msisdn" value="<?=e($f['msisdn'])?>"></div>
             <div class="col-md-2"><label>Transaction ID</label><input class="form-control" name="transaction_id" value="<?=e($f['transaction_id'])?>"></div>
-            <div class="col-md-2"><label>Result status</label><input class="form-control" name="result_status" value="<?=e($f['result_status'])?>" placeholder="SUCCESS / FAILED"></div>
+            <div class="col-md-2"><label>Result status</label><input class="form-control" name="result_status" value="<?=e($f['result_status'])?>" placeholder="0 = success, or a failure code"></div>
             <div class="col-md-2"><label>Vendor</label><input class="form-control" name="vendor" value="<?=e($f['vendor'])?>"></div>
             <div class="col-md-3"><label>Channel</label><input class="form-control" name="channel" value="<?=e($f['channel'])?>"></div>
             <div class="col-md-5"><label>Result description contains</label><input class="form-control" name="result_desc" value="<?=e($f['result_desc'])?>"></div>
@@ -986,7 +986,7 @@ if ($page==='investigate') {
                 <td><?=e($r['msisdn'])?></td>
                 <td><?=e($r['vendor_entity_name'])?></td>
                 <td><?=e($r['channel'])?></td>
-                <td><span class="badge <?=strtoupper((string)$r['result_status'])==='SUCCESS'?'bg-success':'bg-danger'?>"><?=e($r['result_status'])?></span></td>
+                <td><span class="badge <?=is_success_status($r['result_status'])?'bg-success':'bg-danger'?>"><?=e($r['result_status'])?></span></td>
                 <td><?=e(mb_strimwidth((string)$r['result_description'],0,80,'...'))?></td>
                 <td><?=e($r['response_time'])?></td>
                 <td>

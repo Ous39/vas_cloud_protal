@@ -12,7 +12,7 @@ $key = authenticate_api_key($action);
 try {
     if ($action === 'offers') {
         if (!table_exists($schema, 'vas_offers')) api_error(404, 'vas_offers not available in '.$schema);
-        $rows = list_records($schema, 'vas_offers', [['col' => 'status', 'op' => 'equals', 'val' => 'active']], 1, 200)['rows'];
+        $rows = pdo($schema)->query('SELECT * FROM vas_offers WHERE '.OFFER_ACTIVE_SQL.order_by_pk($schema, 'vas_offers').' LIMIT 200')->fetchAll();
         api_json(array_map('redact_row', $rows));
     }
 
