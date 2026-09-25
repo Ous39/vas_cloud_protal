@@ -965,6 +965,7 @@ function subscription_status(array $row): array {
 // operators were hand-writing in the SQL Console, but generated, and offer_code_for_other is read
 // live from vas_offers instead of being duplicated into the promotion.
 const PROMOTION_REPORT_MAX_RANGE_DAYS = 31;
+const REPORT_TIMEOUT_SECONDS = 240;
 
 function list_promotions(string $schema): array {
     $st = portal_pdo()->prepare('SELECT id,name FROM promotions WHERE schema_name=? ORDER BY name');
@@ -1045,9 +1046,21 @@ function offer_performance_report(string $schema, array $offerCodes, string $cha
     $params = array_merge($directParams, $otherParams, [$dateFrom.' 00:00:00', date('Y-m-d', strtotime($dateTo.' +1 day')).' 00:00:00']);
     if ($channel !== '') { $sql .= ' AND s.channel = ?'; $params[] = $channel; }
     $sql .= " GROUP BY ReportDate, Channel, OfferCode, TransactionOfferCode, PurchaseType, OfferName, s.result_desc ORDER BY ReportDate, OfferName, PurchaseType, ResultStatus, FailureReason";
-    $st = $db->prepare($sql);
-    $st->execute($params);
-    return $st->fetchAll();
+    // This aggregates every subscription row in the range, so a busy day can outlast the ingress timeout.
+    // Give it a bounded budget (matched by proxy-read-timeout in deploy/k8s/04-ingress.yaml) and turn a
+    // MySQL "query execution was interrupted" into an actionable message instead of a bare 504.
+    @set_time_limit(REPORT_TIMEOUT_SECONDS + 20);
+    try { $db->exec('SET SESSION max_execution_time='.(REPORT_TIMEOUT_SECONDS * 1000)); } catch (Throwable $e) {}
+    try {
+        $st = $db->prepare($sql);
+        $st->execute($params);
+        return $st->fetchAll();
+    } catch (PDOException $e) {
+        if (str_contains($e->getMessage(), 'max_execution_time') || str_contains($e->getMessage(), 'interrupted')) {
+            throw new RuntimeException('The report took longer than '.REPORT_TIMEOUT_SECONDS.'s and was stopped. Narrow it: pick one channel or specific offers, or use a shorter time range.');
+        }
+        throw $e;
+    }
 }
 
 // ===================== Operational dashboard + alerts =====================
