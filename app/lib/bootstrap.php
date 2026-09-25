@@ -942,7 +942,9 @@ function top_vendors_today(string $schema, int $limit = 6): array {
 function hourly_transaction_trend(string $schema, int $hours = 24): array {
     if (!table_exists($schema, AUDIT_LOG_TABLE)) return [];
     $hours = max(1, min(168, $hours));
-    $st = pdo($schema)->query("SELECT DATE_FORMAT(create_date, '%Y-%m-%d %H:00') hr, COUNT(*) total, SUM(CASE WHEN NOT ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) failed FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL $hours HOUR GROUP BY hr ORDER BY hr");
+    [$cf, $params] = alert_counted_failure_sql();
+    $st = pdo($schema)->prepare("SELECT DATE_FORMAT(create_date, '%Y-%m-%d %H:00') hr, COUNT(*) total, SUM(CASE WHEN NOT ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) failed, SUM(CASE WHEN $cf THEN 1 ELSE 0 END) counted_failed FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL $hours HOUR GROUP BY hr ORDER BY hr");
+    $st->execute($params);
     return $st->fetchAll();
 }
 
@@ -1012,6 +1014,26 @@ function save_alert_ignored_reasons(array $reasons): void {
     audit('alert_ignored_save', null, 'alert_ignored_reasons', null, count($reasons).' reason(s) ignored');
 }
 
+// SQL condition (+ bind params) for a failure that counts toward the failure-rate alert: not a
+// success, and not one of the failure reasons the admin chose to ignore. Shared by the alert itself,
+// the trend chart and the summary tiles so they can never disagree about what "counted" means.
+function alert_counted_failure_sql(): array {
+    $ignored = alert_ignored_reasons();
+    $sql = '(NOT '.AUDIT_SUCCESS_SQL.')'; $params = [];
+    if ($ignored) { $sql .= " AND COALESCE(result_description,'') NOT IN (".implode(',', array_fill(0, count($ignored), '?')).")"; $params = $ignored; }
+    return [$sql, $params, $ignored];
+}
+function alert_window_stats(string $schema, int $hours = 1): array {
+    $out = ['total' => 0, 'failed' => 0, 'counted' => 0];
+    if (!table_exists($schema, AUDIT_LOG_TABLE)) return $out;
+    $hours = max(1, min(168, $hours));
+    [$cf, $params] = alert_counted_failure_sql();
+    $st = pdo($schema)->prepare("SELECT COUNT(*) total, SUM(CASE WHEN NOT ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) failed, SUM(CASE WHEN $cf THEN 1 ELSE 0 END) counted FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL $hours HOUR");
+    $st->execute($params);
+    $r = $st->fetch();
+    return ['total' => (int)($r['total'] ?? 0), 'failed' => (int)($r['failed'] ?? 0), 'counted' => (int)($r['counted'] ?? 0)];
+}
+
 function compute_alerts(string $schema): array {
     $alerts = [];
     if (!table_exists($schema, AUDIT_LOG_TABLE)) return $alerts;
@@ -1021,10 +1043,8 @@ function compute_alerts(string $schema): array {
     if ($cfg['failure_rate_enabled']) {
         // Reasons the admin chose to ignore (customer-side failures such as insufficient balance)
         // still count in the total but not as failures, so they can't trip the alert on their own.
-        $ignored = alert_ignored_reasons();
-        $skip = ''; $params = [];
-        if ($ignored) { $skip = " AND COALESCE(result_description,'') NOT IN (".implode(',', array_fill(0, count($ignored), '?')).")"; $params = $ignored; }
-        $st = $db->prepare("SELECT COUNT(*) total, SUM(CASE WHEN (NOT ".AUDIT_SUCCESS_SQL.")".$skip." THEN 1 ELSE 0 END) failed FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL 1 HOUR");
+        [$cf, $params, $ignored] = alert_counted_failure_sql();
+        $st = $db->prepare("SELECT COUNT(*) total, SUM(CASE WHEN $cf THEN 1 ELSE 0 END) failed FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL 1 HOUR");
         $st->execute($params);
         $r = $st->fetch(); $total = (int)($r['total'] ?? 0); $failed = (int)($r['failed'] ?? 0);
         if ($total >= $cfg['failure_min_sample']) {
