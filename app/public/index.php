@@ -23,6 +23,7 @@ function nav_can_see(string $page): bool {
     if ($page==='audit') return can('view_audit');
     if ($page==='api_keys') return can('manage_api_keys');
     if ($page==='promotions') return can('manage_promotions');
+    if ($page==='alert_settings') return can('manage_api_keys');
     if (in_array($page,['investigate','reports','alerts','monitoring','offer_report'],true)) return can('view_reports');
     if (in_array($page,['subscriptions','offers','esim','sales','friends_family','voting','ussd_ivr','ussd_menu','integrations','tables','projects','shortcodes'],true)) return can('view_tables');
     return true;
@@ -35,7 +36,7 @@ function layout_start(string $title): void {
         ['group','fa-layer-group','Operations',[['subscriptions','fa-user-check','Subscriptions'],['offers','fa-tags','Offer Management'],['esim','fa-sim-card','eSIM Profiles'],['sales','fa-file-invoice-dollar','Sales & Invoices'],['friends_family','fa-user-group','Friends & Family'],['voting','fa-square-poll-vertical','Voting Service']]],
         ['group','fa-tower-broadcast','Infrastructure',[['ussd_ivr','fa-mobile-screen-button','USSD & IVR'],['ussd_menu','fa-sitemap','USSD Menu Builder'],['integrations','fa-plug-circle-check','Integrations']]],
         ['group','fa-chart-line','Reports',[['investigate','fa-headset','Complaint Investigation'],['alerts','fa-triangle-exclamation','Alerts'],['offer_report','fa-bullhorn','Offer Performance'],['reports','fa-chart-line','Reports'],['sql','fa-code','SQL Console']]],
-        ['group','fa-gears','Admin',[['tables','fa-database','Database Tables'],['promotions','fa-bullhorn','Promotions'],['projects','fa-diagram-project','Projects'],['shortcodes','fa-hashtag','Short Codes'],['api_keys','fa-key','Partner API Keys'],['audit','fa-shield-halved','Audit Trail'],['users','fa-users-gear','Users']]],
+        ['group','fa-gears','Admin',[['tables','fa-database','Database Tables'],['promotions','fa-bullhorn','Promotions'],['projects','fa-diagram-project','Projects'],['shortcodes','fa-hashtag','Short Codes'],['api_keys','fa-key','Partner API Keys'],['alert_settings','fa-bell','Alert Settings'],['audit','fa-shield-halved','Audit Trail'],['users','fa-users-gear','Users']]],
     ];
     ?>
 <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title><?=e($title)?> - VAS Cloud</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"><link href="style.css?v=<?=e(asset_version())?>" rel="stylesheet"><script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script></head><body>
@@ -429,22 +430,66 @@ if ($page==='subscriptions_export') {
     exit;
 }
 
-if ($page==='alerts') {
-    require_perm('view_reports'); $schema=current_schema();
+if ($page==='alert_settings') {
+    require_perm('manage_api_keys'); $schema=current_schema();
     if ($_SERVER['REQUEST_METHOD']==='POST' && in_array($_POST['do']??'',['add_recipient','toggle_recipient','save_smtp'],true)) {
         require_perm('manage_api_keys');
         if ($_POST['do']==='save_smtp') { save_smtp_settings($_POST); flash('success','Mail server saved. Use "Send test email" to check it.'); }
         elseif ($_POST['do']==='add_recipient') { save_alert_recipient((string)($_POST['email']??'')); flash('success','Recipient saved.'); }
         else { toggle_alert_recipient((int)($_POST['id']??0)); flash('success','Recipient updated.'); }
-        redirect('?page=alerts');
+        redirect('?page=alert_settings');
     }
     if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['do']??'')==='test_email') {
         require_perm('manage_api_keys');
-        $err = send_email_alert('[VAS Cloud] Test email', 'This is a test email from the VAS Cloud portal Alerts page. If you can read this, alert emails are working.');
+        $err = send_email_alert('[VAS Cloud] Test email', 'This is a test email from the VAS Cloud portal Alert Settings page. If you can read this, alert emails are working.');
         audit('alert_test_email',$schema,null,null,$err ?? 'sent');
         flash($err===null?'success':'danger', $err===null?'Test email sent — check the inbox(es) below.':'Test email failed: '.$err);
-        redirect('?page=alerts');
+        redirect('?page=alert_settings');
     }
+    layout_start('Alert Settings');
+    ?>
+    <div class="cardx">
+        <h3>Push Alerting Setup</h3>
+        <p class="text-muted mb-2">1a. <b>Slack:</b> add a Slack Incoming Webhook as an Integration (Service type: <b>Monitoring</b>, Base URL: your webhook URL, Status: Active) — Integrations page. Alerts fire there whenever the Alerts page or the Dashboard is viewed while an alert is active.</p>
+        <?php $smtpServer = smtp_server_settings(); $smtp = smtp_settings(); $recipients = alert_recipients(); $envTo = array_filter(array_map('trim', explode(',', (string)getenv('ALERT_EMAIL_TO')))); ?>
+        <p class="text-muted mb-2">1b. <b>Email:</b>
+            <?php if(!$smtpServer):?><span class="badge bg-secondary">mail server not configured</span> fill in the mail server below, then add recipients.
+            <?php elseif(!$smtp):?><span class="badge bg-warning text-dark">no recipients</span> mail server <?=e($smtpServer['host'].':'.$smtpServer['port'])?> (<?=e($smtpServer['secure'])?>) is configured — add at least one recipient below.
+            <?php else:?><span class="badge bg-success">configured</span> sends via <?=e($smtp['host'].':'.$smtp['port'])?> (<?=e($smtp['secure'])?>, settings from <?=e($smtp['source'])?>) to <?=count($smtp['to'])?> recipient(s).
+            <form method="post" class="d-inline"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="test_email"><button class="btn btn-sm btn-outline-primary ms-2">Send test email</button></form><?php endif;?></p>
+        <details class="mb-3" <?=$smtpServer?'':'open'?>><summary class="fw-semibold">Mail server settings</summary>
+        <form method="post" class="row g-2 mt-1"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="save_smtp">
+            <div class="col-md-5"><label class="small text-muted mb-0">SMTP host</label><input class="form-control" name="host" value="<?=e($smtpServer['host']??'')?>" placeholder="mail.company.com" required></div>
+            <div class="col-md-2"><label class="small text-muted mb-0">Port</label><input class="form-control" type="number" name="port" value="<?=e($smtpServer['port']??587)?>" required></div>
+            <div class="col-md-3"><label class="small text-muted mb-0">Security</label><select class="form-select" name="secure"><?php foreach(['tls'=>'STARTTLS (587)','ssl'=>'SSL/TLS (465)','none'=>'None (25)'] as $v=>$lbl):?><option value="<?=$v?>" <?=($smtpServer['secure']??'tls')===$v?'selected':''?>><?=$lbl?></option><?php endforeach;?></select></div>
+            <div class="col-md-2 d-flex align-items-end"><div class="form-check"><input class="form-check-input" type="checkbox" name="tls_verify" value="1" id="tlsv" <?=($smtpServer['verify']??true)?'checked':''?>><label class="form-check-label small" for="tlsv">Verify certificate</label></div></div>
+            <div class="col-md-4"><label class="small text-muted mb-0">Username <small>(blank if none)</small></label><input class="form-control" name="username" value="<?=e($smtpServer['user']??'')?>" autocomplete="off"></div>
+            <div class="col-md-4"><label class="small text-muted mb-0">Password</label><input class="form-control" type="password" name="password" autocomplete="new-password" placeholder="<?=!empty($smtpServer['has_password'])?'saved — leave blank to keep':'password'?>"></div>
+            <div class="col-md-4"><label class="small text-muted mb-0">From address</label><input class="form-control" type="email" name="from_email" value="<?=e(($smtpServer['from']??'')==='vas-cloud@localhost'?'':($smtpServer['from']??''))?>" placeholder="alerts@company.com"></div>
+            <div class="col-12"><button class="btn btn-primary">Save mail server</button> <small class="text-muted">The password is stored encrypted and is never shown again.<?php if(($smtpServer['source']??'')==='environment'):?> Currently using the environment's settings; saving here overrides them.<?php endif;?></small></div>
+        </form></details>
+        <form method="post" class="row g-2 mb-2"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="add_recipient">
+            <div class="col-md-6"><input class="form-control" type="email" name="email" placeholder="name@company.com" required></div>
+            <div class="col-md-3"><button class="btn btn-primary">Add recipient</button></div>
+        </form>
+        <?php if($recipients || $envTo):?>
+        <div class="table-scroll mb-3"><table class="table table-sm mb-0"><thead><tr><th>Email</th><th>Status</th><th></th></tr></thead><tbody>
+        <?php foreach($recipients as $r):?><tr><td><?=e($r['email'])?></td><td><span class="badge <?=(int)$r['active']?'bg-success':'bg-secondary'?>"><?=(int)$r['active']?'Enabled':'Disabled'?></span></td>
+            <td><form method="post" class="d-inline"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="toggle_recipient"><input type="hidden" name="id" value="<?=e($r['id'])?>"><button class="btn btn-sm btn-outline-dark"><?=(int)$r['active']?'Disable':'Enable'?></button></form></td></tr><?php endforeach;?>
+        <?php foreach($envTo as $addr):?><tr><td><?=e($addr)?></td><td><span class="badge bg-info text-dark">From environment</span></td><td><small class="text-muted">set via ALERT_EMAIL_TO</small></td></tr><?php endforeach;?>
+        </tbody></table></div>
+        <?php endif;?>
+        <p class="text-muted mb-0">2. For alerts even when nobody has the app open, point a scheduler (e.g. a Kubernetes CronJob — see deploy/k8s/05-alert-cronjob.yaml) at this URL every few minutes:</p>
+        <p class="text-muted small mb-1">In-cluster URL (what the CronJob calls — no public hostname or /portal prefix involved):</p>
+        <pre class="mb-0"><?='http://vas-cloud-app.vas-cloud.svc.cluster.local/?page=alert_cron&token='.e(alert_cron_token())?></pre>
+    </div>
+    </div>
+    <p class="mt-3"><a href="?page=alerts">&larr; Back to Alerts &amp; Monitoring</a></p>
+    <?php layout_end(); exit;
+}
+
+if ($page==='alerts') {
+    require_perm('view_reports'); $schema=current_schema();
     $alerts=compute_alerts($schema);
     if ($alerts) dispatch_pending_alert_notifications($schema);
     $failureReasons=failure_reasons_breakdown($schema, 1, 8);
@@ -454,7 +499,7 @@ if ($page==='alerts') {
     ?>
     <div class="cardx">
         <h3><i class="fa-solid fa-triangle-exclamation me-2"></i>Alerts</h3>
-        <p class="text-muted">Computed on page load from <?=e(AUDIT_LOG_TABLE)?> — high failure rate in the last hour, and vendors that were active this time yesterday but silent in the last hour. Also pushed to Slack (at most every <?=ALERT_RENOTIFY_MINUTES?> minutes per alert) if a monitoring integration is configured below, and via a scheduled check if one's set up — see Push Alerting Setup.</p>
+        <p class="text-muted">Computed on page load from <?=e(AUDIT_LOG_TABLE)?> — high failure rate in the last hour, and vendors that were active this time yesterday but silent in the last hour. Also pushed to Slack (at most every <?=ALERT_RENOTIFY_MINUTES?> minutes per alert) if a monitoring integration is configured, and by email if a mail server and recipients are set up — see Admin → Alert Settings.</p>
         <?php if(!$alerts):?><div class="alert alert-success mb-0">No active alerts.</div><?php else: foreach($alerts as $a):?><div class="alert alert-<?=e($a['level'])?>"><?=e($a['message'])?></div><?php endforeach; endif;?>
     </div>
     <div class="cardx mt-3">
@@ -491,43 +536,7 @@ if ($page==='alerts') {
         options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, max: 100 } } }
     });
     </script><?php endif;?>
-    <?php if(can('manage_api_keys')):?>
-    <div class="cardx mt-3">
-        <h3>Push Alerting Setup <small class="text-muted">(admin only)</small></h3>
-        <p class="text-muted mb-2">1a. <b>Slack:</b> add a Slack Incoming Webhook as an Integration (Service type: <b>Monitoring</b>, Base URL: your webhook URL, Status: Active) — Integrations page. Alerts fire there whenever this page or the Dashboard is viewed while an alert is active.</p>
-        <?php $smtpServer = smtp_server_settings(); $smtp = smtp_settings(); $recipients = alert_recipients(); $envTo = array_filter(array_map('trim', explode(',', (string)getenv('ALERT_EMAIL_TO')))); ?>
-        <p class="text-muted mb-2">1b. <b>Email:</b>
-            <?php if(!$smtpServer):?><span class="badge bg-secondary">mail server not configured</span> fill in the mail server below, then add recipients.
-            <?php elseif(!$smtp):?><span class="badge bg-warning text-dark">no recipients</span> mail server <?=e($smtpServer['host'].':'.$smtpServer['port'])?> (<?=e($smtpServer['secure'])?>) is configured — add at least one recipient below.
-            <?php else:?><span class="badge bg-success">configured</span> sends via <?=e($smtp['host'].':'.$smtp['port'])?> (<?=e($smtp['secure'])?>, settings from <?=e($smtp['source'])?>) to <?=count($smtp['to'])?> recipient(s).
-            <form method="post" class="d-inline"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="test_email"><button class="btn btn-sm btn-outline-primary ms-2">Send test email</button></form><?php endif;?></p>
-        <details class="mb-3" <?=$smtpServer?'':'open'?>><summary class="fw-semibold">Mail server settings</summary>
-        <form method="post" class="row g-2 mt-1"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="save_smtp">
-            <div class="col-md-5"><label class="small text-muted mb-0">SMTP host</label><input class="form-control" name="host" value="<?=e($smtpServer['host']??'')?>" placeholder="mail.company.com" required></div>
-            <div class="col-md-2"><label class="small text-muted mb-0">Port</label><input class="form-control" type="number" name="port" value="<?=e($smtpServer['port']??587)?>" required></div>
-            <div class="col-md-3"><label class="small text-muted mb-0">Security</label><select class="form-select" name="secure"><?php foreach(['tls'=>'STARTTLS (587)','ssl'=>'SSL/TLS (465)','none'=>'None (25)'] as $v=>$lbl):?><option value="<?=$v?>" <?=($smtpServer['secure']??'tls')===$v?'selected':''?>><?=$lbl?></option><?php endforeach;?></select></div>
-            <div class="col-md-2 d-flex align-items-end"><div class="form-check"><input class="form-check-input" type="checkbox" name="tls_verify" value="1" id="tlsv" <?=($smtpServer['verify']??true)?'checked':''?>><label class="form-check-label small" for="tlsv">Verify certificate</label></div></div>
-            <div class="col-md-4"><label class="small text-muted mb-0">Username <small>(blank if none)</small></label><input class="form-control" name="username" value="<?=e($smtpServer['user']??'')?>" autocomplete="off"></div>
-            <div class="col-md-4"><label class="small text-muted mb-0">Password</label><input class="form-control" type="password" name="password" autocomplete="new-password" placeholder="<?=!empty($smtpServer['has_password'])?'saved — leave blank to keep':'password'?>"></div>
-            <div class="col-md-4"><label class="small text-muted mb-0">From address</label><input class="form-control" type="email" name="from_email" value="<?=e(($smtpServer['from']??'')==='vas-cloud@localhost'?'':($smtpServer['from']??''))?>" placeholder="alerts@company.com"></div>
-            <div class="col-12"><button class="btn btn-primary">Save mail server</button> <small class="text-muted">The password is stored encrypted and is never shown again.<?php if(($smtpServer['source']??'')==='environment'):?> Currently using the environment's settings; saving here overrides them.<?php endif;?></small></div>
-        </form></details>
-        <form method="post" class="row g-2 mb-2"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="add_recipient">
-            <div class="col-md-6"><input class="form-control" type="email" name="email" placeholder="name@company.com" required></div>
-            <div class="col-md-3"><button class="btn btn-primary">Add recipient</button></div>
-        </form>
-        <?php if($recipients || $envTo):?>
-        <div class="table-scroll mb-3"><table class="table table-sm mb-0"><thead><tr><th>Email</th><th>Status</th><th></th></tr></thead><tbody>
-        <?php foreach($recipients as $r):?><tr><td><?=e($r['email'])?></td><td><span class="badge <?=(int)$r['active']?'bg-success':'bg-secondary'?>"><?=(int)$r['active']?'Enabled':'Disabled'?></span></td>
-            <td><form method="post" class="d-inline"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="toggle_recipient"><input type="hidden" name="id" value="<?=e($r['id'])?>"><button class="btn btn-sm btn-outline-dark"><?=(int)$r['active']?'Disable':'Enable'?></button></form></td></tr><?php endforeach;?>
-        <?php foreach($envTo as $addr):?><tr><td><?=e($addr)?></td><td><span class="badge bg-info text-dark">From environment</span></td><td><small class="text-muted">set via ALERT_EMAIL_TO</small></td></tr><?php endforeach;?>
-        </tbody></table></div>
-        <?php endif;?>
-        <p class="text-muted mb-0">2. For alerts even when nobody has the app open, point a scheduler (e.g. a Kubernetes CronJob — see deploy/k8s/05-alert-cronjob.yaml) at this URL every few minutes:</p>
-        <p class="text-muted small mb-1">In-cluster URL (what the CronJob calls — no public hostname or /portal prefix involved):</p>
-        <pre class="mb-0"><?='http://vas-cloud-app.vas-cloud.svc.cluster.local/?page=alert_cron&token='.e(alert_cron_token())?></pre>
-    </div>
-    <?php endif;?>
+    <?php if(can('manage_api_keys')):?><p class="mt-3 mb-0 text-muted">Slack/email push alerts and the scheduled check are set up under <a href="?page=alert_settings">Admin &rarr; Alert Settings</a>.</p><?php endif;?>
     <?php layout_end(); exit;
 }
 
