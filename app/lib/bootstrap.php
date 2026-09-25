@@ -1693,18 +1693,72 @@ function render_menu_preview(array $tree, int $depth = 0): string {
 }
 
 // ===================== Unified Monitoring =====================
+// ===================== Monitoring page =====================
+// An integration check is only as fresh as the last time someone (or "Check all now") ran it — nothing
+// runs them in the background — so a green UP from three days ago must not read as current health.
+const INTEGRATION_STALE_MINUTES = 60;
+
+function time_ago(?string $dt): string {
+    if (!$dt) return 'never';
+    $s = max(0, time() - (int)strtotime($dt));
+    if ($s < 90) return 'just now';
+    if ($s < 3600) return floor($s / 60).' min ago';
+    if ($s < 86400) return floor($s / 3600).' h ago';
+    return floor($s / 86400).' d ago';
+}
+// state: up | down | stale | never | off
+function integration_health(array $i): array {
+    if (($i['status'] ?? '') !== 'active') return ['state' => 'off', 'label' => 'Inactive', 'class' => 'bg-secondary'];
+    if (empty($i['last_check_at'])) return ['state' => 'never', 'label' => 'Not checked yet', 'class' => 'bg-warning text-dark'];
+    if (time() - (int)strtotime($i['last_check_at']) > INTEGRATION_STALE_MINUTES * 60) {
+        return ['state' => 'stale', 'label' => $i['last_check_ok'] ? 'Was UP' : 'Was DOWN', 'class' => 'bg-secondary'];
+    }
+    return $i['last_check_ok'] ? ['state' => 'up', 'label' => 'UP', 'class' => 'bg-success'] : ['state' => 'down', 'label' => 'DOWN', 'class' => 'bg-danger'];
+}
+// Runs every active integration's check now. Each check can wait up to 5s on an unreachable host, and the
+// page sits behind a ~60s proxy timeout, so stop starting new checks after $budgetSeconds and say how many
+// were skipped rather than time out with nothing to show.
+function check_all_integrations(int $budgetSeconds = 35): array {
+    $start = microtime(true); $up = 0; $down = 0; $skipped = 0;
+    foreach (list_integrations() as $i) {
+        if ($i['status'] !== 'active') continue;
+        if (microtime(true) - $start > $budgetSeconds) { $skipped++; continue; }
+        try { $r = test_integration((int)$i['id']); $r['ok'] ? $up++ : $down++; } catch (Throwable $e) { $down++; }
+    }
+    audit('integrations_check_all', null, 'integrations', null, "up=$up down=$down skipped=$skipped");
+    return ['up' => $up, 'down' => $down, 'skipped' => $skipped];
+}
+// Today's traffic per channel (whatever channels actually appear, not a fixed list) with success rate and
+// the same window yesterday, so a channel that has quietly dropped off stands out. Bounded to two days of
+// audit_log like the other dashboard queries.
+function channel_activity_by_channel(string $schema, int $limit = 8): array {
+    if (!table_exists($schema, AUDIT_LOG_TABLE)) return [];
+    $db = pdo($schema); $limit = max(1, min(20, $limit));
+    $cur = $db->query("SELECT COALESCE(NULLIF(channel,''),'(none)') channel, COUNT(*) total, SUM(CASE WHEN ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) ok FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= CURDATE() GROUP BY 1 ORDER BY total DESC LIMIT $limit")->fetchAll();
+    $prev = array_column($db->query("SELECT COALESCE(NULLIF(channel,''),'(none)') channel, COUNT(*) total FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= CURDATE() - INTERVAL 1 DAY AND create_date < NOW() - INTERVAL 1 DAY GROUP BY 1")->fetchAll(), 'total', 'channel');
+    $out = [];
+    foreach ($cur as $r) {
+        $total = (int)$r['total']; $ok = (int)$r['ok']; $p = (int)($prev[$r['channel']] ?? 0);
+        $out[] = ['channel' => $r['channel'], 'total' => $total, 'ok' => $ok, 'failed' => $total - $ok,
+            'success_pct' => $total > 0 ? round(100 * $ok / $total, 1) : 0, 'prev_total' => $p,
+            'delta_pct' => $p > 0 ? round(100 * ($total - $p) / $p) : null];
+    }
+    return $out;
+}
+
 function monitoring_snapshot(string $schema): array {
     $integrations = list_integrations();
+    $health = array_count_values(array_map(fn($i) => integration_health($i)['state'], $integrations));
+    $channels = channel_activity_by_channel($schema);
+    $total = array_sum(array_column($channels, 'total')); $ok = array_sum(array_column($channels, 'ok'));
     return [
-        'db_tables' => count(table_names($schema)),
-        'ussd' => channel_activity_today($schema, ['USSD']),
-        'ivr' => channel_activity_today($schema, ['IVR']),
-        'sms' => smsc_activity_today($schema),
+        'channels' => $channels,
+        'tx_total' => $total, 'tx_failed' => $total - $ok, 'tx_success_pct' => $total > 0 ? round(100 * $ok / $total, 1) : null,
         'agent_queue_total' => table_exists($schema, 'agent_queue') ? (int)(pdo($schema)->query('SELECT COUNT(*) c FROM agent_queue')->fetch()['c'] ?? 0) : 0,
         'agent_queue_by_status' => table_exists($schema, 'agent_queue') ? pdo($schema)->query('SELECT status, COUNT(*) c FROM agent_queue GROUP BY status ORDER BY c DESC')->fetchAll() : [],
         'integrations' => $integrations,
-        'integrations_active' => count(array_filter($integrations, fn($i) => $i['status'] === 'active')),
-        'integrations_down' => count(array_filter($integrations, fn($i) => $i['status'] === 'active' && $i['last_check_ok'] !== null && (int)$i['last_check_ok'] === 0)),
+        'int_up' => (int)($health['up'] ?? 0), 'int_down' => (int)($health['down'] ?? 0),
+        'int_stale' => (int)($health['stale'] ?? 0) + (int)($health['never'] ?? 0),
         'alerts' => compute_alerts($schema),
     ];
 }

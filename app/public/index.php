@@ -1003,29 +1003,57 @@ if ($page==='integrations') {
 
 if ($page==='monitoring') {
     require_perm('view_reports'); $schema=current_schema();
-    $snap = monitoring_snapshot($schema);
+    if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['do']??'')==='check_all') {
+        require_perm('view_tables');
+        $r=check_all_integrations();
+        flash($r['down']?'warning':'success', sprintf('Checked %d integration(s): %d up, %d down.%s', $r['up']+$r['down'], $r['up'], $r['down'], $r['skipped']?' '.$r['skipped'].' not checked (time limit) — run it again.':''));
+        redirect('?page=monitoring');
+    }
+    $snap=monitoring_snapshot($schema); $today=date('Y-m-d');
+    $prio=['down'=>0,'never'=>1,'stale'=>2,'up'=>3,'off'=>4];
+    $ints=$snap['integrations']; usort($ints, fn($x,$y)=>($prio[integration_health($x)['state']]<=>$prio[integration_health($y)['state']]) ?: strcmp($x['name'],$y['name']));
+    $activeInts=count(array_filter($ints, fn($i)=>$i['status']==='active'));
     layout_start('Monitoring');
     ?>
-    <?php if ($snap['alerts']): foreach($snap['alerts'] as $a):?><div class="alert alert-<?=e($a['level'])?> shadow-sm">⚠ <?=e($a['message'])?></div><?php endforeach; endif;?>
+    <?php foreach($snap['alerts'] as $a):?><div class="alert alert-<?=e($a['level'])?> shadow-sm">⚠ <?=e($a['message'])?> <a class="alert-link" href="?page=alerts">View alerts</a></div><?php endforeach;?>
     <div class="metric-grid">
-        <div class="metric"><span>Database Tables</span><strong><?=number_format($snap['db_tables'])?></strong></div>
-        <div class="metric"><span>USSD Today</span><strong><?=number_format($snap['ussd']['total'])?></strong></div>
-        <div class="metric"><span>IVR Today</span><strong><?=number_format($snap['ivr']['total'])?></strong></div>
-        <div class="metric"><span>SMS Today</span><strong><?=number_format($snap['sms']['total'])?></strong><?php if($snap['sms']['total']>0):?><a class="d-block small mt-1" href="?page=investigate&channel=SMS&date_from=<?=date('Y-m-d')?>&date_to=<?=date('Y-m-d')?>">Investigate →</a><?php endif;?></div>
-        <div class="metric"><span>Agent Queue</span><strong><?=number_format($snap['agent_queue_total'])?></strong></div>
-        <div class="metric"><span>Active Integrations</span><strong><?=number_format($snap['integrations_active'])?></strong></div>
-        <div class="metric"><span>Integrations Down</span><strong class="<?=$snap['integrations_down']>0?'text-danger':''?>"><?=number_format($snap['integrations_down'])?></strong></div>
+        <div class="metric"><span>Transactions today</span><strong><?=number_format($snap['tx_total'])?></strong><small class="text-muted"><?=$snap['tx_success_pct']===null?'no traffic yet':$snap['tx_success_pct'].'% succeeded'?></small></div>
+        <div class="metric"><span>Failed today</span><strong><?=number_format($snap['tx_failed'])?></strong><small class="text-muted"><a href="?page=investigate&date_from=<?=$today?>&date_to=<?=$today?>">Investigate →</a></small></div>
+        <div class="metric"><span>Integrations</span><strong style="font-size:1.35rem;text-transform:none;white-space:nowrap"><span class="text-success"><?=$snap['int_up']?> up</span><?php if($snap['int_down']):?> <span class="text-danger">· <?=$snap['int_down']?> down</span><?php endif;?></strong><small class="text-muted"><?=$snap['int_stale']?> not recently checked</small></div>
+        <div class="metric"><span>Active alerts</span><strong class="<?=$snap['alerts']?'text-danger':'text-success'?>"><?=count($snap['alerts'])?></strong><small class="text-muted"><a href="?page=alerts">Open Alerts →</a></small></div>
     </div>
-    <div class="row g-3 mt-1">
-        <div class="col-lg-4"><div class="cardx"><h3>Database</h3><p class="text-muted mb-2">Row counts, table browser, filtered CSV export.</p><a class="btn btn-outline-primary w-100" href="?page=tables">Open Database Tables</a></div></div>
-        <div class="col-lg-4"><div class="cardx"><h3>USSD & IVR</h3><p class="text-muted mb-2">Routing table and live agent queue.<?php if($snap['agent_queue_by_status']):?><br><?php foreach($snap['agent_queue_by_status'] as $s):?><span class="badge bg-light text-dark border me-1"><?=e($s['status'])?>: <?=e($s['c'])?></span><?php endforeach;?><?php endif;?></p><a class="btn btn-outline-primary w-100" href="?page=ussd_ivr">Open USSD & IVR</a></div></div>
-        <div class="col-lg-4"><div class="cardx"><h3>Integrations</h3><p class="text-muted mb-2">SMSC, USSD gateway, IVR platform and anything else you connect — with live up/down checks.</p><a class="btn btn-outline-primary w-100" href="?page=integrations">Open Integrations</a></div></div>
-        <div class="col-lg-4"><div class="cardx"><h3>Check a Complaint</h3><p class="text-muted mb-2">Look up what happened for a subscriber's SMS, USSD or any transaction — filter by MSISDN, channel, vendor and date range.</p><a class="btn btn-outline-primary w-100" href="?page=investigate&channel=SMS">Check SMS/SMSC Complaint</a></div></div>
+    <div class="cardx mt-3">
+        <h3>Channels today <small class="text-muted">(vs the same time yesterday)</small></h3>
+        <?php if(!$snap['channels']):?><p class="text-muted mb-0">No transactions yet today.</p><?php else:?>
+        <div class="row g-3 mt-1"><?php foreach($snap['channels'] as $c):?>
+            <div class="col-md-6 col-xl-3"><div class="border rounded p-3 h-100">
+                <div class="d-flex justify-content-between align-items-baseline"><strong><?=e($c['channel'])?></strong><?php if($c['delta_pct']!==null):?><small class="<?=$c['delta_pct']<=-30?'text-danger fw-semibold':'text-muted'?>"><?=$c['delta_pct']>=0?'▲':'▼'?> <?=abs($c['delta_pct'])?>%</small><?php endif;?></div>
+                <div class="fs-3 fw-bold"><?=number_format($c['total'])?></div>
+                <div class="progress mb-1" style="height:8px"><div class="progress-bar bg-success" style="width:<?=min(100,$c['success_pct'])?>%"></div></div>
+                <small class="text-muted"><?=$c['success_pct']?>% success · <?=number_format($c['failed'])?> failed</small>
+                <a class="d-block small mt-1" href="?page=investigate&date_from=<?=$today?>&date_to=<?=$today?><?=$c['channel']==='(none)'?'':'&channel='.urlencode($c['channel'])?>">Investigate →</a>
+            </div></div>
+        <?php endforeach;?></div><?php endif;?>
     </div>
-    <?php if ($snap['integrations']):?>
-    <div class="cardx mt-3"><h3>Integration Status</h3><div class="table-scroll"><table class="table table-sm mb-0"><thead><tr><th>Type</th><th>Name</th><th>Status</th><th>Last Check</th></tr></thead><tbody><?php foreach($snap['integrations'] as $i):?><tr><td><span class="badge bg-dark"><?=e($i['service_type'])?></span></td><td><?=e($i['name'])?></td><td><span class="badge <?=$i['status']==='active'?'bg-success':'bg-secondary'?>"><?=e($i['status'])?></span></td><td><?php if($i['last_check_at']):?><span class="badge <?=$i['last_check_ok']?'bg-success':'bg-danger'?>"><?=$i['last_check_ok']?'UP':'DOWN'?></span> <?=e($i['last_check_latency_ms'])?>ms — <?=e($i['last_check_at'])?><?php else:?><span class="text-muted">never checked</span><?php endif;?></td></tr><?php endforeach;?></tbody></table></div></div>
-    <?php endif;?>
-    <div class="cardx mt-3"><h3>All Alerts</h3><a class="btn btn-outline-primary btn-sm mb-2" href="?page=alerts">Open Alerts page</a><?php if(!$snap['alerts']):?><p class="text-muted mb-0">No active alerts.</p><?php endif;?></div>
+    <div class="cardx mt-3">
+        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2"><h3 class="mb-0">Integrations</h3>
+            <div class="d-flex gap-2"><?php if(can('view_tables') && $activeInts):?><form method="post" class="d-inline"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="check_all"><button class="btn btn-sm btn-primary"><i class="fa-solid fa-rotate me-1"></i>Check all now</button></form><?php endif;?><a class="btn btn-sm btn-outline-primary" href="?page=integrations">Manage</a></div></div>
+        <p class="text-muted small mt-2 mb-2">Checks run only when you click <b>Check all now</b> (or Test on an integration) — nothing checks them in the background, so results older than <?=INTEGRATION_STALE_MINUTES?> minutes are shown as <i>Was UP / Was DOWN</i>, not as current.</p>
+        <?php if(!$ints):?><p class="text-muted mb-0">No integrations registered yet. <a href="?page=integrations">Add one</a> (SMSC, USSD gateway, IVR…).</p><?php else:?>
+        <div class="table-scroll"><table class="table table-sm align-middle mb-0"><thead><tr><th>Type</th><th>Name</th><th>Health</th><th>Last check</th><th>Latency</th><th>Result</th></tr></thead><tbody>
+        <?php foreach($ints as $i): $h=integration_health($i);?>
+        <tr class="<?=$h['state']==='off'?'text-muted':''?>"><td><span class="badge bg-dark"><?=e($i['service_type'])?></span></td><td><?=e($i['name'])?></td>
+            <td><span class="badge <?=e($h['class'])?>"><?=e($h['label'])?></span></td>
+            <td class="text-nowrap" title="<?=e($i['last_check_at'])?>"><?=e(time_ago($i['last_check_at']))?></td>
+            <td><?=$i['last_check_latency_ms']!==null?e($i['last_check_latency_ms']).' ms':'—'?></td>
+            <td style="white-space:normal;overflow:visible;text-overflow:clip;max-width:none"><small class="text-muted"><?=e($i['last_check_message'])?></small></td></tr>
+        <?php endforeach;?></tbody></table></div><?php endif;?>
+    </div>
+    <div class="d-flex flex-wrap gap-2 mt-3">
+        <a class="btn btn-outline-primary btn-sm" href="?page=tables"><i class="fa fa-database me-1"></i>Database Tables</a>
+        <a class="btn btn-outline-primary btn-sm" href="?page=ussd_ivr"><i class="fa fa-mobile-screen-button me-1"></i>USSD &amp; IVR<?php foreach($snap['agent_queue_by_status'] as $q):?> <span class="badge bg-light text-dark border ms-1"><?=e($q['status'])?>: <?=e($q['c'])?></span><?php endforeach;?></a>
+        <a class="btn btn-outline-primary btn-sm" href="?page=investigate&channel=SMS"><i class="fa fa-headset me-1"></i>Check an SMS/SMSC complaint</a>
+    </div>
     <?php layout_end(); exit;
 }
 
