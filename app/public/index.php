@@ -1109,17 +1109,17 @@ if ($page==='investigate') {
     <div class="cardx table-card mt-3">
         <p class="text-muted px-3 pt-3 mb-0"><?=number_format($data['total'])?> matching transactions</p>
         <div class="table-scroll"><table class="table table-hover table-sm align-middle">
-            <thead><tr><th>Date</th><th>Transaction ID</th><th>MSISDN</th><th>Vendor</th><th>Channel</th><th>Status</th><th>Result</th><th>Response (ms)</th><th>Request / Response</th></tr></thead>
+            <thead><tr><th>Payload</th><th>Date</th><th>Transaction ID</th><th>MSISDN</th><th>Vendor</th><th>Channel</th><th>Status</th><th>Result</th><th>Response (ms)</th></tr></thead>
             <tbody><?php foreach($data['rows'] as $r):?><tr>
-                <td><?=e($r['create_date'])?></td>
-                <td class="text-nowrap"><?=e($r['transaction_id'])?> <button type="button" class="btn btn-sm btn-link p-0 ms-1" title="Copy transaction ID" data-copy="<?=e($r['transaction_id'])?>"><i class="fa-regular fa-copy"></i></button></td>
+                <td><button type="button" class="btn btn-sm btn-outline-primary" data-tx-view data-id="<?=e($r['id'])?>" data-date="<?=e($r['create_date'])?>"><i class="fa-solid fa-eye me-1"></i>View</button></td>
+                <td class="text-nowrap"><?=e($r['create_date'])?></td>
+                <td class="cell-full" style="min-width:300px"><button type="button" class="btn btn-sm btn-link p-0 me-1 align-baseline" title="Copy transaction ID" data-copy="<?=e($r['transaction_id'])?>"><i class="fa-regular fa-copy"></i></button><span class="txid"><?=e($r['transaction_id'])?></span></td>
                 <td class="text-nowrap"><?=e($r['msisdn'])?> <button type="button" class="btn btn-sm btn-link p-0 ms-1" title="Copy MSISDN" data-copy="<?=e($r['msisdn'])?>"><i class="fa-regular fa-copy"></i></button></td>
                 <td><?=e($r['vendor_entity_name'])?></td>
                 <td><?=e($r['channel'])?></td>
                 <td><span class="badge <?=is_success_status($r['result_status'])?'bg-success':'bg-danger'?>"><?=e($r['result_status'])?></span></td>
-                <td><?=e(mb_strimwidth((string)$r['result_description'],0,80,'...'))?></td>
+                <td title="<?=e($r['result_description'])?>"><?=e(mb_strimwidth((string)$r['result_description'],0,80,'...'))?></td>
                 <td><?=e($r['response_time'])?></td>
-                <td><button type="button" class="btn btn-sm btn-outline-primary" data-tx-view data-id="<?=e($r['id'])?>" data-date="<?=e($r['create_date'])?>"><i class="fa-solid fa-eye me-1"></i>View</button></td>
             </tr><?php endforeach;?></tbody>
         </table></div>
         <?php $pages=max(1,(int)ceil($data['total']/25));?>

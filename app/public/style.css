@@ -83,6 +83,9 @@ a{color:var(--brand-dark)}
 .table{margin:0}
 .table th{background:var(--brand);color:#fff;font-size:.74rem;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap;padding:12px}
 .table td{padding:10px 12px;vertical-align:middle;border-color:var(--line-soft);white-space:nowrap;max-width:320px;overflow:hidden;text-overflow:ellipsis}
+/* opt-out of the cell clipping above for values people need to read or copy in full (IDs) */
+.table td.cell-full{white-space:normal;max-width:none;overflow:visible;text-overflow:clip}
+.txid{overflow-wrap:anywhere;user-select:all}
 .table tbody tr:hover{background:var(--surface-hover)}
 .sticky-actions{position:sticky;right:0;background:#fff;box-shadow:-10px 0 16px rgba(255,255,255,.9);z-index:2}
 .search-panel{background:var(--surface-alt);border:1px solid var(--line);border-radius:var(--radius);padding:14px}
