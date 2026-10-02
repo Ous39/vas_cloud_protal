@@ -1034,19 +1034,21 @@ if ($page==='monitoring') {
         <div class="metric"><span>Integrations</span><strong style="font-size:1.35rem;text-transform:none;white-space:nowrap"><span class="text-success"><?=$snap['int_up']?> up</span><?php if($snap['int_down']):?> <span class="text-danger">· <?=$snap['int_down']?> down</span><?php endif;?></strong><small class="text-muted"><?=$snap['int_stale']?> not recently checked</small></div>
         <div class="metric"><span>Active alerts</span><strong class="<?=$snap['alerts']?'text-danger':'text-success'?>"><?=count($snap['alerts'])?></strong><small class="text-muted"><a href="?page=alerts">Open Alerts →</a></small></div>
     </div>
+    <?php foreach([['Channels','channels','channel'],['Vendors','vendors','vendor']] as [$cardTitle,$cardKey,$qParam]):?>
     <div class="cardx mt-3">
-        <h3>Channels today <small class="text-muted">(vs the same time yesterday)</small></h3>
-        <?php if(!$snap['channels']):?><p class="text-muted mb-0">No transactions yet today.</p><?php else:?>
-        <div class="row g-3 mt-1"><?php foreach($snap['channels'] as $c):?>
+        <h3><?=$cardTitle?> today <small class="text-muted">(vs the same time yesterday)</small></h3>
+        <?php if(!$snap[$cardKey]):?><p class="text-muted mb-0">No transactions yet today.</p><?php else:?>
+        <div class="row g-3 mt-1"><?php foreach($snap[$cardKey] as $c):?>
             <div class="col-md-6 col-xl-3"><div class="border rounded p-3 h-100">
-                <div class="d-flex justify-content-between align-items-baseline"><strong><?=e($c['channel'])?></strong><?php if($c['delta_pct']!==null):?><small class="<?=$c['delta_pct']<=-30?'text-danger fw-semibold':'text-muted'?>"><?=$c['delta_pct']>=0?'▲':'▼'?> <?=abs($c['delta_pct'])?>%</small><?php endif;?></div>
+                <div class="d-flex justify-content-between align-items-baseline"><strong class="text-break"><?=e($c['name'])?></strong><?php if($c['delta_pct']!==null):?><small class="<?=$c['delta_pct']<=-30?'text-danger fw-semibold':'text-muted'?>"><?=$c['delta_pct']>=0?'▲':'▼'?> <?=abs($c['delta_pct'])?>%</small><?php endif;?></div>
                 <div class="fs-3 fw-bold"><?=number_format($c['total'])?></div>
                 <div class="progress mb-1" style="height:8px"><div class="progress-bar bg-success" style="width:<?=min(100,$c['success_pct'])?>%"></div></div>
                 <small class="text-muted"><?=$c['success_pct']?>% success · <?=number_format($c['failed'])?> failed</small>
-                <a class="d-block small mt-1" href="?page=investigate&date_from=<?=$today?>&date_to=<?=$today?><?=$c['channel']==='(none)'?'':'&channel='.urlencode($c['channel'])?>">Investigate →</a>
+                <a class="d-block small mt-1" href="?page=investigate&date_from=<?=$today?>&date_to=<?=$today?><?=$c['name']==='(none)'?'':'&'.$qParam.'='.urlencode($c['name'])?>">Investigate →</a>
             </div></div>
         <?php endforeach;?></div><?php endif;?>
     </div>
+    <?php endforeach;?>
     <div class="cardx mt-3">
         <div class="d-flex justify-content-between align-items-center flex-wrap gap-2"><h3 class="mb-0">Integrations</h3>
             <div class="d-flex gap-2"><?php if(can('edit_records') && $activeInts):?><form method="post" class="d-inline"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="check_all"><button class="btn btn-sm btn-primary"><i class="fa-solid fa-rotate me-1"></i>Check all now</button></form><?php endif;?><a class="btn btn-sm btn-outline-primary" href="?page=integrations">Manage</a></div></div>

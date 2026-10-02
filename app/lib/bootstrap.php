@@ -1829,19 +1829,28 @@ function check_all_integrations(int $budgetSeconds = 35): array {
 // Today's traffic per channel (whatever channels actually appear, not a fixed list) with success rate and
 // the same window yesterday, so a channel that has quietly dropped off stands out. Bounded to two days of
 // audit_log like the other dashboard queries.
-function channel_activity_by_channel(string $schema, int $limit = 8): array {
-    if (!table_exists($schema, AUDIT_LOG_TABLE)) return [];
-    $db = pdo($schema); $limit = max(1, min(20, $limit));
-    $cur = $db->query("SELECT COALESCE(NULLIF(channel,''),'(none)') channel, COUNT(*) total, SUM(CASE WHEN ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) ok FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= CURDATE() GROUP BY 1 ORDER BY total DESC LIMIT $limit")->fetchAll();
-    $prev = array_column($db->query("SELECT COALESCE(NULLIF(channel,''),'(none)') channel, COUNT(*) total FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= CURDATE() - INTERVAL 1 DAY AND create_date < NOW() - INTERVAL 1 DAY GROUP BY 1")->fetchAll(), 'total', 'channel');
+function channel_activity_by_channel(string $schema, int $limit = 8): array { return activity_by_column($schema, 'channel', $limit); }
+function vendor_activity_today(string $schema, int $limit = 12): array { return activity_by_column($schema, 'vendor_entity_name', $limit); }
+// Shared by the channel and vendor cards. Anything seen at this time yesterday but silent today is included
+// with 0 transactions (-100%) — a vendor or channel that has quietly stopped is exactly what this view is for.
+function activity_by_column(string $schema, string $col, int $limit): array {
+    if (!in_array($col, ['channel', 'vendor_entity_name'], true) || !table_exists($schema, AUDIT_LOG_TABLE)) return [];
+    $db = pdo($schema); $limit = max(1, min(30, $limit)); $t = ident(AUDIT_LOG_TABLE);
+    $expr = "COALESCE(NULLIF($col,''),'(none)')";
+    $cur = $db->query("SELECT $expr name, COUNT(*) total, SUM(CASE WHEN ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) ok FROM $t WHERE create_date >= CURDATE() GROUP BY 1")->fetchAll();
+    $prev = array_column($db->query("SELECT $expr name, COUNT(*) total FROM $t WHERE create_date >= CURDATE() - INTERVAL 1 DAY AND create_date < NOW() - INTERVAL 1 DAY GROUP BY 1")->fetchAll(), 'total', 'name');
+    $rows = [];
+    foreach ($cur as $r) $rows[$r['name']] = ['total' => (int)$r['total'], 'ok' => (int)$r['ok']];
+    foreach ($prev as $name => $p) if (!isset($rows[$name])) $rows[$name] = ['total' => 0, 'ok' => 0];
     $out = [];
-    foreach ($cur as $r) {
-        $total = (int)$r['total']; $ok = (int)$r['ok']; $p = (int)($prev[$r['channel']] ?? 0);
-        $out[] = ['channel' => $r['channel'], 'total' => $total, 'ok' => $ok, 'failed' => $total - $ok,
+    foreach ($rows as $name => $r) {
+        $total = $r['total']; $ok = $r['ok']; $p = (int)($prev[$name] ?? 0);
+        $out[] = ['name' => $name, 'channel' => $name, 'total' => $total, 'ok' => $ok, 'failed' => $total - $ok,
             'success_pct' => $total > 0 ? round(100 * $ok / $total, 1) : 0, 'prev_total' => $p,
             'delta_pct' => $p > 0 ? round(100 * ($total - $p) / $p) : null];
     }
-    return $out;
+    usort($out, fn($a, $b) => [$b['total'], $b['prev_total']] <=> [$a['total'], $a['prev_total']]);
+    return array_slice($out, 0, $limit);
 }
 
 function monitoring_snapshot(string $schema): array {
@@ -1850,7 +1859,7 @@ function monitoring_snapshot(string $schema): array {
     $channels = channel_activity_by_channel($schema);
     $total = array_sum(array_column($channels, 'total')); $ok = array_sum(array_column($channels, 'ok'));
     return [
-        'channels' => $channels,
+        'channels' => $channels, 'vendors' => vendor_activity_today($schema),
         'tx_total' => $total, 'tx_failed' => $total - $ok, 'tx_success_pct' => $total > 0 ? round(100 * $ok / $total, 1) : null,
         'agent_queue_total' => table_exists($schema, 'agent_queue') ? (int)(pdo($schema)->query('SELECT COUNT(*) c FROM agent_queue')->fetch()['c'] ?? 0) : 0,
         'agent_queue_by_status' => table_exists($schema, 'agent_queue') ? pdo($schema)->query('SELECT status, COUNT(*) c FROM agent_queue GROUP BY status ORDER BY c DESC')->fetchAll() : [],
