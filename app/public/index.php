@@ -1002,16 +1002,18 @@ if ($page==='ussd_proxy') {
             <div class="col-md-4"><label class="small text-muted mb-0">Mode</label><select class="form-select" name="purchase_mode">
                 <option value="off" <?=$cfg['purchase_mode']==='off'?'selected':''?>>Off — nothing is bought</option>
                 <option value="test" <?=$cfg['purchase_mode']==='test'?'selected':''?>>Test — record it, tell the customer it was a test</option>
+                <option value="test_low" <?=$cfg['purchase_mode']==='test_low'?'selected':''?>>Test — pretend the balance is too low</option>
                 <option value="live" <?=$cfg['purchase_mode']==='live'?'selected':''?>>Live — send the purchase request below</option></select></div>
             <div class="col-md-8"><label class="small text-muted mb-0">Purchase address <small>(POST, JSON — the Hera <b>test</b> environment; needed for Live only)</small></label><input class="form-control" name="purchase_url" value="<?=e($cfg['purchase_url'])?>" placeholder="https://…"></div>
             <div class="col-12"><label class="small text-muted mb-0">Request body <small>— placeholders: <code>{msisdn}</code> <code>{offer_code}</code> <code>{txn}</code> (the call id) <code>{price}</code></small></label><textarea class="form-control code" rows="3" name="purchase_body"><?=e($cfg['purchase_body'])?></textarea></div>
             <div class="col-md-5"><label class="small text-muted mb-0">Header to send <small>(e.g. an API key — kept encrypted, never shown again)</small></label><input class="form-control" name="purchase_auth" autocomplete="off" placeholder="<?=$cfg['purchase_auth']!==''?'saved — leave blank to keep':'Authorization: Bearer …'?>"><?php if($cfg['purchase_auth']!==''):?><div class="form-check mt-1"><input class="form-check-input" type="checkbox" name="purchase_auth_clear" value="1" id="pac"><label class="form-check-label small" for="pac">Remove the saved header</label></div><?php endif;?></div>
             <div class="col-md-5"><label class="small text-muted mb-0">Success means <small>(text the reply must contain; blank = any 2xx answer)</small></label><input class="form-control" name="purchase_ok_match" value="<?=e($cfg['purchase_ok_match'])?>" placeholder="e.g. success"></div>
+            <div class="col-md-12"><label class="small text-muted mb-0">Low balance means <small>(if a failed reply contains any of these words, comma-separated, the customer is told the balance is too low)</small></label><input class="form-control" name="purchase_lowbal" value="<?=e($cfg['purchase_lowbal'])?>"></div>
             <div class="col-md-2"><label class="small text-muted mb-0">Timeout (s)</label><input class="form-control" type="number" min="2" max="15" name="purchase_timeout" value="<?=e($cfg['purchase_timeout'])?>"></div>
             <div class="col-12"><button class="btn btn-primary">Save purchase settings</button></div>
         </form>
         <?php if($purchases):?><div class="table-scroll mt-3"><table class="table table-sm mb-0"><thead><tr><th>Time</th><th>Number</th><th>Offer</th><th>Mode</th><th>Result</th><th>Shown to customer</th></tr></thead><tbody>
-            <?php foreach($purchases as $pu):?><tr><td class="text-nowrap"><?=e($pu['created_at'])?></td><td><?=e($pu['msisdn'])?></td><td><?=e($pu['offer_code'])?> <small class="text-muted"><?=e($pu['offer_name'])?></small></td><td><?=e($pu['mode'])?></td><td><span class="badge <?=['ok'=>'bg-success','test'=>'bg-info text-dark','failed'=>'bg-danger','pending'=>'bg-warning text-dark'][$pu['status']]??'bg-secondary'?>"><?=e($pu['status'])?></span><?=$pu['http_code']?' <small class="text-muted">HTTP '.e($pu['http_code']).'</small>':''?></td><td title="<?=e((string)$pu['response'])?>"><?=e((string)$pu['reply_text'])?></td></tr><?php endforeach;?></tbody></table></div><?php endif;?>
+            <?php foreach($purchases as $pu):?><tr><td class="text-nowrap"><?=e($pu['created_at'])?></td><td><?=e($pu['msisdn'])?></td><td><?=e($pu['offer_code'])?> <small class="text-muted"><?=e($pu['offer_name'])?></small></td><td><?=e($pu['mode'])?></td><td><span class="badge <?=['ok'=>'bg-success','test'=>'bg-info text-dark','lowbal'=>'bg-warning text-dark','failed'=>'bg-danger','pending'=>'bg-warning text-dark'][$pu['status']]??'bg-secondary'?>"><?=e($pu['status'])?></span><?=$pu['http_code']?' <small class="text-muted">HTTP '.e($pu['http_code']).'</small>':''?></td><td title="<?=e((string)$pu['response'])?>"><?=e((string)$pu['reply_text'])?></td></tr><?php endforeach;?></tbody></table></div><?php endif;?>
     </div>
     <div class="cardx mt-3"><h3>Try it without Mobius</h3>
         <p class="text-muted">Paste a sample request (JSON, XML or <code>name=value&amp;name=value</code>) — or press <b>Replay</b> on a captured one below. It runs the live logic with the settings above and shows what would be sent back. Nothing is stored and no session is kept.</p>
@@ -1086,6 +1088,13 @@ if ($page==='ussd_sim') {
 
 if ($page==='ussd_menu') {
     require_perm('view_tables');
+    if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['do']??'')==='import_menu') {
+        require_perm('manage_ussd_menus');
+        if (empty($_POST['confirm_replace'])) throw new RuntimeException('Tick the box to confirm the current menu is replaced.');
+        $res=import_menu_json((string)($_POST['import_short_code']??''),(string)($_POST['import_json']??''));
+        flash('success','Menu imported: '.$res['nodes'].' items.'.($res['archived']?' The previous '.$res['archived'].' items were kept, inactive, as an archived copy.':''));
+        redirect('?page=ussd_menu&short_code='.urlencode(trim((string)($_POST['import_short_code']??''))));
+    }
     if ($_SERVER['REQUEST_METHOD']==='POST') {
         require_perm('manage_ussd_menus');
         save_menu_node($_POST['data']??[], !empty($_POST['id'])?(int)$_POST['id']:null);
@@ -1100,6 +1109,7 @@ if ($page==='ussd_menu') {
     $tree = $shortCode!=='' ? menu_tree($shortCode) : [];
     $flatNodes = $shortCode!=='' ? menu_nodes_flat($shortCode) : [];
     $offers = table_exists(current_schema(),'vas_offers') ? pdo(current_schema())->query("SELECT offer_code, name FROM vas_offers WHERE ".OFFER_ACTIVE_SQL." ORDER BY name")->fetchAll() : [];
+    $subCats=[]; try { if(table_exists(USSD_OFFER_SCHEMA,'vas_offers')) $subCats=pdo(USSD_OFFER_SCHEMA)->query("SELECT sub_category, SUM(".OFFER_ACTIVE_SQL.") act FROM vas_offers WHERE sub_category IS NOT NULL AND sub_category<>'' AND (deleted_at IS NULL OR deleted_at='') GROUP BY sub_category HAVING act>0 ORDER BY sub_category")->fetchAll(); } catch(Throwable $e){}
     layout_start('USSD Menu Builder');
     ?>
     <div class="cardx">
@@ -1118,8 +1128,10 @@ if ($page==='ussd_menu') {
                 <label>Parent</label><select class="form-select mb-2" name="data[parent_id]"><option value="">— None (root menu item) —</option><?php foreach($flatNodes as $n): if($edit && (int)$n['id']===(int)$edit['id']) continue; ?><option value="<?=e($n['id'])?>" <?=(int)($edit['parent_id']??-1)===(int)$n['id']?'selected':''?>><?=e($n['prompt_text'])?></option><?php endforeach;?></select>
                 <label>Prompt Text</label><input class="form-control mb-2" name="data[prompt_text]" value="<?=e($edit['prompt_text']??'')?>" placeholder="e.g. Buy Data Bundle">
                 <label>Order</label><input type="number" class="form-control mb-2" name="data[display_order]" value="<?=e($edit['display_order']??0)?>">
-                <label>Node Type</label><select class="form-select mb-2" name="data[node_type]" id="node_type"><?php foreach(['menu'=>'Submenu (has children)','offer'=>'Purchase an offer','action'=>'Action (e.g. check balance)','end'=>'End session'] as $v=>$label):?><option value="<?=e($v)?>" <?=($edit['node_type']??'menu')===$v?'selected':''?>><?=e($label)?></option><?php endforeach;?></select>
+                <label>Node Type</label><select class="form-select mb-2" name="data[node_type]" id="node_type"><?php foreach(['menu'=>'Submenu (has children)','offer'=>'Purchase an offer','catalog'=>'Catalogue list (offers from chosen sub-categories, live)','action'=>'Action (e.g. check balance)','end'=>'End session'] as $v=>$label):?><option value="<?=e($v)?>" <?=($edit['node_type']??'menu')===$v?'selected':''?>><?=e($label)?></option><?php endforeach;?></select>
                 <label>Offer <small class="text-muted">(if type = Purchase an offer)</small></label><select class="form-select mb-2" name="data[offer_code]"><option value="">—</option><?php foreach($offers as $o):?><option value="<?=e($o['offer_code'])?>" <?=($edit['offer_code']??'')===$o['offer_code']?'selected':''?>><?=e($o['name'])?> (<?=e($o['offer_code'])?>)</option><?php endforeach;?></select>
+                <label>Sub-categories <small class="text-muted">(if type = Catalogue list — one per line; the menu lists the <b>active</b> offers in them from <?=e(USSD_OFFER_SCHEMA)?>, cheapest first, 5 per screen)</small></label><textarea class="form-control mb-1" rows="3" name="data[catalog_filter]" placeholder="Sakan 7 days&#10;Sakan 30 days"><?=e($edit['catalog_filter']??'')?></textarea>
+                <?php if($subCats):?><details class="mb-2"><summary class="small text-muted">Sub-categories available (active offers)</summary><div class="small"><?php foreach($subCats as $sc2):?><span class="badge bg-light text-dark border me-1 mb-1"><?=e($sc2['sub_category'])?> · <?=(int)$sc2['act']?></span><?php endforeach;?></div></details><?php endif;?>
                 <label>Action Key <small class="text-muted">(if type = Action)</small></label><input class="form-control mb-2" name="data[action_key]" value="<?=e($edit['action_key']??'')?>" placeholder="e.g. check_balance">
                 <label>Status</label><select class="form-select mb-2" name="data[status]"><?php foreach(['draft','active','inactive'] as $v):?><option value="<?=e($v)?>" <?=($edit['status']??'draft')===$v?'selected':''?>><?=e(ucfirst($v))?></option><?php endforeach;?></select>
                 <button class="btn btn-primary w-100">Save Node</button>
@@ -1129,9 +1141,14 @@ if ($page==='ussd_menu') {
         <div class="col-lg-7">
             <div class="cardx"><h3>Menu Tree — <?=e($shortCode)?></h3>
                 <?php if(!$tree):?><p class="text-muted mb-0">No nodes yet. Add the first root menu item on the left.</p><?php else:?>
-                <?php $renderTree = function($nodes, $depth=0) use (&$renderTree, $shortCode) { foreach($nodes as $n): $badge = ['menu'=>'bg-primary','offer'=>'bg-success','action'=>'bg-info text-dark','end'=>'bg-secondary'][$n['node_type']]; ?><div style="margin-left:<?=$depth*20?>px" class="d-flex align-items-center gap-2 py-1"><span class="badge <?=$badge?>"><?=e($n['node_type'])?></span><span><?=e($n['prompt_text'])?></span><?php if($n['offer_code']):?><small class="text-muted">(<?=e($n['offer_code'])?>)</small><?php endif;?><?php if($n['status']!=='active'):?><span class="badge status-<?=e($n['status'])?>"><?=e($n['status'])?></span><?php endif;?><a class="btn btn-sm btn-outline-warning py-0" href="?page=ussd_menu&short_code=<?=urlencode($shortCode)?>&id=<?=e($n['id'])?>">Edit</a></div><?php if($n['children']) $renderTree($n['children'],$depth+1); endforeach; }; $renderTree($tree); ?>
+                <?php $renderTree = function($nodes, $depth=0) use (&$renderTree, $shortCode) { foreach($nodes as $n): $badge = ['menu'=>'bg-primary','offer'=>'bg-success','catalog'=>'bg-warning text-dark','action'=>'bg-info text-dark','end'=>'bg-secondary'][$n['node_type']]; ?><div style="margin-left:<?=$depth*20?>px" class="d-flex align-items-center gap-2 py-1"><span class="badge <?=$badge?>"><?=e($n['node_type'])?></span><span><?=e($n['prompt_text'])?></span><?php if($n['offer_code']):?><small class="text-muted">(<?=e($n['offer_code'])?>)</small><?php endif;?><?php if(($n['node_type']??'')==='catalog'):?><small class="text-muted">[<?=e(str_replace("\n",', ',(string)($n['catalog_filter']??'')))?>]</small><?php endif;?><?php if($n['status']!=='active'):?><span class="badge status-<?=e($n['status'])?>"><?=e($n['status'])?></span><?php endif;?><a class="btn btn-sm btn-outline-warning py-0" href="?page=ussd_menu&short_code=<?=urlencode($shortCode)?>&id=<?=e($n['id'])?>">Edit</a></div><?php if($n['children']) $renderTree($n['children'],$depth+1); endforeach; }; $renderTree($tree); ?>
                 <?php endif;?>
             </div>
+            <div class="cardx mt-3"><h3>Import a menu</h3><p class="text-muted small">Paste a menu as JSON (the same shape as <b>Export JSON</b>) to build a whole tree in one go. It <b>replaces</b> this short code's menu — nothing is deleted: the old items stay as an inactive, archived copy.</p>
+                <form method="post"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="import_menu"><input type="hidden" name="import_short_code" value="<?=e($shortCode)?>">
+                    <textarea class="form-control code mb-2" rows="5" name="import_json" placeholder='[{"prompt_text":"Comium Menu","node_type":"menu","status":"active","children":[ … ]}]'></textarea>
+                    <div class="form-check mb-2"><input class="form-check-input" type="checkbox" name="confirm_replace" value="1" id="cr"><label class="form-check-label small" for="cr">Replace the current menu of <b><?=e($shortCode)?></b></label></div>
+                    <button class="btn btn-outline-primary btn-sm">Import menu</button></form></div>
             <div class="cardx mt-3"><div class="d-flex justify-content-between align-items-center"><h3>Session Preview</h3><a class="btn btn-outline-primary btn-sm" href="?page=ussd_menu_export&short_code=<?=urlencode($shortCode)?>">Export JSON</a></div>
                 <?php if(!$tree):?><p class="text-muted mb-0">Nothing to preview yet.</p><?php else:?><pre class="mb-0"><?=render_menu_preview($tree)?></pre><?php endif;?>
             </div>

@@ -230,8 +230,9 @@ function ensure_portal_runtime_schema(): void {
             short_code VARCHAR(80) NOT NULL,
             display_order INT NOT NULL DEFAULT 0,
             prompt_text VARCHAR(300) NOT NULL,
-            node_type ENUM('menu','offer','action','end') NOT NULL DEFAULT 'menu',
+            node_type ENUM('menu','offer','action','end','catalog') NOT NULL DEFAULT 'menu',
             offer_code VARCHAR(80) NULL,
+            catalog_filter TEXT NULL,
             action_key VARCHAR(80) NULL,
             status ENUM('active','inactive','draft') NOT NULL DEFAULT 'draft',
             created_by VARCHAR(80) NULL,
@@ -475,6 +476,10 @@ function ensure_portal_runtime_schema(): void {
         $safeExec("ALTER TABLE portal_short_codes MODIFY status ENUM('Active','Inactive','Pending','Suspended') NOT NULL DEFAULT 'Pending'");
         if ($columnExists('portal_short_codes','route_type')) $safeExec("UPDATE portal_short_codes SET channel_type = IF(route_type='IVR','IVR','USSD') WHERE channel_type IS NULL OR channel_type=''");
 
+        if (!$columnExists('ussd_menu_nodes','catalog_filter')) {
+            $safeExec("ALTER TABLE ussd_menu_nodes MODIFY node_type ENUM('menu','offer','action','end','catalog') NOT NULL DEFAULT 'menu'");
+            $safeExec("ALTER TABLE ussd_menu_nodes ADD COLUMN catalog_filter TEXT NULL AFTER offer_code");
+        }
         if (!$columnExists('portal_projects','short_code')) $safeExec("ALTER TABLE portal_projects ADD COLUMN short_code VARCHAR(80) NULL AFTER project_name");
         if (!$columnExists('portal_projects','start_date')) $safeExec("ALTER TABLE portal_projects ADD COLUMN start_date DATE NULL AFTER status");
         if (!$columnExists('portal_projects','launch_date')) $safeExec("ALTER TABLE portal_projects ADD COLUMN launch_date DATE NULL AFTER start_date");
@@ -2214,7 +2219,7 @@ function integration_uptime_pct(int $id, int $sinceHours = 24): ?float {
 // which this app does not have access to. Until that's wired up, this is the source of truth you'd
 // hand-enter (or later auto-push) into the real gateway.
 function menu_shortcodes(): array {
-    return array_column(portal_pdo()->query('SELECT DISTINCT short_code FROM ussd_menu_nodes ORDER BY short_code')->fetchAll(), 'short_code');
+    return array_column(portal_pdo()->query("SELECT DISTINCT short_code FROM ussd_menu_nodes WHERE short_code NOT LIKE '% [archived %' ORDER BY short_code")->fetchAll(), 'short_code');
 }
 function menu_node(int $id): ?array {
     $st = portal_pdo()->prepare('SELECT * FROM ussd_menu_nodes WHERE id=?'); $st->execute([$id]);
@@ -2244,19 +2249,69 @@ function save_menu_node(array $data, ?int $id = null): int {
     $prompt = trim((string)($data['prompt_text'] ?? ''));
     if ($shortCode === '' || $prompt === '') throw new RuntimeException('Short code and prompt text are required.');
     $parentId = trim((string)($data['parent_id'] ?? '')) !== '' ? (int)$data['parent_id'] : null;
-    $type = in_array($data['node_type'] ?? '', ['menu','offer','action','end'], true) ? $data['node_type'] : 'menu';
+    $type = in_array($data['node_type'] ?? '', ['menu','offer','action','end','catalog'], true) ? $data['node_type'] : 'menu';
     $fields = [$parentId, $shortCode, (int)($data['display_order'] ?? 0), $prompt, $type,
         normalize_value($data['offer_code'] ?? ''), normalize_value($data['action_key'] ?? ''),
-        in_array($data['status'] ?? '', ['active','inactive','draft'], true) ? $data['status'] : 'draft'];
+        in_array($data['status'] ?? '', ['active','inactive','draft'], true) ? $data['status'] : 'draft',
+        $type === 'catalog' ? menu_catalog_filter($data['catalog_filter'] ?? '') : null];
+    if ($type === 'catalog' && $fields[8] === '') throw new RuntimeException('A catalogue list needs at least one sub-category.');
     $db = portal_pdo();
     if ($id) {
-        $db->prepare('UPDATE ussd_menu_nodes SET parent_id=?,short_code=?,display_order=?,prompt_text=?,node_type=?,offer_code=?,action_key=?,status=? WHERE id=?')->execute([...$fields, $id]);
+        $db->prepare('UPDATE ussd_menu_nodes SET parent_id=?,short_code=?,display_order=?,prompt_text=?,node_type=?,offer_code=?,action_key=?,status=?,catalog_filter=? WHERE id=?')->execute([...$fields, $id]);
     } else {
-        $db->prepare('INSERT INTO ussd_menu_nodes(parent_id,short_code,display_order,prompt_text,node_type,offer_code,action_key,status,created_by) VALUES(?,?,?,?,?,?,?,?,?)')->execute([...$fields, user()['username'] ?? null]);
+        $db->prepare('INSERT INTO ussd_menu_nodes(parent_id,short_code,display_order,prompt_text,node_type,offer_code,action_key,status,catalog_filter,created_by) VALUES(?,?,?,?,?,?,?,?,?,?)')->execute([...$fields, user()['username'] ?? null]);
         $id = (int)$db->lastInsertId();
     }
     audit('save_menu_node', null, 'ussd_menu_nodes', (string)$id, json_encode(['short_code'=>$shortCode,'prompt'=>$prompt]));
     return $id;
+}
+// The sub-categories a "catalogue list" node shows, one per line (a list, or text with line breaks or | between them).
+function menu_catalog_filter($v): string {
+    $parts = is_array($v) ? $v : preg_split('/[\r\n|]+/', (string)$v);
+    $out = [];
+    foreach ($parts as $p) { $p = trim((string)$p); if ($p === '') continue; if (mb_strlen($p) > 80) throw new RuntimeException('A sub-category name is at most 80 characters.'); $out[$p] = $p; }
+    if (count($out) > 12) throw new RuntimeException('At most 12 sub-categories per list.');
+    return implode("\n", $out);
+}
+// Replaces the menu of one short code with the tree in $json (the same shape "Export JSON" produces: a list of nodes,
+// each with prompt_text, node_type, offer_code, action_key, status, catalog_filter and children). Nothing is deleted:
+// the old nodes are kept under "<short code> [archived …]", inactive, and no longer shown or served.
+function import_menu_json(string $shortCode, string $json): array {
+    $shortCode = trim($shortCode); if ($shortCode === '' || mb_strlen($shortCode) > 40) throw new RuntimeException('Enter the short code (up to 40 characters).');
+    $d = json_decode($json, true); if (!is_array($d)) throw new RuntimeException('That is not valid JSON.');
+    $tree = isset($d['menu']) && is_array($d['menu']) ? $d['menu'] : $d;
+    if (!$tree || !array_is_list($tree)) throw new RuntimeException('Expected a list of menu nodes (or an export with a "menu" list).');
+    $flat = []; $count = 0;
+    $walk = function (array $nodes, ?int $parent, int $depth) use (&$walk, &$flat, &$count) {
+        if ($depth > 5) throw new RuntimeException('Menus can be at most 5 levels deep.');
+        foreach (array_values($nodes) as $i => $n) {
+            if (!is_array($n)) throw new RuntimeException('Every node must be an object.');
+            if (++$count > 150) throw new RuntimeException('At most 150 nodes per import.');
+            $prompt = trim((string)($n['prompt_text'] ?? '')); if ($prompt === '' || mb_strlen($prompt) > 300) throw new RuntimeException('Every node needs prompt_text (up to 300 characters).');
+            $type = (string)($n['node_type'] ?? 'menu'); if (!in_array($type, ['menu', 'offer', 'action', 'end', 'catalog'], true)) throw new RuntimeException('"'.$type.'" is not a node type.');
+            $status = (string)($n['status'] ?? 'draft'); if (!in_array($status, ['active', 'inactive', 'draft'], true)) throw new RuntimeException('"'.$status.'" is not a status.');
+            $filter = $type === 'catalog' ? menu_catalog_filter($n['catalog_filter'] ?? '') : null;
+            if ($type === 'catalog' && $filter === '') throw new RuntimeException('"'.$prompt.'": a catalogue list needs catalog_filter (its sub-categories).');
+            $key = count($flat); $flat[$key] = ['parent' => $parent, 'order' => (int)($n['display_order'] ?? ($i + 1)), 'prompt' => $prompt, 'type' => $type,
+                'offer' => mb_substr(trim((string)($n['offer_code'] ?? '')), 0, 80) ?: null, 'action' => mb_substr(trim((string)($n['action_key'] ?? '')), 0, 80) ?: null, 'status' => $status, 'filter' => $filter];
+            if (!empty($n['children'])) { if (!is_array($n['children'])) throw new RuntimeException('children must be a list.'); $walk($n['children'], $key, $depth + 1); }
+        }
+    };
+    $walk($tree, null, 1);
+    $db = portal_pdo(); $db->beginTransaction();
+    try {
+        $archived = $db->prepare("UPDATE ussd_menu_nodes SET short_code=CONCAT(short_code,' [archived ',DATE_FORMAT(NOW(),'%m-%d %H:%i'),']'), status='inactive' WHERE short_code=?");
+        $archived->execute([$shortCode]); $old = $archived->rowCount();
+        $ins = $db->prepare('INSERT INTO ussd_menu_nodes(parent_id,short_code,display_order,prompt_text,node_type,offer_code,action_key,status,catalog_filter,created_by) VALUES(?,?,?,?,?,?,?,?,?,?)');
+        $ids = [];
+        foreach ($flat as $k => $n) {
+            $ins->execute([$n['parent'] === null ? null : $ids[$n['parent']], $shortCode, $n['order'], $n['prompt'], $n['type'], $n['offer'], $n['action'], $n['status'], $n['filter'], user()['username'] ?? null]);
+            $ids[$k] = (int)$db->lastInsertId();
+        }
+        $db->commit();
+    } catch (Throwable $e) { $db->rollBack(); throw $e; }
+    audit('import_menu', null, 'ussd_menu_nodes', null, json_encode(['short_code' => $shortCode, 'nodes' => count($flat), 'archived' => $old]));
+    return ['nodes' => count($flat), 'archived' => $old];
 }
 // Renders a simple text simulation of walking the menu from its root nodes — what a subscriber
 // would actually see on their phone, useful for reviewing the flow without a live gateway.
@@ -2267,7 +2322,8 @@ function render_menu_preview(array $tree, int $depth = 0): string {
         $indent = str_repeat('  ', $depth);
         $suffix = $node['node_type'] === 'offer' ? ' → purchase '.e($node['offer_code'])
             : ($node['node_type'] === 'action' ? ' → '.e($node['action_key'])
-            : ($node['node_type'] === 'end' ? ' → END' : ''));
+            : ($node['node_type'] === 'end' ? ' → END'
+            : ($node['node_type'] === 'catalog' ? ' → live list: '.e(str_replace("\n", ', ', (string)($node['catalog_filter'] ?? ''))) : '')));
         $out .= $indent.($depth===0 ? $i.'. ' : '- ').e($node['prompt_text']).$suffix."\n";
         if ($node['children']) $out .= render_menu_preview($node['children'], $depth + 1);
         $i++;
@@ -2282,9 +2338,11 @@ function render_menu_preview(array $tree, int $depth = 0): string {
 // replica can serve any step.
 const USSD_MAX_CHARS = 182;
 // $statuses: which node states are served. Live traffic should use ['active']; the simulator also shows drafts.
-function ussd_screen(string $shortCode, array $replies, array $statuses = ['active'], ?array $nodes = null, ?callable $offerLookup = null): array {
+const USSD_PAGE_SIZE = 5; // offers per screen in a catalogue list; "6. More" shows the next ones
+// $hooks (for tests): 'offer' => fn(code): ?row, 'catalog' => fn(node): list of offer rows.
+function ussd_screen(string $shortCode, array $replies, array $statuses = ['active'], ?array $nodes = null, array $hooks = []): array {
     $nodes = $nodes ?? menu_nodes_flat($shortCode);
-    $offerLookup = $offerLookup ?? 'ussd_offer_lookup';
+    $offerLookup = $hooks['offer'] ?? 'ussd_offer_lookup'; $catalogLookup = $hooks['catalog'] ?? 'ussd_catalog_offers';
     $nodes = array_values(array_filter($nodes, fn($n) => in_array($n['status'], $statuses, true)));
     $kids = [];
     foreach ($nodes as $n) $kids[$n['parent_id'] === null ? 0 : (int)$n['parent_id']][] = $n;
@@ -2293,8 +2351,21 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
     // otherwise the root nodes themselves are the options under a plain header.
     $roots = $kids[0] ?? [];
     $cur = (count($roots) === 1 && $roots[0]['node_type'] === 'menu' && !empty($kids[(int)$roots[0]['id']])) ? $roots[0] : null;
-    $trail = [$cur]; $path = []; $note = null;
+    $trail = [$cur]; $path = []; $note = null; $page = 0;
     $confirm = null; // [node, offer row, name] while the customer is being asked to confirm a purchase
+    // The options on the current screen. A catalogue list builds them from the offer catalogue, a page at a time.
+    $current = function () use (&$cur, &$page, $kids, $roots, $catalogLookup): array {
+        if ($cur && $cur['node_type'] === 'catalog') {
+            $all = [];
+            foreach ($catalogLookup($cur) as $o) {
+                $name = trim((string)($o['name'] ?? '')) ?: (string)$o['offer_code'];
+                $all[] = ['id' => 'c'.$cur['id'].'-'.$o['offer_code'], 'parent_id' => $cur['id'], 'node_type' => 'offer', 'status' => 'active', 'offer_code' => (string)$o['offer_code'], 'action_key' => '',
+                    'prompt_text' => mb_strimwidth($name, 0, 18, '…').(($o['one_time_price'] ?? '') !== '' ? ' - '.$o['one_time_price'] : '')];
+            }
+            return [array_slice($all, $page * USSD_PAGE_SIZE, USSD_PAGE_SIZE), count($all) > ($page + 1) * USSD_PAGE_SIZE];
+        }
+        return [$cur ? ($kids[(int)$cur['id']] ?? []) : $roots, false];
+    };
     foreach ($replies as $r) {
         $r = trim((string)$r, " \t\r\n*#"); // people sometimes type *2 or 2# — the star and hash are not part of the choice
         if ($confirm !== null) {
@@ -2305,11 +2376,12 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
             if ($r === '0') { $confirm = null; array_pop($path); $note = null; continue; }
             $note = 'Invalid choice.'; continue;
         }
-        $options = $cur ? ($kids[(int)$cur['id']] ?? []) : $roots;
-        if ($r === '0' && count($trail) > 1) { array_pop($trail); $cur = end($trail) ?: null; array_pop($path); $note = null; continue; }
+        [$options, $more] = $current();
+        if ($r === '0' && count($trail) > 1) { array_pop($trail); $cur = end($trail) ?: null; array_pop($path); $note = null; $page = 0; continue; }
+        if ($more && $r === (string)(USSD_PAGE_SIZE + 1)) { $page++; $note = null; continue; }
         if (!ctype_digit($r) || (int)$r < 1 || (int)$r > count($options)) { $note = 'Invalid choice.'; continue; }
         $pick = $options[(int)$r - 1]; $path[] = (int)$r; $note = null;
-        if ($pick['node_type'] === 'menu' && !empty($kids[(int)$pick['id']])) { $cur = $pick; $trail[] = $cur; continue; }
+        if (($pick['node_type'] === 'menu' && !empty($kids[(int)$pick['id']])) || $pick['node_type'] === 'catalog') { $cur = $pick; $trail[] = $cur; $page = 0; continue; }
         // an offer: show what it is and ask for a yes before anything is bought
         if ($pick['node_type'] === 'offer') {
             $o = $offerLookup(trim((string)$pick['offer_code']));
@@ -2326,12 +2398,27 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
         $line = 'Buy '.$name.(($o['one_time_price'] ?? '') !== '' ? ' - '.$o['one_time_price'] : '').(!empty($o['validity_amount']) ? ' / '.$o['validity_amount'].' days' : '').'?';
         return ussd_result(($note ? $note."\n" : '').$line."\n1. Confirm\n2. Cancel\n0. Back", false, $path, 'confirm', $pick);
     }
-    $options = $cur ? ($kids[(int)$cur['id']] ?? []) : $roots;
+    [$options, $more] = $current();
     $lines = [$cur ? $cur['prompt_text'] : 'Welcome'];
     if ($note) array_unshift($lines, $note);
     foreach ($options as $i => $o) $lines[] = ($i + 1).'. '.$o['prompt_text'];
+    if ($cur && $cur['node_type'] === 'catalog' && !$options) $lines[] = 'No offers are available right now.';
+    if ($more) $lines[] = (USSD_PAGE_SIZE + 1).'. More';
     if (count($trail) > 1) $lines[] = '0. Back';
     return ussd_result(implode("\n", $lines), false, $path, 'menu', $cur);
+}
+// The offers a catalogue-list node shows: active ones in its sub-categories, cheapest first, each code once.
+function ussd_catalog_offers(array $node): array {
+    $subs = array_values(array_filter(array_map('trim', preg_split('/\R/', (string)($node['catalog_filter'] ?? '')))));
+    if (!$subs) return [];
+    try {
+        $st = pdo(USSD_OFFER_SCHEMA)->prepare('SELECT offer_code, name, one_time_price, validity_amount FROM vas_offers WHERE sub_category IN ('.implode(',', array_fill(0, count($subs), '?')).') AND '.OFFER_ACTIVE_SQL." AND (deleted_at IS NULL OR deleted_at='') AND offer_code IS NOT NULL AND offer_code<>'' ORDER BY id DESC LIMIT 200");
+        $st->execute($subs);
+        $rows = []; foreach ($st->fetchAll() as $o) if (!isset($rows[$o['offer_code']])) $rows[$o['offer_code']] = $o;
+        $rows = array_values($rows);
+        usort($rows, fn($a, $b) => [(float)$a['one_time_price'], (string)$a['name']] <=> [(float)$b['one_time_price'], (string)$b['name']]);
+        return array_slice($rows, 0, 60);
+    } catch (Throwable $e) { error_log('ussd catalog: '.$e->getMessage()); return []; }
 }
 // The USSD menu sells from the TEST catalogue only for now (the live catalogue is deliberately not read).
 const USSD_OFFER_SCHEMA = 'HeraTesting';
@@ -2378,7 +2465,8 @@ function ussd_purchase_http(array $cfg, string $msisdn, string $offerCode, strin
 }
 // $screen is a result of kind 'purchase'. Returns the text to show the customer and a short note for the request log.
 function ussd_execute_purchase(array $cfg, array $screen, string $msisdn, string $callId): array {
-    $p = $screen['purchase']; $mode = in_array($cfg['purchase_mode'], ['test', 'live'], true) ? $cfg['purchase_mode'] : 'off';
+    $p = $screen['purchase']; $mode = in_array($cfg['purchase_mode'], ['test', 'test_low', 'live'], true) ? $cfg['purchase_mode'] : 'off';
+    $lowText = 'Sorry, your balance is too low for '.$p['name'].'. Please top up and try again.';
     $msisdn = preg_replace('/\D+/', '', $msisdn);
     if ($mode === 'off') return ['text' => 'Purchases are not switched on yet. You were not charged.', 'note' => 'purchase: off'];
     if ($msisdn === '' || $p['offer_code'] === '') return ['text' => 'Sorry, we could not process this request. You were not charged.', 'note' => 'purchase: no number or offer code'];
@@ -2394,12 +2482,15 @@ function ussd_execute_purchase(array $cfg, array $screen, string $msisdn, string
         }
         $id = (int)$db->lastInsertId(); $httpCode = null; $resp = null;
         if ($mode === 'test') { $status = 'test'; $text = 'TEST: '.$p['name'].' would be bought for '.$msisdn.'. You were not charged.'; }
+        elseif ($mode === 'test_low') { $status = 'lowbal'; $text = $lowText; }
         else {
             $r = ussd_purchase_http($cfg, $msisdn, $p['offer_code'], $callId, $p['price']);
             $httpCode = $r['code']; $resp = $r['error'] !== '' ? 'error: '.$r['error'] : mb_substr($r['raw'], 0, 1000);
             $ok = $r['error'] === '' && $r['code'] >= 200 && $r['code'] < 300 && ($cfg['purchase_ok_match'] === '' || stripos($r['raw'], $cfg['purchase_ok_match']) !== false);
-            $status = $ok ? 'ok' : 'failed';
-            $text = $ok ? 'Thank you. '.$p['name'].' has been purchased.' : 'Sorry, the purchase could not be completed. Please try again later.';
+            $low = false;
+            if (!$ok) foreach (array_filter(array_map('trim', explode(',', (string)$cfg['purchase_lowbal']))) as $term) if (stripos((string)$r['raw'], $term) !== false) { $low = true; break; }
+            $status = $ok ? 'ok' : ($low ? 'lowbal' : 'failed');
+            $text = $ok ? 'Thank you. '.$p['name'].' has been purchased.' : ($low ? $lowText : 'Sorry, the purchase could not be completed. Please try again later.');
         }
         $db->prepare('UPDATE ussd_purchases SET status=?, http_code=?, response=?, reply_text=?, ms=? WHERE id=?')
             ->execute([$status, $httpCode, $resp, mb_substr($text, 0, 255), (int)round((microtime(true) - $t0) * 1000), $id]);
@@ -2410,14 +2501,15 @@ function ussd_execute_purchase(array $cfg, array $screen, string $msisdn, string
     }
 }
 function save_purchase_config(array $d): void {
-    $mode = in_array($d['purchase_mode'] ?? '', ['test', 'live'], true) ? $d['purchase_mode'] : 'off';
+    $mode = in_array($d['purchase_mode'] ?? '', ['test', 'test_low', 'live'], true) ? $d['purchase_mode'] : 'off';
     $url = trim((string)($d['purchase_url'] ?? ''));
     if ($url !== '' && (!preg_match('#^https?://#i', $url) || !filter_var($url, FILTER_VALIDATE_URL) || mb_strlen($url) > 500)) throw new RuntimeException('The purchase address must be a full http:// or https:// URL.');
     if ($mode === 'live' && $url === '') throw new RuntimeException('Live purchases need the purchase address. Use Test mode until you have it.');
     $body = (string)($d['purchase_body'] ?? ''); if (trim($body) === '' || mb_strlen($body) > 2000) throw new RuntimeException('The request body must be filled in (at most 2000 characters).');
     $timeout = filter_var($d['purchase_timeout'] ?? null, FILTER_VALIDATE_INT); if ($timeout === false || $timeout < 2 || $timeout > 15) throw new RuntimeException('The purchase timeout must be between 2 and 15 seconds.');
     $match = trim((string)($d['purchase_ok_match'] ?? '')); if (mb_strlen($match) > 100) throw new RuntimeException('The success text is at most 100 characters.');
-    $vals = ['purchase_mode' => $mode, 'purchase_url' => $url, 'purchase_body' => $body, 'purchase_timeout' => (string)$timeout, 'purchase_ok_match' => $match];
+    $low = trim((string)($d['purchase_lowbal'] ?? '')); if (mb_strlen($low) > 200) throw new RuntimeException('The low-balance words are at most 200 characters.');
+    $vals = ['purchase_mode' => $mode, 'purchase_url' => $url, 'purchase_body' => $body, 'purchase_timeout' => (string)$timeout, 'purchase_ok_match' => $match, 'purchase_lowbal' => $low];
     $auth = trim((string)($d['purchase_auth'] ?? ''));
     if (!empty($d['purchase_auth_clear'])) $vals['purchase_auth'] = '';
     elseif ($auth !== '') {
@@ -2446,7 +2538,7 @@ const USSD_PROXY_DEFAULTS = [
     'push_enabled' => '0', 'mobius_base' => 'http://192.168.162.20:28080/rest/', 'mobius_user' => '', 'mobius_pass' => '', 'mobius_session' => '', 'mobius_variant' => '0',
     // buying an offer from the menu (see ussd_execute_purchase): off | test | live
     'purchase_mode' => 'off', 'purchase_url' => '', 'purchase_body' => '{"msisdn":"{msisdn}","offer_code":"{offer_code}","transaction_id":"{txn}","channel":"USSD"}',
-    'purchase_auth' => '', 'purchase_ok_match' => '', 'purchase_timeout' => '8',
+    'purchase_auth' => '', 'purchase_ok_match' => '', 'purchase_timeout' => '8', 'purchase_lowbal' => 'insufficient,low balance,not enough',
 ];
 function ussd_proxy_config(): array {
     $cfg = USSD_PROXY_DEFAULTS;

@@ -1,0 +1,56 @@
+[
+ {
+  "prompt_text": "Comium Menu",
+  "node_type": "menu",
+  "status": "active",
+  "children": [
+   {
+    "prompt_text": "KAA Bundle",
+    "node_type": "catalog",
+    "status": "active",
+    "catalog_filter": "Social Media\nSocial Media Bundle\nFacebook Bundle\nInstagram bundle\nTikTok bundle\nWhatsApp Bundle\nSanp Chat Bundle"
+   },
+   {
+    "prompt_text": "Sakan Bundles",
+    "node_type": "catalog",
+    "status": "active",
+    "catalog_filter": "Sakan Data 24 Hours\nSakan 5 days\nSakan 7 days\nSakan Data 7 days\nSakan 14 days\nSakan 30 days\nSakan Data 30 days"
+   },
+   {
+    "prompt_text": "Jahass Bundles",
+    "node_type": "catalog",
+    "status": "active",
+    "catalog_filter": "Supper Bundles\nMix Bundle\nMixBundle"
+   },
+   {
+    "prompt_text": "Speed Bundles",
+    "node_type": "catalog",
+    "status": "active",
+    "catalog_filter": "SpeedMega15\nSpeedMega30\nMegaBundle"
+   },
+   {
+    "prompt_text": "Special Bundles",
+    "node_type": "catalog",
+    "status": "active",
+    "catalog_filter": "SpecialBundles\nSpecial Deal"
+   },
+   {
+    "prompt_text": "Promotions",
+    "node_type": "catalog",
+    "status": "active",
+    "catalog_filter": "Promotions\nDIYAA PROMO\nRamadan"
+   },
+   {
+    "prompt_text": "Voice & SMS Bundles",
+    "node_type": "catalog",
+    "status": "active",
+    "catalog_filter": "Voice&SMS\nSMS Package\nSMS Bundle"
+   },
+   {
+    "prompt_text": "Buy for other - coming soon",
+    "node_type": "end",
+    "status": "active"
+   }
+  ]
+ }
+]
