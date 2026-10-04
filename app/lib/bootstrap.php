@@ -2332,6 +2332,8 @@ const USSD_PROXY_DEFAULTS = [
     'reply_mode' => 'step', 'session_ttl' => '180',
     'resp_type' => 'text/plain; charset=UTF-8', 'resp_body' => '{text}', 'end_true' => 'true', 'end_false' => 'false',
     'capture_body' => 'VAS Cloud test endpoint: request received.',
+    // PROXY menus: Mobius sends each reply here and expects the screen to come back through ITS REST API
+    'push_enabled' => '0', 'mobius_base' => 'http://192.168.162.20:28080/rest/', 'mobius_user' => '', 'mobius_pass' => '', 'mobius_session' => '',
 ];
 function ussd_proxy_config(): array {
     $cfg = USSD_PROXY_DEFAULTS;
@@ -2463,6 +2465,123 @@ function ussd_proxy_process(array $cfg, string $mode, array $flat, bool $dry = f
     }
     return ['ctype' => $cfg['resp_type'], 'body' => ussd_proxy_render($cfg, $screen, $sessionId, $msisdn), 'note' => implode('; ', $note) ?: 'live', 'screen' => $screen, 'replies' => $replies, 'sc' => $sc];
 }
+function ussd_proxy_write_log(string $mode, string $ip, array $get, string $raw, string $response, int $ms, string $note): void {
+    $hdr = [];
+    foreach ($_SERVER as $k => $v) if (str_starts_with($k, 'HTTP_') && $k !== 'HTTP_COOKIE') $hdr[strtolower(str_replace('_', '-', substr($k, 5)))] = $k === 'HTTP_AUTHORIZATION' ? '(present)' : (string)$v;
+    if (!empty($_SERVER['CONTENT_TYPE'])) $hdr['content-type'] = (string)$_SERVER['CONTENT_TYPE'];
+    try {
+        $db = portal_pdo();
+        $db->prepare('INSERT INTO ussd_proxy_log(mode,remote_ip,method,query_text,headers_text,body_text,response_text,ms,note) VALUES(?,?,?,?,?,?,?,?,?)')
+            ->execute([$mode, $ip, $_SERVER['REQUEST_METHOD'] ?? '', json_encode($get, JSON_UNESCAPED_UNICODE), json_encode($hdr, JSON_UNESCAPED_UNICODE), $raw !== '' ? $raw : json_encode($_POST, JSON_UNESCAPED_UNICODE), mb_substr($response, 0, 1000), $ms, mb_substr($note, 0, 200)]);
+        if (random_int(1, 30) === 1) { $db->exec('DELETE FROM ussd_proxy_log WHERE created_at < NOW() - INTERVAL 3 DAY'); $db->exec('DELETE FROM ussd_proxy_sessions WHERE updated_at < NOW() - INTERVAL 1 DAY'); }
+    } catch (Throwable $e) {}
+}
+
+// ---- Mobius REST API (documented at images.mobius-software.com/apidocs: auth/login, ussdcalls/proxy) ----
+function mobius_norm_base(string $u): string {
+    $u = trim($u);
+    if (!preg_match('#^https?://[A-Za-z0-9._-]+(:\d{1,5})?(/[A-Za-z0-9._~/-]*)?$#', $u)) throw new RuntimeException('"'.$u.'" is not a valid address (use e.g. http://192.168.162.20:28080/rest/).');
+    $u = rtrim($u, '/'); if (!str_ends_with($u, '/rest')) $u .= '/rest';
+    return $u.'/';
+}
+function mobius_bases(array $cfg): array {
+    $out = []; foreach (preg_split('/[\s,;]+/', trim($cfg['mobius_base']), -1, PREG_SPLIT_NO_EMPTY) as $x) { try { $out[] = mobius_norm_base($x); } catch (Throwable $e) {} }
+    return array_values(array_unique($out));
+}
+function mobius_http(string $url, array $body, int $timeout = 5): array {
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_POST => true, CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Accept: application/json'],
+        CURLOPT_POSTFIELDS => json_encode($body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), CURLOPT_TIMEOUT => $timeout, CURLOPT_CONNECTTIMEOUT => 3]);
+    $raw = curl_exec($ch); $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE); $err = curl_error($ch); curl_close($ch);
+    $j = is_string($raw) ? json_decode($raw, true) : null;
+    return ['code' => $code, 'raw' => (string)$raw, 'json' => is_array($j) ? $j : null, 'error' => $err];
+}
+function mobius_login_at(string $base, string $user, string $hash): array {
+    $r = mobius_http($base.'auth/login', ['username' => $user, 'password' => $hash]);
+    $sid = $r['json']['sessionID'] ?? null; $status = strtoupper((string)($r['json']['status'] ?? ''));
+    if ($r['code'] === 200 && is_string($sid) && $sid !== '' && $status !== 'ERROR') return ['ok' => true, 'session' => $sid];
+    return ['ok' => false, 'error' => $r['error'] !== '' ? $r['error'] : 'HTTP '.$r['code'].' '.mb_substr((string)($r['json']['errorMessage'] ?? $r['raw']), 0, 120)];
+}
+// The login session is cached (encrypted) per Mobius node for 25 minutes and re-created on any failure.
+function mobius_session_for(array $cfg, string $base, bool $force = false): array {
+    $map = json_decode(decrypt_secret($cfg['mobius_session']) ?: '{}', true) ?: [];
+    if (!$force && !empty($map[$base]['sid']) && time() - (int)($map[$base]['at'] ?? 0) < 1500) return ['ok' => true, 'session' => $map[$base]['sid']];
+    $hash = decrypt_secret($cfg['mobius_pass']);
+    if ($cfg['mobius_user'] === '' || $hash === '') return ['ok' => false, 'error' => 'Mobius login not configured'];
+    $r = mobius_login_at($base, $cfg['mobius_user'], $hash);
+    if ($r['ok']) { $map[$base] = ['sid' => $r['session'], 'at' => time()]; try { ussd_proxy_set(['mobius_session' => encrypt_secret(json_encode($map))]); } catch (Throwable $e) {} }
+    return $r;
+}
+function mobius_push(array $cfg, string $callId, string $text, bool $complete): array {
+    $errors = [];
+    foreach (mobius_bases($cfg) as $base) {
+        for ($attempt = 0; $attempt < 2; $attempt++) {
+            $s = mobius_session_for($cfg, $base, $attempt > 0);
+            if (!$s['ok']) { $errors[] = $base.' login: '.$s['error']; break; }
+            $r = mobius_http($base.'ussdcalls/proxy', ['data' => ['callID' => $callId, 'isComplete' => $complete, 'request' => $text], 'sessionID' => $s['session'], 'username' => $cfg['mobius_user']]);
+            $bad = $r['json'] !== null && (strtoupper((string)($r['json']['status'] ?? '')) === 'ERROR' || trim((string)($r['json']['errorMessage'] ?? '')) !== '');
+            if ($r['code'] === 200 && !$bad) return ['ok' => true, 'base' => $base];
+            $errors[] = $base.' HTTP '.$r['code'].' '.($r['error'] !== '' ? $r['error'] : mb_substr((string)($r['json']['errorMessage'] ?? $r['raw']), 0, 100));
+        }
+    }
+    return ['ok' => false, 'error' => $errors ? implode(' | ', $errors) : 'no Mobius address configured'];
+}
+function mobius_test(array $cfg): array {
+    $out = []; $hash = decrypt_secret($cfg['mobius_pass']);
+    if ($cfg['mobius_user'] === '' || $hash === '') return [['base' => '', 'ok' => false, 'msg' => 'Enter the Mobius API user name and password first.']];
+    foreach (mobius_bases($cfg) as $base) { $t = microtime(true); $r = mobius_login_at($base, $cfg['mobius_user'], $hash); $out[] = ['base' => $base, 'ok' => $r['ok'], 'msg' => $r['ok'] ? 'Logged in ('.round((microtime(true) - $t) * 1000).' ms).' : $r['error']]; }
+    return $out ?: [['base' => '', 'ok' => false, 'msg' => 'No valid Mobius address saved.']];
+}
+function save_mobius_config(array $d): void {
+    $cfg = ussd_proxy_config();
+    $bases = []; foreach (preg_split('/[\s,;]+/', trim((string)($d['mobius_base'] ?? '')), -1, PREG_SPLIT_NO_EMPTY) as $x) $bases[] = mobius_norm_base($x);
+    if (!$bases) throw new RuntimeException('Enter at least one Mobius address.');
+    if (count($bases) > 4) throw new RuntimeException('At most 4 Mobius addresses.');
+    $user = trim((string)($d['mobius_user'] ?? ''));
+    if ($user !== '' && !preg_match('/^[A-Za-z0-9._@-]{1,80}$/', $user)) throw new RuntimeException('The API user name may only contain letters, digits and . _ @ -');
+    $vals = ['push_enabled' => empty($d['push_enabled']) ? '0' : '1', 'mobius_base' => implode(',', array_unique($bases)), 'mobius_user' => $user];
+    $pass = (string)($d['mobius_pass'] ?? '');
+    // Mobius wants the MD5 of the password; only that hash is kept, encrypted, and the plain password is never stored.
+    if ($pass !== '') $vals['mobius_pass'] = encrypt_secret(md5($pass));
+    if ($pass !== '' || $user !== $cfg['mobius_user'] || $vals['mobius_base'] !== $cfg['mobius_base']) $vals['mobius_session'] = '';
+    ussd_proxy_set($vals);
+    audit('ussd_proxy_mobius_save', null, 'ussd_proxy_config', null, 'push='.$vals['push_enabled'].' user='.$user.' password_changed='.($pass !== '' ? 'yes' : 'no'));
+}
+// PROXY menus: Mobius posts each reply here; the screen goes back through Mobius's REST API, so we acknowledge first
+// (keeping the HTTP exchange short) and push afterwards. Session state is the replies so far, keyed by callID.
+function ussd_proxy_push_endpoint(array $cfg, array $flat, string $raw, array $get, string $ip, float $t0): never {
+    ignore_user_abort(true); @set_time_limit(40);
+    $callId = trim((string)($flat['callID'] ?? '')); $msisdn = (string)($flat['msisdn'] ?? '');
+    $initial = ($flat['isInitial'] ?? '') === 'true'; $ended = ($flat['isComplete'] ?? '') === 'true'; $typed = trim((string)($flat['request'] ?? ''));
+    $note = ''; $text = null; $complete = false; $sc = $cfg['shortcode_proxy'];
+    try {
+        $db = portal_pdo();
+        if ($callId === '') $note = 'no callID in request';
+        elseif ($ended && $typed === '') { $db->prepare('DELETE FROM ussd_proxy_sessions WHERE session_key=?')->execute([$callId]); $note = 'dialog finished (nothing to send)'; }
+        else {
+            $replies = [];
+            if (!$initial) {
+                $st = $db->prepare('SELECT replies FROM ussd_proxy_sessions WHERE session_key=? AND shortcode=? AND updated_at >= NOW() - INTERVAL '.(int)$cfg['session_ttl'].' SECOND');
+                $st->execute([$callId, $sc]); $row = $st->fetchColumn();
+                if ($row !== false) { $replies = json_decode((string)$row, true) ?: []; if ($typed !== '') $replies[] = $typed; } else $note = 'session not found - restarted from the first screen; ';
+            }
+            $screen = ussd_screen($sc, array_slice($replies, -30), ['active']);
+            if ($screen['end']) $db->prepare('DELETE FROM ussd_proxy_sessions WHERE session_key=?')->execute([$callId]);
+            else $db->prepare('REPLACE INTO ussd_proxy_sessions(session_key,shortcode,replies,updated_at) VALUES(?,?,?,NOW())')->execute([$callId, $sc, json_encode($replies)]);
+            $text = $screen['text']; $complete = $screen['end'];
+        }
+    } catch (Throwable $e) { error_log('ussd.php push: '.$e->getMessage()); $note = 'error: '.substr($e->getMessage(), 0, 150); $text = null; }
+    $ack = (string)json_encode(['callID' => $callId, 'msisdn' => $msisdn], JSON_UNESCAPED_SLASHES);
+    header('Content-Type: application/json'); header('Cache-Control: no-store'); header('Connection: close'); header('Content-Length: '.strlen($ack));
+    echo $ack;
+    if (function_exists('fastcgi_finish_request')) fastcgi_finish_request(); else { while (ob_get_level() > 0) @ob_end_flush(); flush(); }
+    if ($text !== null) {
+        $res = mobius_push($cfg, $callId, $text, $complete);
+        $note .= $res['ok'] ? 'pushed to Mobius'.($complete ? ' (final screen)' : '') : 'PUSH FAILED: '.$res['error'];
+    }
+    ussd_proxy_write_log('proxy', $ip, $get, $raw, $text ?? $ack, (int)round((microtime(true) - $t0) * 1000), $note);
+    exit;
+}
 function ussd_proxy_endpoint(): never {
     $t0 = microtime(true); $cfg = ussd_proxy_config();
     $mode = ['proxy' => 'proxy', 'ms' => 'ms_initiated', 'ms_initiated' => 'ms_initiated'][(string)($_GET['m'] ?? '')] ?? null;
@@ -2473,16 +2592,10 @@ function ussd_proxy_endpoint(): never {
     $raw = (string)file_get_contents('php://input', false, null, 0, 65536);
     $get = $_GET; unset($get['t'], $get['m']);
     $flat = ussd_proxy_flatten((string)($_SERVER['CONTENT_TYPE'] ?? ''), $raw, $get, $_POST);
+    if ($mode === 'proxy' && $cfg['mode'] === 'live' && $cfg['push_enabled'] === '1') ussd_proxy_push_endpoint($cfg, $flat, $raw, $get, $ip, $t0);
     try { $res = ussd_proxy_process($cfg, $mode, $flat); }
     catch (Throwable $e) { error_log('ussd.php: '.$e->getMessage()); $res = ['ctype' => 'text/plain; charset=UTF-8', 'body' => 'Service temporarily unavailable. Please try again.', 'note' => 'error: '.substr($e->getMessage(), 0, 150)]; }
-    $hdr = []; foreach ($_SERVER as $k => $v) if (str_starts_with($k, 'HTTP_') && !in_array($k, ['HTTP_COOKIE'], true)) $hdr[strtolower(str_replace('_', '-', substr($k, 5)))] = $k === 'HTTP_AUTHORIZATION' ? '(present)' : (string)$v;
-    if (!empty($_SERVER['CONTENT_TYPE'])) $hdr['content-type'] = (string)$_SERVER['CONTENT_TYPE'];
-    try {
-        $db = portal_pdo();
-        $db->prepare('INSERT INTO ussd_proxy_log(mode,remote_ip,method,query_text,headers_text,body_text,response_text,ms,note) VALUES(?,?,?,?,?,?,?,?,?)')
-            ->execute([$mode, $ip, $_SERVER['REQUEST_METHOD'] ?? '', json_encode($get, JSON_UNESCAPED_UNICODE), json_encode($hdr, JSON_UNESCAPED_UNICODE), $raw !== '' ? $raw : json_encode($_POST, JSON_UNESCAPED_UNICODE), mb_substr($res['body'], 0, 1000), (int)round((microtime(true) - $t0) * 1000), mb_substr($res['note'] ?? '', 0, 200)]);
-        if (random_int(1, 30) === 1) { $db->exec('DELETE FROM ussd_proxy_log WHERE created_at < NOW() - INTERVAL 3 DAY'); $db->exec('DELETE FROM ussd_proxy_sessions WHERE updated_at < NOW() - INTERVAL 1 DAY'); }
-    } catch (Throwable $e) {}
+    ussd_proxy_write_log($mode, $ip, $get, $raw, $res['body'], (int)round((microtime(true) - $t0) * 1000), $res['note'] ?? '');
     header('Content-Type: '.$res['ctype']); header('Cache-Control: no-store'); header('X-Content-Type-Options: nosniff');
     echo $res['body']; exit;
 }

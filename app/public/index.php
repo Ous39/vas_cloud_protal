@@ -908,10 +908,12 @@ if ($page==='ussd_proxy') {
     if ($_SERVER['REQUEST_METHOD']==='POST') {
         $do=(string)($_POST['do']??'');
         if ($do==='save') { save_ussd_proxy_config($_POST); flash('success','USSD proxy settings saved.'); redirect('?page=ussd_proxy'); }
+        if ($do==='save_mobius') { save_mobius_config($_POST); flash('success','Mobius connection saved. Use "Test connection" to check the login.'); redirect('?page=ussd_proxy'); }
         if ($do==='rotate') { ussd_proxy_rotate_token(); flash('warning','New token created. Update the URL in the Mobius menu(s) — the old URL no longer works.'); redirect('?page=ussd_proxy'); }
         if ($do==='clear') { portal_pdo()->exec('DELETE FROM ussd_proxy_log'); audit('ussd_proxy_log_clear',null,'ussd_proxy_log',null,null); flash('success','Captured requests cleared.'); redirect('?page=ussd_proxy'); }
     }
-    $cfg=ussd_proxy_config(); $token=ussd_proxy_token();
+    $cfg=ussd_proxy_config(); $token=ussd_proxy_token(); $mobiusTest=null;
+    if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['do']??'')==='mobius_test') { $mobiusTest=mobius_test($cfg); audit('ussd_proxy_mobius_test',null,'ussd_proxy_config',null,json_encode(array_map(fn($r)=>['base'=>$r['base'],'ok'=>$r['ok']],$mobiusTest))); }
     $logs=portal_pdo()->query('SELECT * FROM ussd_proxy_log ORDER BY id DESC LIMIT 25')->fetchAll();
     // the tester: a sample request (or a captured one to replay), run through the live logic without storing any session
     $test=null; $testIn=''; $testMode='proxy'; $testCt='application/json';
@@ -976,6 +978,18 @@ if ($page==='ussd_proxy') {
         <button class="btn btn-primary mt-3">Save settings</button>
     </form>
 
+    <div class="cardx mt-3"><h3>Mobius connection <small class="text-muted">(for PROXY menus)</small></h3>
+        <p class="text-muted">A PROXY menu does not take its screen from our HTTP reply. Mobius sends us each reply, and we send the next screen back through <b>Mobius's REST API</b> (<code>auth/login</code>, then <code>ussdcalls/proxy</code>). That needs a Mobius API user — ideally a dedicated one created under <i>Admins</i> in Mobius, not your own. The password is turned into the MD5 hash Mobius expects and only that hash is kept, <b>encrypted</b>; it is never shown again.</p>
+        <form method="post" class="row g-3"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="save_mobius">
+            <div class="col-12"><div class="form-check form-switch"><input class="form-check-input" type="checkbox" name="push_enabled" value="1" id="pp" <?=$cfg['push_enabled']==='1'?'checked':''?>><label class="form-check-label fw-semibold" for="pp">Answer PROXY menus through the Mobius API <small class="text-muted">(applies in Live mode, to the PROXY menu only)</small></label></div></div>
+            <div class="col-md-6"><label class="small text-muted mb-0">Mobius REST address(es) <small>(comma-separated if there are several servers; tried in order)</small></label><input class="form-control" name="mobius_base" value="<?=e($cfg['mobius_base'])?>" placeholder="http://192.168.162.20:28080/rest/"></div>
+            <div class="col-md-3"><label class="small text-muted mb-0">API user name</label><input class="form-control" name="mobius_user" value="<?=e($cfg['mobius_user'])?>" autocomplete="off"></div>
+            <div class="col-md-3"><label class="small text-muted mb-0">Password</label><input class="form-control" type="password" name="mobius_pass" autocomplete="new-password" placeholder="<?=$cfg['mobius_pass']!==''?'saved — leave blank to keep':'password'?>"></div>
+            <div class="col-12 d-flex gap-2"><button class="btn btn-primary">Save connection</button></div>
+        </form>
+        <form method="post" class="mt-2"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="mobius_test"><button class="btn btn-sm btn-outline-primary">Test connection</button> <small class="text-muted">Logs in with the saved details and reports the result. Nothing else is sent.</small></form>
+        <?php if($mobiusTest):?><div class="mt-2"><?php foreach($mobiusTest as $mt):?><div class="small"><span class="badge <?=$mt['ok']?'bg-success':'bg-danger'?> me-1"><?=$mt['ok']?'OK':'Failed'?></span><code><?=e($mt['base'])?></code> <?=e($mt['msg'])?></div><?php endforeach;?></div><?php endif;?>
+    </div>
     <div class="cardx mt-3"><h3>Try it without Mobius</h3>
         <p class="text-muted">Paste a sample request (JSON, XML or <code>name=value&amp;name=value</code>) — or press <b>Replay</b> on a captured one below. It runs the live logic with the settings above and shows what would be sent back. Nothing is stored and no session is kept.</p>
         <form method="post" class="row g-2"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="test">
@@ -1066,7 +1080,7 @@ if ($page==='ussd_menu') {
     ?>
     <div class="cardx">
         <h3><i class="fa-solid fa-sitemap me-2"></i>USSD Menu Builder</h3>
-        <p class="text-muted mb-0">Design and preview a USSD menu tree per short code. <strong>This is a design/staging tool</strong> — it does not push configuration to Mobius or any gateway; that needs the gateway's own menu-config API, which isn't wired up yet. Use the JSON export as the source of truth to hand-enter (or later auto-push) into the real gateway.</p>
+        <p class="text-muted mb-0">Design and preview a USSD menu tree per short code. Items marked <strong>Active</strong> are served live to the short codes set on the <a href="?page=ussd_proxy">USSD Proxy</a> page (the menu must also exist in Mobius for that short code). Draft items are only visible in the simulator.</p>
         <form method="get" class="row g-2 mt-2"><input type="hidden" name="page" value="ussd_menu">
             <div class="col-md-4"><select class="form-select" name="short_code"><?php foreach($known as $sc):?><option value="<?=e($sc)?>" <?=$shortCode===$sc?'selected':''?>><?=e($sc)?></option><?php endforeach;?></select></div>
             <div class="col-md-4"><input class="form-control" name="new_short_code" placeholder="Or start a new short code, e.g. *123#"></div>
