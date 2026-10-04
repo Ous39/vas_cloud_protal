@@ -2294,7 +2294,7 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
     $cur = (count($roots) === 1 && $roots[0]['node_type'] === 'menu' && !empty($kids[(int)$roots[0]['id']])) ? $roots[0] : null;
     $trail = [$cur]; $path = []; $note = null;
     foreach ($replies as $r) {
-        $r = trim((string)$r);
+        $r = trim((string)$r, " \t\r\n*#"); // people sometimes type *2 or 2# — the star and hash are not part of the choice
         $options = $cur ? ($kids[(int)$cur['id']] ?? []) : $roots;
         if ($r === '0' && count($trail) > 1) { array_pop($trail); $cur = end($trail) ?: null; array_pop($path); $note = null; continue; }
         if (!ctype_digit($r) || (int)$r < 1 || (int)$r > count($options)) { $note = 'Invalid choice.'; continue; }
