@@ -24,7 +24,7 @@ function nav_can_see(string $page): bool {
     if ($page==='audit') return can('view_audit');
     if ($page==='api_keys') return can('manage_api_keys');
     if ($page==='promotions') return can('manage_promotions');
-    if ($page==='alert_settings') return can('manage_api_keys');
+    if (in_array($page,['alert_settings','retention'],true)) return can('manage_api_keys');
     if (in_array($page,['investigate','reports','alerts','monitoring','offer_report','timeline','vendor'],true)) return can('view_reports');
     if (in_array($page,['subscriptions','offers','esim','sales','friends_family','voting','ussd_ivr','ussd_menu','integrations','tables','projects','shortcodes'],true)) return can('view_tables');
     return true;
@@ -37,7 +37,7 @@ function layout_start(string $title): void {
         ['group','fa-layer-group','Operations',[['subscriptions','fa-user-check','Subscriptions'],['offers','fa-tags','Offer Management'],['esim','fa-sim-card','eSIM Profiles'],['sales','fa-file-invoice-dollar','Sales & Invoices'],['friends_family','fa-user-group','Friends & Family'],['voting','fa-square-poll-vertical','Voting Service']]],
         ['group','fa-tower-broadcast','Infrastructure',[['ussd_ivr','fa-mobile-screen-button','USSD & IVR'],['ussd_menu','fa-sitemap','USSD Menu Builder'],['integrations','fa-plug-circle-check','Integrations']]],
         ['group','fa-chart-line','Reports',[['investigate','fa-headset','Complaint Investigation'],['timeline','fa-timeline','Customer Timeline'],['alerts','fa-triangle-exclamation','Alerts'],['offer_report','fa-bullhorn','Offer Performance'],['reports','fa-chart-line','Reports'],['sql','fa-code','SQL Console']]],
-        ['group','fa-gears','Admin',[['tables','fa-database','Database Tables'],['promotions','fa-bullhorn','Promotions'],['projects','fa-diagram-project','Projects'],['shortcodes','fa-hashtag','Short Codes'],['api_keys','fa-key','Partner API Keys'],['alert_settings','fa-bell','Alert Settings'],['audit','fa-shield-halved','Audit Trail'],['users','fa-users-gear','Users']]],
+        ['group','fa-gears','Admin',[['tables','fa-database','Database Tables'],['promotions','fa-bullhorn','Promotions'],['projects','fa-diagram-project','Projects'],['shortcodes','fa-hashtag','Short Codes'],['api_keys','fa-key','Partner API Keys'],['alert_settings','fa-bell','Alert Settings'],['retention','fa-database','Data Retention'],['audit','fa-shield-halved','Audit Trail'],['users','fa-users-gear','Users']]],
     ];
     ?>
 <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title><?=e($title)?> - VAS Cloud</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous" rel="stylesheet"><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" integrity="sha384-t1nt8BQoYMLFN5p42tRAtuAAFQaCQODekUVeKKZrEnEyp4H2R0RHFz0KWpmj7i8g" crossorigin="anonymous"><link href="style.css?v=<?=e(asset_version())?>" rel="stylesheet"><script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js" integrity="sha384-NrKB+u6Ts6AtkIhwPixiKTzgSKNblyhlk0Sohlgar9UHUBzai/sgnNNWWd291xqt" crossorigin="anonymous"></script></head><body>
@@ -446,11 +446,12 @@ if ($page==='subscriptions_export') {
 
 if ($page==='alert_settings') {
     require_perm('manage_api_keys'); $schema=current_schema();
-    if ($_SERVER['REQUEST_METHOD']==='POST' && in_array($_POST['do']??'',['add_recipient','toggle_recipient','save_smtp','save_rules','save_ignored','update_prefs','save_summary'],true)) {
+    if ($_SERVER['REQUEST_METHOD']==='POST' && in_array($_POST['do']??'',['add_recipient','toggle_recipient','save_smtp','save_rules','save_ignored','update_prefs','save_summary','rotate_token'],true)) {
         require_perm('manage_api_keys');
         if ($_POST['do']==='save_smtp') { save_smtp_settings($_POST); flash('success','Mail server saved. Use "Send test email" to check it.'); }
         elseif ($_POST['do']==='add_recipient') { save_alert_recipient((string)($_POST['email']??'')); flash('success','Recipient saved.'); }
         elseif ($_POST['do']==='save_rules') { save_alert_config($_POST); flash('success','Alert rules saved.'); }
+        elseif ($_POST['do']==='rotate_token') { rotate_alert_cron_token(); flash('warning','Cron token rotated. The scheduled alert job is now rejected until you update its secret — run the kubectl command shown under "Scheduled alerts".'); }
         elseif ($_POST['do']==='save_summary') { save_summary_config($_POST); flash('success','Daily summary settings saved.'); }
         elseif ($_POST['do']==='save_ignored') { save_alert_ignored_reasons((array)($_POST['ignored']??[])); flash('success','Ignored failure reasons saved.'); }
         elseif ($_POST['do']==='update_prefs') { update_alert_recipient_prefs((int)($_POST['id']??0), !empty($_POST['notify_failure']), !empty($_POST['notify_vendor']), !empty($_POST['notify_slow']), !empty($_POST['notify_summary'])); flash('success','Recipient preferences saved.'); }
@@ -559,7 +560,10 @@ if ($page==='alert_settings') {
         <?php endif;?>
         <p class="text-muted mb-0">2. For alerts even when nobody has the app open, point a scheduler (e.g. a Kubernetes CronJob — see deploy/k8s/05-alert-cronjob.yaml) at this URL every few minutes:</p>
         <p class="text-muted small mb-1">In-cluster URL (what the CronJob calls — no public hostname or /portal prefix involved):</p>
-        <pre class="mb-0"><?='http://vas-cloud-app.vas-cloud.svc.cluster.local/?page=alert_cron&token='.e(alert_cron_token())?></pre>
+        <pre class="mb-2"><?='http://vas-cloud-app.vas-cloud.svc.cluster.local/?page=alert_cron&token='.e(alert_cron_token())?></pre>
+        <form method="post" class="d-inline" data-confirm="Rotate the cron token? Scheduled alerts and the daily summary stop until you update the Kubernetes secret."><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="rotate_token"><button class="btn btn-sm btn-outline-danger"><i class="fa-solid fa-rotate me-1"></i>Rotate token</button></form>
+        <span class="text-muted small ms-2">After rotating, update the secret the CronJob reads:</span>
+        <pre class="mt-2 mb-0">kubectl -n vas-cloud create secret generic vas-cloud-alert-cron-secret --from-literal=TOKEN=<?=e(alert_cron_token())?> --dry-run=client -o yaml | kubectl apply -f -</pre>
     </div>
     </div>
     <p class="mt-3"><a href="?page=alerts">&larr; Back to Alerts &amp; Monitoring</a></p>
@@ -1178,6 +1182,62 @@ if ($page==='users') {
     $users=portal_pdo()->query('SELECT id,full_name,username,role,status,default_schema_name,allowed_schemas,last_login,created_at FROM portal_users ORDER BY id DESC')->fetchAll();
     ?><div class="row g-3"><div class="col-lg-4"><div class="cardx"><h3><?= $edit?'Edit User':'Create User' ?></h3><form method="post" data-confirm="Confirm saving this user?"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="id" value="<?=e($edit['id']??'')?>"><label class="form-label">Full name</label><input class="form-control mb-2" name="full_name" value="<?=e($edit['full_name']??'')?>" placeholder="Full name"><label class="form-label">Username</label><input class="form-control mb-2" name="username" value="<?=e($edit['username']??'')?>" placeholder="Username"><label class="form-label">Password <?php if($edit):?><small class="text-muted">(leave blank to keep current)</small><?php endif;?></label><input class="form-control mb-2" name="password" type="password" autocomplete="new-password" placeholder="<?=$edit?'Leave blank to keep current':'At least 10 characters'?>"><label class="form-label">Role</label><select name="role" class="form-select mb-2"><?php foreach(['viewer','operator','manager','admin'] as $r):?><option value="<?=e($r)?>" <?=($edit['role']??'viewer')===$r?'selected':''?>><?=e(ucfirst($r))?></option><?php endforeach;?></select><label class="form-label">Status</label><select name="status" class="form-select mb-2"><?php foreach(['active','disabled'] as $s):?><option value="<?=e($s)?>" <?=($edit['status']??'active')===$s?'selected':''?>><?=e(ucfirst($s))?></option><?php endforeach;?></select><label class="form-label">Default database</label><select name="default_schema_name" class="form-select mb-2"><?php foreach(allowed_schemas() as $s):?><option value="<?=e($s)?>" <?=($edit['default_schema_name']??'HeraTesting')===$s?'selected':''?>><?=e($s)?></option><?php endforeach;?></select><label class="form-label">Databases this user can open</label><div class="db-access mb-1"><?php $mine=($edit && ($edit['allowed_schemas']??null)!==null && trim((string)$edit['allowed_schemas'])!=='') ? explode(',',$edit['allowed_schemas']) : allowed_schemas(); foreach(allowed_schemas() as $s):?><label class="db-check env-<?=schema_kind($s)?>"><input type="checkbox" name="schemas[]" value="<?=e($s)?>" <?=in_array($s,$mine,true)?'checked':''?>><span class="dot"></span><span><strong><?=e(schema_label($s))?></strong><small><?=e($s)?></small></span></label><?php endforeach;?></div><p class="text-muted small mb-3">Admins can always open every database. Anyone else only sees the ones ticked here.</p><button class="btn btn-primary w-100">Save User</button><?php if($edit):?><a class="btn btn-outline-secondary w-100 mt-2" href="?page=users">Cancel Edit</a><?php endif;?></form></div></div><div class="col-lg-8"><div class="cardx"><h3>Users</h3><div class="table-scroll"><table class="table table-hover"><thead><tr><th>Name</th><th>User</th><th>Role</th><th>Status</th><th>Default</th><th>Databases</th><th>Last Login</th><th></th></tr></thead><tbody><?php foreach($users as $u):?><tr><td><?=e($u['full_name'])?></td><td><?=e($u['username'])?></td><td><span class="badge bg-<?=role_badge($u['role'])?>"><?=e($u['role'])?></span></td><td><span class="badge <?=$u['status']==='active'?'bg-success':'bg-secondary'?>"><?=e($u['status'])?></span></td><td><?=e($u['default_schema_name'])?></td><td class="cell-full"><?php if($u['role']==='admin' || $u['allowed_schemas']===null || trim((string)$u['allowed_schemas'])===''):?><span class="badge bg-light text-dark border">All</span><?php else: foreach(explode(',',$u['allowed_schemas']) as $ds):?><span class="badge bg-light text-dark border me-1"><?=e(schema_label(trim($ds)))?></span><?php endforeach; endif;?></td><td class="text-nowrap"><?=e($u['last_login'] ? substr($u['last_login'],0,16) : 'never')?></td><td><a class="btn btn-sm btn-warning" href="?page=users&id=<?=e($u['id'])?>">Edit</a></td></tr><?php endforeach;?></tbody></table></div></div></div></div><?php layout_end(); exit; }
 
+if ($page==='retention') {
+    require_perm('manage_api_keys'); $schema=current_schema();
+    if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['do']??'')==='save_retention') { save_retention_config($_POST); flash('success','Retention window saved.'); redirect('?page=retention'); }
+    $keep=retention_months(); $rep=audit_log_partition_report($schema); $plan=audit_log_retention_plan($rep,$keep,null,$schema);
+    $gb=fn($b)=>$b>=1073741824?number_format($b/1073741824,1).' GB':number_format($b/1048576,1).' MB'; $dates=null; $datesFor=null; $prune=null;
+    if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['do']??'')==='check_dates') { $datesFor=(string)($_POST['partition']??''); $dates=audit_log_partition_dates($schema,$datesFor,$rep); audit('retention_check_dates',$schema,AUDIT_LOG_TABLE,$datesFor,null); }
+    if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['do']??'')==='check_pruning') { $prune=audit_log_pruning_check($schema); }
+    layout_start('Data Retention');
+    ?>
+    <div class="cardx">
+        <h3><i class="fa-solid fa-database me-2"></i>audit_log retention — <?=e($schema)?></h3>
+        <p class="text-muted mb-2">This table is split by <b>calendar month</b> (January … December) and those 12 partitions are <b>reused every year</b>. So nothing is "dropped": a month's data stays until that month is emptied with <code>TRUNCATE PARTITION</code>, and if it isn't emptied before the same month comes round again, last year's rows mix with this year's. This page shows what each month holds and writes the exact statement to run — <b>the portal never runs it for you</b> (run it in your DBA session, off-peak; a truncate cannot be undone).</p>
+        <form method="post" class="d-flex flex-wrap align-items-end gap-2"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="save_retention">
+            <div><label class="small text-muted mb-0">Keep this many previous months <small>(plus the current one)</small></label><input class="form-control" type="number" min="1" max="10" name="retention_months" value="<?=$keep?>" style="width:140px"></div>
+            <button class="btn btn-primary">Save</button>
+            <small class="text-muted">Complaints are usually raised within 30–60 days, and older outcomes stay available in <b>subscription</b>. <b>3</b> is a good start; the table below shows what each choice costs on disk.</small>
+        </form>
+    </div>
+    <?php if(!$rep['partitioned']):?>
+    <div class="alert alert-info mt-3">audit_log in <?=e($schema)?> isn't partitioned (<?=$gb($rep['total_bytes'])?>, ≈<?=number_format($rep['total_rows'])?> rows), so there are no month partitions to empty here. This page is meant for HeraProduction.</div>
+    <?php else:?>
+    <div class="metric-grid mt-3">
+        <div class="metric"><span>audit_log size now</span><strong><?=$gb($rep['total_bytes'])?></strong><small class="text-muted">≈<?=number_format($rep['total_rows'])?> rows</small></div>
+        <div class="metric"><span>Can be freed</span><strong class="<?=$plan['stale_bytes']>0?'text-danger':'text-success'?>"><?=$gb($plan['stale_bytes'])?></strong><small class="text-muted"><?=count($plan['stale'])?> month(s) outside the window</small></div>
+        <div class="metric"><span>After cleaning</span><strong><?=$gb($plan['kept_bytes'])?></strong><small class="text-muted">the months you keep</small></div>
+        <div class="metric"><span>Steady state at <?=$keep?>+1 months</span><strong>≈ <?=$gb($plan['steady_state_bytes'])?></strong><small class="text-muted">average month <?=$gb($plan['avg_month_bytes'])?></small></div>
+    </div>
+    <div class="cardx table-card mt-3"><h3 class="px-3 pt-3">By calendar month</h3>
+        <div class="table-scroll"><table class="table table-sm align-middle"><thead><tr><th>Month</th><th>Status</th><th class="text-end">Rows (est.)</th><th class="text-end">Size</th><th>Days holding data</th><th></th></tr></thead><tbody>
+        <?php foreach($plan['rows'] as $m=>$r): $cls=['current'=>'bg-primary','kept'=>'bg-success','stale'=>'bg-danger','empty'=>'bg-secondary'][$r['status']]; $lbl=['current'=>'Current month','kept'=>'Kept ('.(int)$r['age'].' mo ago)','stale'=>'Outside window — can be emptied','empty'=>'Empty'][$r['status']];?>
+        <tr><td><b><?=e($r['name'])?></b></td><td><span class="badge <?=$cls?>"><?=e($lbl)?></span></td><td class="text-end"><?=number_format($r['rows'])?></td><td class="text-end"><?=$gb($r['bytes'])?></td><td><?=$r['nonempty']?>/<?=$r['subs']?></td>
+            <td class="text-nowrap"><?php if($r['status']==='current'||$r['status']==='kept'):?><form method="post" class="d-inline"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="check_dates"><input type="hidden" name="partition" value="<?=e($r['name'])?>"><button class="btn btn-sm btn-outline-secondary" title="Find the oldest and newest record in this month's partition (up to 30s)">Check dates</button></form><?php endif;?></td></tr>
+        <?php if($datesFor===$r['name'] && $dates):?><tr><td colspan="6" class="bg-light"><?php if($dates['timeout']):?>Too slow to check from here (over 30s) — run <code>SELECT MIN(create_date), MAX(create_date) FROM audit_log PARTITION (<?=e($r['name'])?>);</code> in your DBA session.
+            <?php else: $oldest=$dates['mn']?:null; $windowStart=date('Y-m-01',strtotime('-'.$keep.' months')); ?>
+            <?=e($r['name'])?> holds records from <b><?=e($dates['mn']??'—')?></b> to <b><?=e($dates['mx']??'—')?></b>.
+            <?php if($oldest && $oldest<$windowStart):?><div class="text-danger mt-1">This month still contains records older than <?=e($windowStart)?> (last year's <?=e($r['name'])?>). They are outside your window. To remove just those rows (in your DBA session, repeat until it affects 0 rows):<pre class="mb-0 mt-1">DELETE FROM `<?=e($schema)?>`.audit_log PARTITION (<?=e($r['name'])?>) WHERE create_date &lt; '<?=e($windowStart)?>' LIMIT 100000;</pre></div><?php else:?><span class="text-success">Nothing older than your window.</span><?php endif;?><?php endif;?></td></tr><?php endif;?>
+        <?php endforeach;?></tbody></table></div>
+    </div>
+    <div class="cardx mt-3"><h3>Statement to run</h3>
+        <?php if($plan['sql']):?>
+        <p class="text-muted">Run in your DBA session (the portal's own login can't and won't). It empties only the months marked red. Take your usual backup first if you want a copy; this cannot be undone.</p>
+        <pre id="retSql" class="mb-2"><?=e($plan['sql'])?></pre><button class="btn btn-sm btn-outline-primary" data-copy="<?=e($plan['sql'])?>"><i class="fa-regular fa-copy me-1"></i>Copy</button>
+        <p class="text-muted small mt-2 mb-0">Each month that falls out of the window should be emptied as the new month begins — this page lists it as soon as it's outside the window, and the daily summary email mentions it once more than 0.5 GB can be freed.</p>
+        <?php else:?><p class="text-success mb-0">Nothing to empty — every month outside the window is already empty.</p><?php endif;?>
+    </div>
+    <?php endif;?>
+    <div class="cardx mt-3"><h3>How are date searches served?</h3>
+        <p class="text-muted">Runs <code>EXPLAIN</code> (read-only) for a one-day search like Complaint Investigation's, to show how many partitions it has to look at and which index it uses.</p>
+        <form method="post" class="d-inline"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="check_pruning"><button class="btn btn-sm btn-outline-primary">Run check</button></form>
+        <?php if($prune):?><div class="mt-3"><b><?=e($prune['day'])?></b>: touches <b><?=$prune['partitions']?: 'all (not partitioned)'?></b> partition(s), index used: <b><?=e($prune['key']?:'none — full scan!')?></b>, about <?=number_format((int)$prune['rows'])?> rows examined.
+            <?php if($prune['partitions']>30):?><div class="text-muted small mt-1">A date range can't narrow this table to one month (the partitions are by month number, which MySQL can't prune on a range), so every search relies on the index above and the table's total size — one more reason to keep the window short.</div><?php endif;?>
+            <?php if(!$prune['key']):?><div class="text-danger small mt-1">No index serves a date search — Complaint Investigation will be slow however you filter. Ask your DBA about an index on <code>create_date</code> (or <code>(msisdn, create_date)</code>).</div><?php endif;?></div><?php endif;?>
+    </div>
+    <?php layout_end(); exit;
+}
+
 if ($page==='vendor') {
     require_perm('view_reports'); $schema=current_schema();
     $vendor=trim((string)($_GET['name']??'')); if($vendor==='') throw new RuntimeException('Pick a vendor from the Monitoring page.');
@@ -1230,7 +1290,23 @@ if ($page==='vendor') {
 if ($page==='timeline') {
     require_perm('view_reports'); $schema=current_schema();
     $msisdn=trim((string)($_GET['msisdn']??'')); $to=trim((string)($_GET['date_to']??date('Y-m-d'))); $from=trim((string)($_GET['date_from']??date('Y-m-d',strtotime('-6 days'))));
-    $tl=null; if($msisdn!=='') { audit('timeline_view',$schema,null,preg_replace('/\D+/','',$msisdn),"$from..$to"); $tl=customer_timeline($schema,$msisdn,$from,$to); }
+    if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['do']??'')==='add_note') {
+        require_perm('create_records');
+        add_complaint_note($schema,(string)($_POST['msisdn']??''),(string)($_POST['note']??''),(string)($_POST['transaction_id']??''));
+        flash('success','Note saved.'); redirect('?page=timeline&'.http_build_query(['msisdn'=>$_POST['msisdn']??'','date_from'=>$_POST['date_from']??'','date_to'=>$_POST['date_to']??'']));
+    }
+    $tl=null; $notes=[];
+    if($msisdn!=='') {
+        $tl=customer_timeline($schema,$msisdn,$from,$to); $notes=complaint_notes_for($schema,$msisdn);
+        if(($_GET['format']??'')==='csv'){
+            audit('timeline_export',$schema,null,$tl['msisdn'],"$from..$to");
+            header('Content-Type:text/csv'); header('Content-Disposition: attachment; filename="timeline_'.$tl['msisdn'].'_'.$from.'_to_'.$to.'.csv"');
+            $out=fopen('php://output','w'); fputcsv($out,['time','source','what','channel','result','success','transaction_id']);
+            foreach($tl['events'] as $ev) fputcsv($out,csv_safe_row([$ev['when'],$ev['source'],$ev['what'],$ev['channel'],$ev['result'],$ev['ok']?'yes':'no',$ev['transaction_id']]));
+            exit;
+        }
+        audit('timeline_view',$schema,null,$tl['msisdn'],"$from..$to");
+    }
     layout_start('Customer Timeline');
     ?>
     <div class="cardx">
@@ -1245,8 +1321,16 @@ if ($page==='timeline') {
     </div>
     <?php if($tl):?>
     <?php foreach($tl['notes'] as $n):?><div class="alert alert-info py-2 mt-3 mb-0 small"><?=e($n)?></div><?php endforeach;?>
+    <div class="cardx mt-3"><h3><i class="fa-regular fa-note-sticky me-2"></i>Case notes <small class="text-muted">for <?=e($tl['msisdn'])?></small></h3>
+        <?php if(can('create_records')):?><form method="post" class="row g-2 mb-3"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="add_note"><input type="hidden" name="msisdn" value="<?=e($tl['msisdn'])?>"><input type="hidden" name="date_from" value="<?=e($from)?>"><input type="hidden" name="date_to" value="<?=e($to)?>">
+            <div class="col-md-7"><textarea class="form-control" name="note" rows="2" maxlength="2000" required placeholder="What the customer reported, what you found, what was done…"></textarea></div>
+            <div class="col-md-3"><input class="form-control" name="transaction_id" placeholder="Transaction ID (optional)"></div>
+            <div class="col-md-2"><button class="btn btn-primary w-100">Add note</button></div></form><?php endif;?>
+        <?php if(!$notes):?><p class="text-muted mb-0">No notes yet for this number.</p><?php else: foreach($notes as $nt):?>
+        <div class="border-start border-3 ps-3 mb-2"><div class="small text-muted"><?=e($nt['created_at'])?> · <?=e($nt['created_by'])?><?php if($nt['transaction_id']):?> · <span class="txid"><?=e($nt['transaction_id'])?></span><?php endif;?></div><div style="white-space:pre-wrap"><?=e($nt['note'])?></div></div><?php endforeach; endif;?>
+    </div>
     <div class="cardx table-card mt-3">
-        <p class="text-muted px-3 pt-3 mb-0"><?=count($tl['events'])?> events for <?=e($tl['msisdn'])?></p>
+        <div class="d-flex justify-content-between align-items-center px-3 pt-3"><span class="text-muted"><?=count($tl['events'])?> events for <?=e($tl['msisdn'])?></span><a class="btn btn-sm btn-outline-primary" href="?<?=e(http_build_query(['page'=>'timeline','msisdn'=>$msisdn,'date_from'=>$from,'date_to'=>$to,'format'=>'csv']))?>"><i class="fa fa-file-csv"></i> Export CSV</a></div>
         <?php if(!$tl['events']):?><p class="px-3 pb-3 mb-0">Nothing found for that number in this range.</p><?php else:?>
         <div class="table-scroll"><table class="table table-sm table-hover align-middle"><thead><tr><th>Details</th><th>Time</th><th>Source</th><th>What</th><th>Channel</th><th>Result</th><th>Transaction ID</th></tr></thead><tbody>
         <?php foreach($tl['events'] as $ev):?><tr>
@@ -1408,7 +1492,7 @@ if ($page==='investigate') {
     <?=investigate_source_tabs($sources,$source,$_GET)?>
     <div class="cardx">
         <h3><i class="fa-solid fa-headset me-2"></i>Complaint / Transaction Investigation</h3>
-        <p class="text-muted">Searches <code><?=e($schema)?>.<?=e(AUDIT_LOG_TABLE)?></code>. A date range is required (max <?=AUDIT_LOG_MAX_RANGE_DAYS?> days) — this table is very large and partitioned by date.</p>
+        <p class="text-muted">Searches <code><?=e($schema)?>.<?=e(AUDIT_LOG_TABLE)?></code>. A date range is required (max <?=AUDIT_LOG_MAX_RANGE_DAYS?> days) — this table is very large. It keeps roughly the last <?=retention_months()?> months; for an older complaint use the <b>subscription</b> source.</p>
         <form method="get" class="row g-2">
             <input type="hidden" name="page" value="investigate">
             <div class="col-md-2"><label>Date from</label><input type="date" name="date_from" class="form-control" value="<?=e($f['date_from'])?>" required></div>
