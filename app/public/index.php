@@ -8,6 +8,7 @@ if ($page==='switch_schema' && isset($_GET['schema'])) { set_current_schema($_GE
 if ($page==='alert_cron') {
     if (!hash_equals(alert_cron_token(), (string)($_GET['token']??''))) { http_response_code(403); header('Content-Type: text/plain'); exit('forbidden'); }
     foreach (['HeraProduction','HeraTesting'] as $s) dispatch_pending_alert_notifications($s);
+    if (in_array('HeraProduction', allowed_schemas(), true)) { try { maybe_send_daily_summary('HeraProduction'); } catch (Throwable $e) { error_log('daily summary: '.$e->getMessage()); } }
     header('Content-Type: text/plain'); exit('OK');
 }
 if ($page==='logout') { logout(); redirect('?page=login'); }
@@ -24,7 +25,7 @@ function nav_can_see(string $page): bool {
     if ($page==='api_keys') return can('manage_api_keys');
     if ($page==='promotions') return can('manage_promotions');
     if ($page==='alert_settings') return can('manage_api_keys');
-    if (in_array($page,['investigate','reports','alerts','monitoring','offer_report'],true)) return can('view_reports');
+    if (in_array($page,['investigate','reports','alerts','monitoring','offer_report','timeline','vendor'],true)) return can('view_reports');
     if (in_array($page,['subscriptions','offers','esim','sales','friends_family','voting','ussd_ivr','ussd_menu','integrations','tables','projects','shortcodes'],true)) return can('view_tables');
     return true;
 }
@@ -35,7 +36,7 @@ function layout_start(string $title): void {
         ['monitoring','fa-heart-pulse','Monitoring'],
         ['group','fa-layer-group','Operations',[['subscriptions','fa-user-check','Subscriptions'],['offers','fa-tags','Offer Management'],['esim','fa-sim-card','eSIM Profiles'],['sales','fa-file-invoice-dollar','Sales & Invoices'],['friends_family','fa-user-group','Friends & Family'],['voting','fa-square-poll-vertical','Voting Service']]],
         ['group','fa-tower-broadcast','Infrastructure',[['ussd_ivr','fa-mobile-screen-button','USSD & IVR'],['ussd_menu','fa-sitemap','USSD Menu Builder'],['integrations','fa-plug-circle-check','Integrations']]],
-        ['group','fa-chart-line','Reports',[['investigate','fa-headset','Complaint Investigation'],['alerts','fa-triangle-exclamation','Alerts'],['offer_report','fa-bullhorn','Offer Performance'],['reports','fa-chart-line','Reports'],['sql','fa-code','SQL Console']]],
+        ['group','fa-chart-line','Reports',[['investigate','fa-headset','Complaint Investigation'],['timeline','fa-timeline','Customer Timeline'],['alerts','fa-triangle-exclamation','Alerts'],['offer_report','fa-bullhorn','Offer Performance'],['reports','fa-chart-line','Reports'],['sql','fa-code','SQL Console']]],
         ['group','fa-gears','Admin',[['tables','fa-database','Database Tables'],['promotions','fa-bullhorn','Promotions'],['projects','fa-diagram-project','Projects'],['shortcodes','fa-hashtag','Short Codes'],['api_keys','fa-key','Partner API Keys'],['alert_settings','fa-bell','Alert Settings'],['audit','fa-shield-halved','Audit Trail'],['users','fa-users-gear','Users']]],
     ];
     ?>
@@ -236,7 +237,7 @@ if ($page==='offers') {
                     <label>Status</label>
                     <select class="form-select mb-2" name="data[status]"><?php $editActive = offer_is_active($edit['status']??''); foreach(['1'=>'Active','0'=>'Inactive'] as $v=>$lbl):?><option value="<?=$v?>" <?=($editActive?'1':'0')===(string)$v?'selected':''?>><?=$lbl?></option><?php endforeach;?></select>
                     <button class="btn btn-primary w-100">Preview & Confirm Save</button>
-                    <?php if($edit):?><a class="btn btn-outline-secondary w-100 mt-2" href="?page=offers"><?=$dupOf?'Cancel':'Cancel Edit'?></a><?php endif;?>
+                    <?php if($edit):?><a class="btn btn-outline-secondary w-100 mt-2" href="?page=offers"><?=$dupOf?'Cancel':'Cancel Edit'?></a><?php if(!$dupOf && !empty($edit['id'])):?><a class="btn btn-link w-100" href="?page=offer_history&id=<?=e($edit['id'])?>"><i class="fa-solid fa-clock-rotate-left me-1"></i>View history of this offer</a><?php endif; endif;?>
                 </form>
             </div>
         </div>
@@ -264,6 +265,7 @@ if ($page==='offers') {
                     <td><span class="badge <?=offer_is_active($r['status'])?'bg-success':'bg-secondary'?>"><?=offer_is_active($r['status'])?'Active':'Inactive'?></span></td>
                     <td><div class="d-flex gap-1">
                         <?php if(can('edit_records')):?><a class="btn btn-sm btn-warning" href="?page=offers&id=<?=e($r['id'])?>" title="Edit offer" aria-label="Edit offer"><i class="fa-solid fa-pen"></i></a><?php endif;?>
+                        <a class="btn btn-sm btn-outline-secondary" title="History — who changed this offer" aria-label="Offer history" href="?page=offer_history&id=<?=e($r['id'])?>"><i class="fa-solid fa-clock-rotate-left"></i></a>
                         <?php if(can('create_records')):?><a class="btn btn-sm btn-outline-primary" title="Duplicate — copy this offer, change what you need, save as a new one" aria-label="Duplicate offer" href="?page=offers&duplicate=<?=e($r['id'])?>"><i class="fa-regular fa-copy"></i></a><?php endif;?>
                         <?php if(can('edit_records')):?><form method="post" class="d-inline"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="action" value="toggle"><input type="hidden" name="id" value="<?=e($r['id'])?>"><button class="btn btn-sm btn-outline-dark" title="Activate / deactivate" aria-label="Activate or deactivate"><i class="fa-solid fa-power-off"></i></button></form><?php endif;?>
                     </div></td>
@@ -444,14 +446,21 @@ if ($page==='subscriptions_export') {
 
 if ($page==='alert_settings') {
     require_perm('manage_api_keys'); $schema=current_schema();
-    if ($_SERVER['REQUEST_METHOD']==='POST' && in_array($_POST['do']??'',['add_recipient','toggle_recipient','save_smtp','save_rules','save_ignored','update_prefs'],true)) {
+    if ($_SERVER['REQUEST_METHOD']==='POST' && in_array($_POST['do']??'',['add_recipient','toggle_recipient','save_smtp','save_rules','save_ignored','update_prefs','save_summary'],true)) {
         require_perm('manage_api_keys');
         if ($_POST['do']==='save_smtp') { save_smtp_settings($_POST); flash('success','Mail server saved. Use "Send test email" to check it.'); }
         elseif ($_POST['do']==='add_recipient') { save_alert_recipient((string)($_POST['email']??'')); flash('success','Recipient saved.'); }
         elseif ($_POST['do']==='save_rules') { save_alert_config($_POST); flash('success','Alert rules saved.'); }
+        elseif ($_POST['do']==='save_summary') { save_summary_config($_POST); flash('success','Daily summary settings saved.'); }
         elseif ($_POST['do']==='save_ignored') { save_alert_ignored_reasons((array)($_POST['ignored']??[])); flash('success','Ignored failure reasons saved.'); }
-        elseif ($_POST['do']==='update_prefs') { update_alert_recipient_prefs((int)($_POST['id']??0), !empty($_POST['notify_failure']), !empty($_POST['notify_vendor'])); flash('success','Recipient preferences saved.'); }
+        elseif ($_POST['do']==='update_prefs') { update_alert_recipient_prefs((int)($_POST['id']??0), !empty($_POST['notify_failure']), !empty($_POST['notify_vendor']), !empty($_POST['notify_slow']), !empty($_POST['notify_summary'])); flash('success','Recipient preferences saved.'); }
         else { toggle_alert_recipient((int)($_POST['id']??0)); flash('success','Recipient updated.'); }
+        redirect('?page=alert_settings');
+    }
+    if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['do']??'')==='send_summary') {
+        require_perm('manage_api_keys');
+        $err = send_daily_summary($schema, null, true);
+        flash($err===null?'success':'danger', $err===null?'Summary for yesterday sent to everyone who receives it.':'Could not send: '.$err);
         redirect('?page=alert_settings');
     }
     if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['do']??'')==='test_email') {
@@ -481,8 +490,24 @@ if ($page==='alert_settings') {
                 <p class="text-muted small">Alert when a vendor that was active this time yesterday sent nothing in the last hour.</p>
                 <label class="small text-muted mb-0">Vendor must have sent at least this many yesterday</label><input class="form-control" type="number" min="1" name="vendor_silent_min_baseline" value="<?=e($cfg['vendor_silent_min_baseline'])?>">
             </div></div>
+            <div class="col-12"><div class="border rounded p-3">
+                <div class="form-check form-switch mb-2"><input class="form-check-input" type="checkbox" name="vendor_slow_enabled" value="1" id="vsl" <?=$cfg['vendor_slow_enabled']?'checked':''?>><label class="form-check-label fw-semibold" for="vsl">Vendor responding slowly</label></div>
+                <p class="text-muted small">Alert when a vendor's average response time over the last hour is above the limit (a vendor can be "up" and still hurting customers). Response times are in milliseconds.</p>
+                <div class="row g-2"><div class="col-md-4"><label class="small text-muted mb-0">Average slower than (ms)</label><input class="form-control" type="number" min="50" name="vendor_slow_ms" value="<?=e($cfg['vendor_slow_ms'])?>"></div>
+                <div class="col-md-4"><label class="small text-muted mb-0">Only if at least this many transactions</label><input class="form-control" type="number" min="1" name="vendor_slow_min_sample" value="<?=e($cfg['vendor_slow_min_sample'])?>"></div></div>
+            </div></div>
             <div class="col-12"><button class="btn btn-primary">Save alert rules</button> <small class="text-muted">Turning an alert off also removes it from the Dashboard and Alerts page.</small></div>
         </form>
+    </div>
+    <div class="cardx mt-3">
+        <h3>Daily summary email</h3>
+        <p class="text-muted">One email each morning with yesterday's totals, success rate, channels, vendors (with average response time), top failure reasons and any vendor that went silent. Sent for HeraProduction by the scheduled job, so the 5-minute alert CronJob must be running. Recipients choose below whether they get it.</p>
+        <form method="post" class="row g-2 align-items-end"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="save_summary">
+            <div class="col-auto"><div class="form-check form-switch"><input class="form-check-input" type="checkbox" name="summary_enabled" value="1" id="sme" <?=$cfg['summary_enabled']?'checked':''?>><label class="form-check-label fw-semibold" for="sme">Send every day</label></div></div>
+            <div class="col-auto"><label class="small text-muted mb-0">After (hour, server time <?=e(date('T'))?>)</label><input class="form-control" type="number" min="0" max="23" name="summary_hour" value="<?=e($cfg['summary_hour'])?>"></div>
+            <div class="col-auto"><button class="btn btn-primary">Save</button></div>
+        </form>
+        <form method="post" class="mt-2"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="send_summary"><button class="btn btn-sm btn-outline-primary">Send yesterday's summary now</button> <small class="text-muted">Goes to every enabled recipient who has "Daily summary" ticked — use it to check the layout.</small></form>
     </div>
     <div class="cardx mt-3">
         <h3>Failure reasons that count toward the failure-rate alert</h3>
@@ -525,7 +550,9 @@ if ($page==='alert_settings') {
         <?php foreach($recipients as $r):?><tr><td><?=e($r['email'])?></td><td><span class="badge <?=(int)$r['active']?'bg-success':'bg-secondary'?>"><?=(int)$r['active']?'Enabled':'Disabled'?></span></td>
             <td><form method="post" class="d-flex gap-3"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="update_prefs"><input type="hidden" name="id" value="<?=e($r['id'])?>">
                 <label class="form-check small mb-0"><input class="form-check-input" type="checkbox" name="notify_failure" value="1" data-autosubmit <?=(int)$r['notify_failure']?'checked':''?>> Failure rate</label>
-                <label class="form-check small mb-0"><input class="form-check-input" type="checkbox" name="notify_vendor" value="1" data-autosubmit <?=(int)$r['notify_vendor']?'checked':''?>> Vendor silent</label></form></td>
+                <label class="form-check small mb-0"><input class="form-check-input" type="checkbox" name="notify_vendor" value="1" data-autosubmit <?=(int)$r['notify_vendor']?'checked':''?>> Vendor silent</label>
+                <label class="form-check small mb-0"><input class="form-check-input" type="checkbox" name="notify_slow" value="1" data-autosubmit <?=(int)$r['notify_slow']?'checked':''?>> Vendor slow</label>
+                <label class="form-check small mb-0"><input class="form-check-input" type="checkbox" name="notify_summary" value="1" data-autosubmit <?=(int)$r['notify_summary']?'checked':''?>> Daily summary</label></form></td>
             <td><form method="post" class="d-inline"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="toggle_recipient"><input type="hidden" name="id" value="<?=e($r['id'])?>"><button class="btn btn-sm btn-outline-dark"><?=(int)$r['active']?'Disable':'Enable'?></button></form></td></tr><?php endforeach;?>
         <?php foreach($envTo as $addr):?><tr><td><?=e($addr)?></td><td><span class="badge bg-info text-dark">From environment</span></td><td><small class="text-muted">all alerts</small></td><td><small class="text-muted">set via ALERT_EMAIL_TO</small></td></tr><?php endforeach;?>
         </tbody></table></div>
@@ -551,7 +578,7 @@ if ($page==='alerts') {
     $trend=hourly_transaction_trend($schema, 24);
     $alertHistory=recent_alert_history($schema, 15);
     $pct=fn($n,$d)=>$d>0?round(100*$n/$d,1):0;
-    $allOff = !$cfg['failure_rate_enabled'] && !$cfg['vendor_silent_enabled'];
+    $allOff = !$cfg['failure_rate_enabled'] && !$cfg['vendor_silent_enabled'] && !$cfg['vendor_slow_enabled'];
     layout_start('Alerts & Monitoring');
     ?>
     <div class="metric-grid">
@@ -1034,21 +1061,32 @@ if ($page==='monitoring') {
         <div class="metric"><span>Integrations</span><strong style="font-size:1.35rem;text-transform:none;white-space:nowrap"><span class="text-success"><?=$snap['int_up']?> up</span><?php if($snap['int_down']):?> <span class="text-danger">· <?=$snap['int_down']?> down</span><?php endif;?></strong><small class="text-muted"><?=$snap['int_stale']?> not recently checked</small></div>
         <div class="metric"><span>Active alerts</span><strong class="<?=$snap['alerts']?'text-danger':'text-success'?>"><?=count($snap['alerts'])?></strong><small class="text-muted"><a href="?page=alerts">Open Alerts →</a></small></div>
     </div>
+    <?php $slowLimit=(int)alert_config()['vendor_slow_ms']; $reasonsToday=failure_reasons_day($schema,$today,8); $reasonTotal=array_sum(array_column($reasonsToday,'c'));?>
     <?php foreach([['Channels','channels','channel'],['Vendors','vendors','vendor']] as [$cardTitle,$cardKey,$qParam]):?>
     <div class="cardx mt-3">
         <h3><?=$cardTitle?> today <small class="text-muted">(vs the same time yesterday)</small></h3>
         <?php if(!$snap[$cardKey]):?><p class="text-muted mb-0">No transactions yet today.</p><?php else:?>
         <div class="row g-3 mt-1"><?php foreach($snap[$cardKey] as $c):?>
             <div class="col-md-6 col-xl-3"><div class="border rounded p-3 h-100">
-                <div class="d-flex justify-content-between align-items-baseline"><strong class="text-break"><?=e($c['name'])?></strong><?php if($c['delta_pct']!==null):?><small class="<?=$c['delta_pct']<=-30?'text-danger fw-semibold':'text-muted'?>"><?=$c['delta_pct']>=0?'▲':'▼'?> <?=abs($c['delta_pct'])?>%</small><?php endif;?></div>
+                <div class="d-flex justify-content-between align-items-baseline"><strong class="text-break"><?php if($qParam==='vendor' && $c['name']!=='(none)'):?><a class="text-reset" href="?page=vendor&name=<?=urlencode($c['name'])?>"><?=e($c['name'])?></a><?php else:?><?=e($c['name'])?><?php endif;?></strong><?php if($c['delta_pct']!==null):?><small class="<?=$c['delta_pct']<=-30?'text-danger fw-semibold':'text-muted'?>"><?=$c['delta_pct']>=0?'▲':'▼'?> <?=abs($c['delta_pct'])?>%</small><?php endif;?></div>
                 <div class="fs-3 fw-bold"><?=number_format($c['total'])?></div>
                 <div class="progress mb-1" style="height:8px"><div class="progress-bar bg-success" style="width:<?=min(100,$c['success_pct'])?>%"></div></div>
                 <small class="text-muted"><?=$c['success_pct']?>% success · <?=number_format($c['failed'])?> failed</small>
+                <?php if($c['avg_ms']!==null):?><div class="small <?=$c['avg_ms']>$slowLimit?'text-danger fw-semibold':'text-muted'?>"><i class="fa-regular fa-clock me-1"></i>avg <?=number_format($c['avg_ms'])?> ms<?=$c['slow_pct']>0?' · '.$c['slow_pct'].'% over '.number_format($slowLimit).' ms':''?></div><?php endif;?>
                 <a class="d-block small mt-1" href="?page=investigate&date_from=<?=$today?>&date_to=<?=$today?><?=$c['name']==='(none)'?'':'&'.$qParam.'='.urlencode($c['name'])?>">Investigate →</a>
             </div></div>
         <?php endforeach;?></div><?php endif;?>
     </div>
     <?php endforeach;?>
+    <div class="cardx mt-3">
+        <h3>Why transactions failed today</h3>
+        <?php if(!$reasonsToday):?><p class="text-muted mb-0">No failures today.</p><?php else:?>
+        <div class="table-scroll"><table class="table table-sm align-middle mb-0"><thead><tr><th>Reason</th><th style="width:38%">Share of failures</th><th class="text-end">Count</th><th></th></tr></thead><tbody>
+        <?php foreach($reasonsToday as $rs): $share=$reasonTotal>0?round(100*$rs['c']/$reasonTotal):0;?>
+        <tr><td class="cell-full"><?=e($rs['reason'])?></td><td><div class="progress" style="height:8px"><div class="progress-bar bg-danger" style="width:<?=$share?>%"></div></div></td><td class="text-end"><?=number_format((int)$rs['c'])?> <small class="text-muted">(<?=$share?>%)</small></td>
+        <td class="text-nowrap"><?php if($rs['reason']!=='(no reason given)'):?><a href="?page=investigate&date_from=<?=$today?>&date_to=<?=$today?>&result_desc=<?=urlencode($rs['reason'])?>">Investigate →</a><?php endif;?></td></tr>
+        <?php endforeach;?></tbody></table></div><?php endif;?>
+    </div>
     <div class="cardx mt-3">
         <div class="d-flex justify-content-between align-items-center flex-wrap gap-2"><h3 class="mb-0">Integrations</h3>
             <div class="d-flex gap-2"><?php if(can('edit_records') && $activeInts):?><form method="post" class="d-inline"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="check_all"><button class="btn btn-sm btn-primary"><i class="fa-solid fa-rotate me-1"></i>Check all now</button></form><?php endif;?><a class="btn btn-sm btn-outline-primary" href="?page=integrations">Manage</a></div></div>
@@ -1140,7 +1178,159 @@ if ($page==='users') {
     $users=portal_pdo()->query('SELECT id,full_name,username,role,status,default_schema_name,allowed_schemas,last_login,created_at FROM portal_users ORDER BY id DESC')->fetchAll();
     ?><div class="row g-3"><div class="col-lg-4"><div class="cardx"><h3><?= $edit?'Edit User':'Create User' ?></h3><form method="post" data-confirm="Confirm saving this user?"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="id" value="<?=e($edit['id']??'')?>"><label class="form-label">Full name</label><input class="form-control mb-2" name="full_name" value="<?=e($edit['full_name']??'')?>" placeholder="Full name"><label class="form-label">Username</label><input class="form-control mb-2" name="username" value="<?=e($edit['username']??'')?>" placeholder="Username"><label class="form-label">Password <?php if($edit):?><small class="text-muted">(leave blank to keep current)</small><?php endif;?></label><input class="form-control mb-2" name="password" type="password" autocomplete="new-password" placeholder="<?=$edit?'Leave blank to keep current':'At least 10 characters'?>"><label class="form-label">Role</label><select name="role" class="form-select mb-2"><?php foreach(['viewer','operator','manager','admin'] as $r):?><option value="<?=e($r)?>" <?=($edit['role']??'viewer')===$r?'selected':''?>><?=e(ucfirst($r))?></option><?php endforeach;?></select><label class="form-label">Status</label><select name="status" class="form-select mb-2"><?php foreach(['active','disabled'] as $s):?><option value="<?=e($s)?>" <?=($edit['status']??'active')===$s?'selected':''?>><?=e(ucfirst($s))?></option><?php endforeach;?></select><label class="form-label">Default database</label><select name="default_schema_name" class="form-select mb-2"><?php foreach(allowed_schemas() as $s):?><option value="<?=e($s)?>" <?=($edit['default_schema_name']??'HeraTesting')===$s?'selected':''?>><?=e($s)?></option><?php endforeach;?></select><label class="form-label">Databases this user can open</label><div class="db-access mb-1"><?php $mine=($edit && ($edit['allowed_schemas']??null)!==null && trim((string)$edit['allowed_schemas'])!=='') ? explode(',',$edit['allowed_schemas']) : allowed_schemas(); foreach(allowed_schemas() as $s):?><label class="db-check env-<?=schema_kind($s)?>"><input type="checkbox" name="schemas[]" value="<?=e($s)?>" <?=in_array($s,$mine,true)?'checked':''?>><span class="dot"></span><span><strong><?=e(schema_label($s))?></strong><small><?=e($s)?></small></span></label><?php endforeach;?></div><p class="text-muted small mb-3">Admins can always open every database. Anyone else only sees the ones ticked here.</p><button class="btn btn-primary w-100">Save User</button><?php if($edit):?><a class="btn btn-outline-secondary w-100 mt-2" href="?page=users">Cancel Edit</a><?php endif;?></form></div></div><div class="col-lg-8"><div class="cardx"><h3>Users</h3><div class="table-scroll"><table class="table table-hover"><thead><tr><th>Name</th><th>User</th><th>Role</th><th>Status</th><th>Default</th><th>Databases</th><th>Last Login</th><th></th></tr></thead><tbody><?php foreach($users as $u):?><tr><td><?=e($u['full_name'])?></td><td><?=e($u['username'])?></td><td><span class="badge bg-<?=role_badge($u['role'])?>"><?=e($u['role'])?></span></td><td><span class="badge <?=$u['status']==='active'?'bg-success':'bg-secondary'?>"><?=e($u['status'])?></span></td><td><?=e($u['default_schema_name'])?></td><td class="cell-full"><?php if($u['role']==='admin' || $u['allowed_schemas']===null || trim((string)$u['allowed_schemas'])===''):?><span class="badge bg-light text-dark border">All</span><?php else: foreach(explode(',',$u['allowed_schemas']) as $ds):?><span class="badge bg-light text-dark border me-1"><?=e(schema_label(trim($ds)))?></span><?php endforeach; endif;?></td><td class="text-nowrap"><?=e($u['last_login'] ? substr($u['last_login'],0,16) : 'never')?></td><td><a class="btn btn-sm btn-warning" href="?page=users&id=<?=e($u['id'])?>">Edit</a></td></tr><?php endforeach;?></tbody></table></div></div></div></div><?php layout_end(); exit; }
 
-if ($page==='audit') { require_perm('view_audit'); layout_start('Audit Trail'); $rows=portal_pdo()->query('SELECT * FROM portal_audit_trail ORDER BY id DESC LIMIT 300')->fetchAll(); ?><div class="cardx"><h3>Latest activity</h3><div class="table-scroll"><table class="table table-sm"><thead><tr><th>Time</th><th>User</th><th>Action</th><th>Schema</th><th>Table</th><th>Details</th></tr></thead><tbody><?php foreach($rows as $r):?><tr><td><?=e($r['created_at'])?></td><td><?=e($r['username'])?></td><td><?=e($r['action'])?></td><td><?=e($r['schema_name'])?></td><td><?=e($r['target_table'])?></td><td><?=e(mb_strimwidth((string)$r['details'],0,150,'...'))?></td></tr><?php endforeach;?></tbody></table></div></div><?php layout_end(); exit; }
+if ($page==='vendor') {
+    require_perm('view_reports'); $schema=current_schema();
+    $vendor=trim((string)($_GET['name']??'')); if($vendor==='') throw new RuntimeException('Pick a vendor from the Monitoring page.');
+    $date=valid_day((string)($_GET['date']??date('Y-m-d')));
+    $v=vendor_detail($schema,$vendor,$date); $slowLimit=(int)alert_config()['vendor_slow_ms'];
+    $pct=$v['total']>0?round(100*$v['ok']/$v['total'],1):0; $maxH=max(1,...array_merge([1],array_map('intval',array_column($v['hourly'],'total'))));
+    $byHour=[]; foreach($v['hourly'] as $h) $byHour[(int)$h['h']]=$h;
+    layout_start('Vendor: '.$vendor);
+    ?>
+    <div class="cardx d-flex flex-wrap gap-2 justify-content-between align-items-center">
+        <div><a href="?page=monitoring">&larr; Monitoring</a></div>
+        <form method="get" class="d-flex gap-2 align-items-center"><input type="hidden" name="page" value="vendor"><input type="hidden" name="name" value="<?=e($vendor)?>">
+            <label class="small text-muted mb-0">Day</label><input type="date" class="form-control form-control-sm" name="date" value="<?=e($date)?>" max="<?=date('Y-m-d')?>" min="<?=date('Y-m-d',strtotime('-31 days'))?>">
+            <button class="btn btn-sm btn-outline-primary">Show</button></form>
+    </div>
+    <div class="metric-grid mt-3">
+        <div class="metric"><span>Transactions</span><strong><?=number_format($v['total'])?></strong><small class="text-muted"><?=$v['prev_total']>0?'Day before: '.number_format($v['prev_total']):'—'?></small></div>
+        <div class="metric"><span>Success rate</span><strong><?=$v['total']>0?$pct.'%':'—'?></strong><small class="text-muted"><?=number_format($v['failed'])?> failed</small></div>
+        <div class="metric"><span>Avg response</span><strong class="<?=$v['avg_ms']!==null && $v['avg_ms']>$slowLimit?'text-danger':''?>"><?=$v['avg_ms']!==null?number_format($v['avg_ms']).' ms':'—'?></strong><small class="text-muted">slowest <?=$v['max_ms']!==null?number_format($v['max_ms']).' ms':'—'?></small></div>
+        <div class="metric"><span>Slow transactions</span><strong><?=number_format($v['slow'])?></strong><small class="text-muted">over <?=number_format($slowLimit)?> ms</small></div>
+    </div>
+    <div class="cardx mt-3"><h3>By hour</h3>
+        <?php if(!$v['hourly']):?><p class="text-muted mb-0">No transactions from this vendor on <?=e($date)?>.</p><?php else:?>
+        <div class="hour-bars"><?php for($h=0;$h<24;$h++): $r=$byHour[$h]??null; $t=$r?(int)$r['total']:0; $f=$r?(int)$r['failed']:0;?>
+            <div class="hb" title="<?=sprintf('%02d:00 — %d transactions, %d failed%s',$h,$t,$f,$r&&$r['avg_ms']!==null?', avg '.round((float)$r['avg_ms']).' ms':'')?>"><div class="hb-col"><div class="hb-ok" style="height:<?=round(100*($t-$f)/$maxH)?>%"></div><div class="hb-bad" style="height:<?=round(100*$f/$maxH)?>%"></div></div><small><?=sprintf('%02d',$h)?></small></div>
+        <?php endfor;?></div>
+        <small class="text-muted"><span class="dot-ok"></span> succeeded &nbsp; <span class="dot-bad"></span> failed — hover a bar for the exact numbers.</small><?php endif;?>
+    </div>
+    <div class="row g-3 mt-0">
+        <div class="col-lg-6"><div class="cardx h-100"><h3>By channel</h3>
+            <?php if(!$v['channels']):?><p class="text-muted mb-0">—</p><?php else:?><div class="table-scroll"><table class="table table-sm mb-0"><thead><tr><th>Channel</th><th class="text-end">Transactions</th><th class="text-end">Success</th><th class="text-end">Avg ms</th></tr></thead><tbody>
+            <?php foreach($v['channels'] as $c):?><tr><td><?=e($c['channel'])?></td><td class="text-end"><?=number_format((int)$c['total'])?></td><td class="text-end"><?=round(100*$c['ok']/max(1,$c['total']),1)?>%</td><td class="text-end"><?=$c['avg_ms']!==null?number_format((float)$c['avg_ms']):'—'?></td></tr><?php endforeach;?></tbody></table></div><?php endif;?></div></div>
+        <div class="col-lg-6"><div class="cardx h-100"><h3>Failure reasons</h3>
+            <?php if(!$v['reasons']):?><p class="text-muted mb-0">No failures.</p><?php else:?><div class="table-scroll"><table class="table table-sm mb-0"><tbody>
+            <?php foreach($v['reasons'] as $rs):?><tr><td class="cell-full"><?=e($rs['reason'])?></td><td class="text-end text-nowrap"><?=number_format((int)$rs['c'])?></td></tr><?php endforeach;?></tbody></table></div><?php endif;?></div></div>
+    </div>
+    <div class="cardx table-card mt-3"><h3 class="px-3 pt-3">Latest failures <small class="text-muted">(newest 15)</small></h3>
+        <?php if(!$v['recent_failures']):?><p class="text-muted px-3 pb-3 mb-0">None.</p><?php else:?>
+        <div class="table-scroll"><table class="table table-sm align-middle"><thead><tr><th>Details</th><th>Time</th><th>MSISDN</th><th>Channel</th><th>Reason</th><th class="text-end">ms</th></tr></thead><tbody>
+        <?php foreach($v['recent_failures'] as $r):?><tr>
+            <td><button type="button" class="btn btn-sm btn-outline-primary" data-tx-view data-id="<?=e($r['id'])?>" data-date="<?=e($r['create_date'])?>"><i class="fa-solid fa-eye me-1"></i>View</button></td>
+            <td class="text-nowrap"><?=e($r['create_date'])?></td><td><?=e($r['msisdn'])?></td><td><?=e($r['channel'])?></td><td class="cell-full"><?=e($r['result_description'])?></td><td class="text-end"><?=e($r['response_time'])?></td></tr><?php endforeach;?></tbody></table></div><?php endif;?>
+        <p class="px-3 pb-3 mb-0"><a href="?page=investigate&date_from=<?=e($date)?>&date_to=<?=e($date)?>&vendor=<?=urlencode($vendor)?>">All transactions from this vendor on <?=e($date)?> →</a></p>
+    </div>
+    <?php include_once __DIR__.'/../lib/txviewer_modal.php'; ?>
+    <script src="txviewer.js?v=<?=e((string)(@filemtime(__DIR__.'/txviewer.js') ?: time()))?>"></script>
+    <?php layout_end(); exit;
+}
+
+if ($page==='timeline') {
+    require_perm('view_reports'); $schema=current_schema();
+    $msisdn=trim((string)($_GET['msisdn']??'')); $to=trim((string)($_GET['date_to']??date('Y-m-d'))); $from=trim((string)($_GET['date_from']??date('Y-m-d',strtotime('-6 days'))));
+    $tl=null; if($msisdn!=='') { audit('timeline_view',$schema,null,preg_replace('/\D+/','',$msisdn),"$from..$to"); $tl=customer_timeline($schema,$msisdn,$from,$to); }
+    layout_start('Customer Timeline');
+    ?>
+    <div class="cardx">
+        <h3><i class="fa-solid fa-timeline me-2"></i>Customer Timeline</h3>
+        <p class="text-muted">Everything we have for one subscriber in one list, newest first — transactions from <b>audit_log</b> and subscription attempts from <b>subscription</b> side by side, so you can see what happened in order.</p>
+        <form method="get" class="row g-2"><input type="hidden" name="page" value="timeline">
+            <div class="col-md-4"><label>MSISDN</label><input class="form-control" name="msisdn" value="<?=e($msisdn)?>" required placeholder="e.g. 6201234"></div>
+            <div class="col-md-2"><label>Date from</label><input type="date" class="form-control" name="date_from" value="<?=e($from)?>"></div>
+            <div class="col-md-2"><label>Date to</label><input type="date" class="form-control" name="date_to" value="<?=e($to)?>"></div>
+            <div class="col-md-4 d-flex align-items-end"><button class="btn btn-primary w-100"><i class="fa fa-search"></i> Show timeline</button></div>
+        </form>
+    </div>
+    <?php if($tl):?>
+    <?php foreach($tl['notes'] as $n):?><div class="alert alert-info py-2 mt-3 mb-0 small"><?=e($n)?></div><?php endforeach;?>
+    <div class="cardx table-card mt-3">
+        <p class="text-muted px-3 pt-3 mb-0"><?=count($tl['events'])?> events for <?=e($tl['msisdn'])?></p>
+        <?php if(!$tl['events']):?><p class="px-3 pb-3 mb-0">Nothing found for that number in this range.</p><?php else:?>
+        <div class="table-scroll"><table class="table table-sm table-hover align-middle"><thead><tr><th>Details</th><th>Time</th><th>Source</th><th>What</th><th>Channel</th><th>Result</th><th>Transaction ID</th></tr></thead><tbody>
+        <?php foreach($tl['events'] as $ev):?><tr>
+            <td><button type="button" class="btn btn-sm btn-outline-primary" data-tx-view <?=$ev['source']==='subscription'?'data-source="subscription" ':''?>data-id="<?=e($ev['id'])?>" data-date="<?=e($ev['date'])?>"><i class="fa-solid fa-eye me-1"></i>View</button></td>
+            <td class="text-nowrap"><?=e($ev['when'])?></td>
+            <td><span class="badge <?=$ev['source']==='audit_log'?'bg-secondary':'bg-info text-dark'?>"><?=e($ev['source'])?></span></td>
+            <td><?=e($ev['what'])?></td><td><?=e($ev['channel'])?></td>
+            <td class="cell-full"><span class="badge <?=$ev['ok']?'bg-success':'bg-danger'?> me-1"><?=$ev['ok']?'Success':'Failed'?></span><?=e(mb_strimwidth($ev['result'],0,80,'...'))?></td>
+            <td class="cell-full" style="min-width:230px"><button type="button" class="btn btn-sm btn-link p-0 me-1 align-baseline" title="Copy transaction ID" data-copy="<?=e($ev['transaction_id'])?>"><i class="fa-regular fa-copy"></i></button><span class="txid"><?=e($ev['transaction_id'])?></span></td></tr><?php endforeach;?></tbody></table></div><?php endif;?>
+    </div>
+    <?php include_once __DIR__.'/../lib/txviewer_modal.php'; ?>
+    <script src="txviewer.js?v=<?=e((string)(@filemtime(__DIR__.'/txviewer.js') ?: time()))?>"></script>
+    <?php endif; layout_end(); exit;
+}
+
+if ($page==='offer_history') {
+    require_perm('view_tables'); $schema=current_schema(); $id=(int)($_GET['id']??0);
+    $offer=fetch_record($schema,'vas_offers',['id'=>$id]) ?: throw new RuntimeException('Offer not found');
+    $hist=offer_history($schema,$id);
+    layout_start('Offer history');
+    ?>
+    <div class="cardx">
+        <a href="?page=offers">&larr; Offer Management</a>
+        <h3 class="mt-2"><?=e($offer['name'])?> <small class="text-muted"><?=e($offer['offer_code'])?></small></h3>
+        <p class="text-muted mb-0">Who changed this offer, when, and what changed. Only changes made through this portal are recorded; entries made before change-tracking was added show the submitted values without the previous ones.</p>
+    </div>
+    <div class="cardx mt-3">
+        <?php if(!$hist):?><p class="text-muted mb-0">No changes recorded for this offer in this portal yet.</p><?php else:?>
+        <div class="table-scroll"><table class="table table-sm align-middle mb-0"><thead><tr><th>When</th><th>Who</th><th>What</th><th>Changes</th></tr></thead><tbody>
+        <?php foreach($hist as $h):?><tr>
+            <td class="text-nowrap"><?=e($h['at'])?></td><td><?=e($h['user'])?></td><td><span class="badge <?=$h['action']==='insert'?'bg-success':'bg-warning text-dark'?>"><?=$h['action']==='insert'?'Created':'Edited'?></span></td>
+            <td class="cell-full"><?php if(!$h['changes']):?><span class="text-muted">no field changed</span><?php else: foreach($h['changes'] as $col=>$c):?><div><b><?=e($col)?></b>:
+                <?php if($h['legacy'] || $h['action']==='insert'):?><?=e((string)$c['to'])?><?php else:?><span class="text-danger"><del><?=e((string)($c['from']??'(empty)'))?></del></span> → <span class="text-success"><?=e((string)($c['to']??'(empty)'))?></span><?php endif;?></div><?php endforeach; endif;?></td></tr><?php endforeach;?></tbody></table></div><?php endif;?>
+    </div>
+    <?php layout_end(); exit;
+}
+
+if ($page==='audit') {
+    require_perm('view_audit');
+    $fu=trim((string)($_GET['user']??'')); $fa=trim((string)($_GET['action']??'')); $fq=trim((string)($_GET['q']??''));
+    $fd=trim((string)($_GET['date_from']??'')); $ft=trim((string)($_GET['date_to']??''));
+    $where=['1=1']; $params=[];
+    if($fu!==''){ $where[]='username=?'; $params[]=$fu; }
+    if($fa!==''){ $where[]='action=?'; $params[]=$fa; }
+    if($fq!==''){ $where[]='(details LIKE ? OR target_table LIKE ? OR target_key LIKE ? OR ip_address LIKE ?)'; array_push($params,"%$fq%","%$fq%","%$fq%","%$fq%"); }
+    if($fd!=='' && strtotime($fd)!==false){ $where[]='created_at >= ?'; $params[]=date('Y-m-d',strtotime($fd)).' 00:00:00'; }
+    if($ft!=='' && strtotime($ft)!==false){ $where[]='created_at < ?'; $params[]=date('Y-m-d',strtotime($ft.' +1 day')).' 00:00:00'; }
+    $w=implode(' AND ',$where); $pdb=portal_pdo();
+    if(($_GET['format']??'')==='csv'){
+        audit('audit_export',null,'portal_audit_trail',null,json_encode(['user'=>$fu,'action'=>$fa,'q'=>$fq,'from'=>$fd,'to'=>$ft]));
+        $st=$pdb->prepare("SELECT id,created_at,username,action,schema_name,target_table,target_key,ip_address,details FROM portal_audit_trail WHERE $w ORDER BY id DESC LIMIT 50000"); $st->execute($params);
+        header('Content-Type:text/csv'); header('Content-Disposition: attachment; filename="audit_trail_'.date('Ymd_His').'.csv"');
+        $out=fopen('php://output','w'); fputcsv($out,['id','time','user','action','schema','table','key','ip','details']);
+        foreach($st->fetchAll() as $row) fputcsv($out,csv_safe_row($row)); exit;
+    }
+    $perPage=50; $pageNo=max(1,(int)($_GET['p']??1));
+    $c=$pdb->prepare("SELECT COUNT(*) FROM portal_audit_trail WHERE $w"); $c->execute($params); $total=(int)$c->fetchColumn();
+    $st=$pdb->prepare("SELECT * FROM portal_audit_trail WHERE $w ORDER BY id DESC LIMIT $perPage OFFSET ".(($pageNo-1)*$perPage)); $st->execute($params); $rows=$st->fetchAll();
+    $users=$pdb->query('SELECT DISTINCT username FROM portal_audit_trail WHERE username IS NOT NULL ORDER BY username')->fetchAll(PDO::FETCH_COLUMN);
+    $actions=$pdb->query('SELECT DISTINCT action FROM portal_audit_trail ORDER BY action')->fetchAll(PDO::FETCH_COLUMN);
+    $qs=$_GET; unset($qs['p'],$qs['page']); $pages=max(1,(int)ceil($total/$perPage));
+    layout_start('Audit Trail');
+    ?>
+    <div class="cardx"><h3>Audit Trail</h3>
+        <form method="get" class="row g-2"><input type="hidden" name="page" value="audit">
+            <div class="col-md-2"><label>User</label><select class="form-select" name="user"><option value="">Anyone</option><?php foreach($users as $u):?><option <?=$fu===$u?'selected':''?>><?=e($u)?></option><?php endforeach;?></select></div>
+            <div class="col-md-2"><label>Action</label><select class="form-select" name="action"><option value="">Any</option><?php foreach($actions as $ac):?><option <?=$fa===$ac?'selected':''?>><?=e($ac)?></option><?php endforeach;?></select></div>
+            <div class="col-md-2"><label>From</label><input type="date" class="form-control" name="date_from" value="<?=e($fd)?>"></div>
+            <div class="col-md-2"><label>To</label><input type="date" class="form-control" name="date_to" value="<?=e($ft)?>"></div>
+            <div class="col-md-4"><label>Contains <small class="text-muted">(details, table, key, IP)</small></label><input class="form-control" name="q" value="<?=e($fq)?>"></div>
+            <div class="col-12 d-flex gap-2"><button class="btn btn-primary"><i class="fa fa-search"></i> Filter</button><a class="btn btn-outline-secondary" href="?page=audit">Reset</a>
+                <a class="btn btn-outline-primary ms-auto" href="?<?=e(http_build_query(array_merge($_GET,['page'=>'audit','format'=>'csv'])))?>"><i class="fa fa-file-csv"></i> Export CSV</a></div>
+        </form>
+    </div>
+    <div class="cardx table-card mt-3"><p class="text-muted px-3 pt-3 mb-0"><?=number_format($total)?> entries</p>
+        <div class="table-scroll"><table class="table table-sm"><thead><tr><th>Time</th><th>User</th><th>Action</th><th>Schema</th><th>Table</th><th>IP</th><th>Details</th></tr></thead><tbody>
+        <?php foreach($rows as $r):?><tr><td class="text-nowrap"><?=e($r['created_at'])?></td><td><?=e($r['username'])?></td><td><span class="badge bg-secondary"><?=e($r['action'])?></span></td><td><?=e($r['schema_name'])?></td><td><?=e($r['target_table'])?></td><td class="text-nowrap"><?=e($r['ip_address'])?></td><td title="<?=e((string)$r['details'])?>"><?=e(mb_strimwidth((string)$r['details'],0,140,'...'))?></td></tr><?php endforeach;?>
+        <?php if(!$rows):?><tr><td colspan="7" class="text-muted">Nothing matches these filters.</td></tr><?php endif;?></tbody></table></div>
+        <div class="p-3 d-flex justify-content-between"><span>Page <?=$pageNo?> of <?=$pages?></span><div>
+            <?php if($pageNo>1):?><a class="btn btn-sm btn-outline-primary" href="?<?=e(http_build_query(array_merge($qs,['page'=>'audit','p'=>$pageNo-1])))?>">Prev</a><?php endif;?>
+            <?php if($pageNo<$pages):?><a class="btn btn-sm btn-outline-primary" href="?<?=e(http_build_query(array_merge($qs,['page'=>'audit','p'=>$pageNo+1])))?>">Next</a><?php endif;?></div></div>
+    </div>
+    <?php layout_end(); exit;
+}
 
 if ($page==='reports') { require_perm('view_reports'); layout_start('Reports & Monitoring'); $schema=current_schema(); $tables=table_names($schema); ?><div class="cardx mb-3"><h3><i class="fa-solid fa-headset me-2"></i>Complaint / Transaction Investigation</h3><p class="text-muted mb-2">Look up what happened for a specific subscriber or transaction — filter <?=e(AUDIT_LOG_TABLE)?> by MSISDN, transaction ID, date range, vendor or result, view the full vendor request/response, and export the filtered results to CSV.</p><a class="btn btn-primary" href="?page=investigate">Open Investigation Tool</a></div><div class="metric-grid"><?php foreach(array_slice($tables,0,8) as $t):?><div class="metric"><span><?=e($t)?></span><strong><?=number_format(approx_table_count($schema,$t))?></strong></div><?php endforeach;?></div><div class="cardx"><h3>Operational Monitoring</h3><p class="text-muted">Use this page for quick health checks across VAS tables. Future integration can include API latency, transaction success rates, partner dashboards and alerts.</p></div><?php layout_end(); exit; }
 

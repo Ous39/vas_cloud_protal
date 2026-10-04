@@ -296,6 +296,8 @@ function ensure_portal_runtime_schema(): void {
             active TINYINT(1) NOT NULL DEFAULT 1,
             notify_failure TINYINT(1) NOT NULL DEFAULT 1,
             notify_vendor TINYINT(1) NOT NULL DEFAULT 1,
+            notify_slow TINYINT(1) NOT NULL DEFAULT 1,
+            notify_summary TINYINT(1) NOT NULL DEFAULT 1,
             created_by VARCHAR(80) NULL,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE KEY uq_alert_recipient_email (email)
@@ -303,6 +305,10 @@ function ensure_portal_runtime_schema(): void {
         // Databases created before per-recipient preferences existed.
         if (!$columnExists('alert_recipients', 'notify_failure')) {
             $db->exec("ALTER TABLE alert_recipients ADD COLUMN notify_failure TINYINT(1) NOT NULL DEFAULT 1, ADD COLUMN notify_vendor TINYINT(1) NOT NULL DEFAULT 1");
+        }
+
+        if (!$columnExists('alert_recipients', 'notify_slow')) {
+            $db->exec("ALTER TABLE alert_recipients ADD COLUMN notify_slow TINYINT(1) NOT NULL DEFAULT 1, ADD COLUMN notify_summary TINYINT(1) NOT NULL DEFAULT 1");
         }
 
         // What the alerts fire on (edited on the Alert Settings page): on/off and limits per alert
@@ -636,8 +642,19 @@ function export_records(string $schema,string $table,array $filters,int $limit=1
     $st=pdo($schema)->prepare($q); $st->execute($params); return $st->fetchAll();
 }
 function normalize_value($v){ return $v === '' ? null : $v; }
-function insert_record(string $schema,string $table,array $data): void { $cols=editable_columns($schema,$table,false); $names=[];$vals=[];$params=[]; foreach($cols as $c){ if(array_key_exists($c['name'],$data)){ $names[]=ident($c['name']); $vals[]='?'; $params[]=normalize_value($data[$c['name']]); }} if(!$names) throw new RuntimeException('Nothing to insert'); pdo($schema)->prepare('INSERT INTO '.ident($table).'('.implode(',',$names).') VALUES('.implode(',',$vals).')')->execute($params); audit('insert',$schema,$table,null,json_encode($data)); }
-function update_record(string $schema,string $table,array $keys,array $data): void { $set=[];$params=[]; foreach(editable_columns($schema,$table,false) as $c){ if(in_array($c['name'],primary_columns($schema,$table),true)) continue; if(array_key_exists($c['name'],$data)){ $set[]=ident($c['name']).'=?'; $params[]=normalize_value($data[$c['name']]); }} if(!$set) throw new RuntimeException('Nothing to update'); $where=build_pk_where($schema,$table,$keys,$params); pdo($schema)->prepare('UPDATE '.ident($table).' SET '.implode(',',$set).' WHERE '.$where.' LIMIT 1')->execute($params); audit('update',$schema,$table,json_encode($keys),json_encode($data)); }
+// What an update really changed (column => [from, to]), for the audit trail / Offer history. Sensitive
+// columns are recorded as changed but never with their values.
+function changed_fields(?array $before, array $data): array {
+    $out = [];
+    foreach ($data as $col => $new) {
+        $old = $before[$col] ?? null; $newN = normalize_value($new);
+        if ((string)$old === (string)$newN) continue;
+        $out[$col] = is_sensitive_column((string)$col) ? ['from' => '••••', 'to' => '••••'] : ['from' => $old, 'to' => $newN];
+    }
+    return $out;
+}
+function insert_record(string $schema,string $table,array $data): void { $cols=editable_columns($schema,$table,false); $names=[];$vals=[];$params=[]; foreach($cols as $c){ if(array_key_exists($c['name'],$data)){ $names[]=ident($c['name']); $vals[]='?'; $params[]=normalize_value($data[$c['name']]); }} if(!$names) throw new RuntimeException('Nothing to insert'); pdo($schema)->prepare('INSERT INTO '.ident($table).'('.implode(',',$names).') VALUES('.implode(',',$vals).')')->execute($params); $newId=(int)pdo($schema)->lastInsertId(); audit('insert',$schema,$table,$newId>0?json_encode(['id'=>$newId]):null,json_encode(redact_row($data))); }
+function update_record(string $schema,string $table,array $keys,array $data): void { $set=[];$params=[]; foreach(editable_columns($schema,$table,false) as $c){ if(in_array($c['name'],primary_columns($schema,$table),true)) continue; if(array_key_exists($c['name'],$data)){ $set[]=ident($c['name']).'=?'; $params[]=normalize_value($data[$c['name']]); }} if(!$set) throw new RuntimeException('Nothing to update'); $before=fetch_record($schema,$table,$keys); $where=build_pk_where($schema,$table,$keys,$params); pdo($schema)->prepare('UPDATE '.ident($table).' SET '.implode(',',$set).' WHERE '.$where.' LIMIT 1')->execute($params); audit('update',$schema,$table,json_encode($keys),json_encode(['changed'=>changed_fields($before,$data)])); }
 function copy_record(string $from,string $to,string $table,array $keys,array $overrides=[]): void { assert_copy_schemas($from,$to,false); if(!table_exists($to,$table)) throw new RuntimeException('Table does not exist in the destination schema.'); $row=fetch_record($from,$table,$keys); if(!$row) throw new RuntimeException('Source record not found'); foreach($overrides as $k=>$v) if(array_key_exists($k,$row)) $row[$k]=normalize_value($v); $cols=columns($to,$table); $names=[];$vals=[];$params=[]; foreach($cols as $c){ if(is_auto_col($c)) continue; if(array_key_exists($c['name'],$row)){ $names[]=ident($c['name']); $vals[]='?'; $params[]=$row[$c['name']]; }} pdo($to)->prepare('REPLACE INTO '.ident($table).'('.implode(',',$names).') VALUES('.implode(',',$vals).')')->execute($params); audit('copy_record',$to,$table,json_encode($keys),"from=$from to=$to"); }
 function assert_copy_schemas(string $from, string $to, bool $mustDiffer): void {
     if (!in_array($from, user_schemas(), true) || !in_array($to, user_schemas(), true)) throw new RuntimeException('Unknown source or destination schema, or you do not have access to it.');
@@ -1176,7 +1193,8 @@ function recent_alert_history(string $schema, int $limit = 15): array {
     return $st->fetchAll();
 }
 
-const ALERT_CONFIG_DEFAULTS = ['failure_rate_enabled' => 1, 'failure_rate_pct' => 20, 'failure_min_sample' => 20, 'vendor_silent_enabled' => 1, 'vendor_silent_min_baseline' => 5];
+const ALERT_CONFIG_DEFAULTS = ['failure_rate_enabled' => 1, 'failure_rate_pct' => 20, 'failure_min_sample' => 20, 'vendor_silent_enabled' => 1, 'vendor_silent_min_baseline' => 5,
+    'vendor_slow_enabled' => 0, 'vendor_slow_ms' => 3000, 'vendor_slow_min_sample' => 20, 'summary_enabled' => 0, 'summary_hour' => 7];
 function alert_config(): array {
     $cfg = ALERT_CONFIG_DEFAULTS;
     try { foreach (portal_pdo()->query('SELECT name,value FROM alert_config')->fetchAll() as $r) if (isset($cfg[$r['name']])) $cfg[$r['name']] = (int)$r['value']; }
@@ -1195,10 +1213,21 @@ function save_alert_config(array $d): void {
         'failure_min_sample' => $int('failure_min_sample', 1, 1000000, 'Minimum transactions'),
         'vendor_silent_enabled' => empty($d['vendor_silent_enabled']) ? 0 : 1,
         'vendor_silent_min_baseline' => $int('vendor_silent_min_baseline', 1, 1000000, 'Vendor baseline'),
+        'vendor_slow_enabled' => empty($d['vendor_slow_enabled']) ? 0 : 1,
+        'vendor_slow_ms' => $int('vendor_slow_ms', 50, 600000, 'Slow limit (ms)'),
+        'vendor_slow_min_sample' => $int('vendor_slow_min_sample', 1, 1000000, 'Slow-vendor minimum transactions'),
     ];
     $st = portal_pdo()->prepare('INSERT INTO alert_config(name,value) VALUES(?,?) ON DUPLICATE KEY UPDATE value=VALUES(value)');
     foreach ($vals as $k => $v) $st->execute([$k, (string)$v]);
     audit('alert_config_save', null, 'alert_config', null, json_encode($vals));
+}
+function save_summary_config(array $d): void {
+    $hour = filter_var($d['summary_hour'] ?? null, FILTER_VALIDATE_INT);
+    if ($hour === false || $hour < 0 || $hour > 23) throw new RuntimeException('Send hour must be between 0 and 23.');
+    $vals = ['summary_enabled' => empty($d['summary_enabled']) ? 0 : 1, 'summary_hour' => $hour];
+    $st = portal_pdo()->prepare('INSERT INTO alert_config(name,value) VALUES(?,?) ON DUPLICATE KEY UPDATE value=VALUES(value)');
+    foreach ($vals as $k => $v) $st->execute([$k, (string)$v]);
+    audit('summary_config_save', null, 'alert_config', null, json_encode($vals));
 }
 function alert_ignored_reasons(): array {
     try { return array_column(portal_pdo()->query('SELECT reason FROM alert_ignored_reasons ORDER BY reason')->fetchAll(), 'reason'); }
@@ -1272,6 +1301,15 @@ function compute_alerts(string $schema): array {
             }
         }
     }
+    if ($cfg['vendor_slow_enabled']) {
+        // response_time is milliseconds. Judged on the last hour, per vendor, with a minimum sample so
+        // one slow call on a quiet vendor can't trigger it.
+        $st = $db->prepare("SELECT COALESCE(NULLIF(vendor_entity_name,''),'(none)') v, COUNT(*) c, AVG(response_time) a FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL 1 HOUR AND response_time IS NOT NULL GROUP BY 1 HAVING c >= ? AND a > ?");
+        $st->execute([$cfg['vendor_slow_min_sample'], $cfg['vendor_slow_ms']]);
+        foreach ($st->fetchAll() as $r) {
+            $alerts[] = ['key'=>'vendor_slow:'.$schema.':'.$r['v'], 'type'=>'vendor_slow', 'level'=>'warning', 'message'=>sprintf('%s is slow: averaged %s ms over the last hour (%d transactions) — your limit is %s ms.', $r['v'], number_format((float)$r['a']), $r['c'], number_format($cfg['vendor_slow_ms']))];
+        }
+    }
     return $alerts;
 }
 
@@ -1313,7 +1351,7 @@ function send_slack_alert(string $schema, string $message): void {
 // fallback when nothing is saved there. Recipients live in alert_recipients (plus optional
 // ALERT_EMAIL_TO).
 function alert_recipients(): array {
-    try { return portal_pdo()->query('SELECT id,email,active,notify_failure,notify_vendor FROM alert_recipients ORDER BY email')->fetchAll(); }
+    try { return portal_pdo()->query('SELECT id,email,active,notify_failure,notify_vendor,notify_slow,notify_summary FROM alert_recipients ORDER BY email')->fetchAll(); }
     catch (Throwable $e) { return []; }
 }
 function save_alert_recipient(string $email): void {
@@ -1322,9 +1360,9 @@ function save_alert_recipient(string $email): void {
     portal_pdo()->prepare('INSERT INTO alert_recipients(email,created_by) VALUES(?,?) ON DUPLICATE KEY UPDATE active=1')->execute([$email, user()['username'] ?? null]);
     audit('alert_recipient_add', null, 'alert_recipients', $email, 'enabled');
 }
-function update_alert_recipient_prefs(int $id, bool $failure, bool $vendor): void {
-    portal_pdo()->prepare('UPDATE alert_recipients SET notify_failure=?, notify_vendor=? WHERE id=?')->execute([$failure ? 1 : 0, $vendor ? 1 : 0, $id]);
-    audit('alert_recipient_prefs', null, 'alert_recipients', (string)$id, 'failure='.(int)$failure.' vendor='.(int)$vendor);
+function update_alert_recipient_prefs(int $id, bool $failure, bool $vendor, bool $slow, bool $summary): void {
+    portal_pdo()->prepare('UPDATE alert_recipients SET notify_failure=?, notify_vendor=?, notify_slow=?, notify_summary=? WHERE id=?')->execute([$failure ? 1 : 0, $vendor ? 1 : 0, $slow ? 1 : 0, $summary ? 1 : 0, $id]);
+    audit('alert_recipient_prefs', null, 'alert_recipients', (string)$id, 'failure='.(int)$failure.' vendor='.(int)$vendor.' slow='.(int)$slow.' summary='.(int)$summary);
 }
 function toggle_alert_recipient(int $id): void {
     $st = portal_pdo()->prepare('UPDATE alert_recipients SET active = 1 - active WHERE id=?');
@@ -1383,7 +1421,7 @@ function smtp_settings(?string $type = null): ?array {
     $c = smtp_server_settings();
     if (!$c) return null;
     $env = array_map('trim', explode(',', (string)getenv('ALERT_EMAIL_TO')));
-    $want = ['failure_rate' => 'notify_failure', 'vendor_silent' => 'notify_vendor'][$type ?? ''] ?? null;
+    $want = ['failure_rate' => 'notify_failure', 'vendor_silent' => 'notify_vendor', 'vendor_slow' => 'notify_slow', 'daily_summary' => 'notify_summary'][$type ?? ''] ?? null;
     $db = array_column(array_filter(alert_recipients(), fn($r) => (int)$r['active'] === 1 && ($want === null || (int)$r[$want] === 1)), 'email');
     $to = array_values(array_unique(array_filter(array_map('strtolower', array_merge($db, $env)), fn($a) => filter_var($a, FILTER_VALIDATE_EMAIL))));
     if (!$to) return null;
@@ -1468,6 +1506,140 @@ function failure_reasons_breakdown(string $schema, int $hours = 1, int $limit = 
     $st = pdo($schema)->prepare("SELECT COALESCE(NULLIF(TRIM(result_description),''),'(no reason given)') reason, COUNT(*) c FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL $hours HOUR AND NOT ".AUDIT_SUCCESS_SQL." GROUP BY reason ORDER BY c DESC LIMIT $limit");
     $st->execute();
     return $st->fetchAll();
+}
+
+// ===================== Vendor detail, customer timeline, offer history, daily summary =====================
+function valid_day(string $d, int $maxBackDays = 31): string {
+    $t = strtotime($d);
+    if ($t === false || $t > strtotime('today') || $t < strtotime("-$maxBackDays days")) return date('Y-m-d');
+    return date('Y-m-d', $t);
+}
+function failure_reasons_day(string $schema, string $date, int $limit = 8, ?string $vendor = null): array {
+    if (!table_exists($schema, AUDIT_LOG_TABLE)) return [];
+    $params = [$date.' 00:00:00', date('Y-m-d', strtotime($date.' +1 day')).' 00:00:00']; $vsql = '';
+    if ($vendor !== null) { $vsql = " AND COALESCE(NULLIF(vendor_entity_name,''),'(none)') = ?"; $params[] = $vendor; }
+    $st = pdo($schema)->prepare("SELECT COALESCE(NULLIF(TRIM(result_description),''),'(no reason given)') reason, COUNT(*) c FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= ? AND create_date < ? AND NOT ".AUDIT_SUCCESS_SQL."$vsql GROUP BY reason ORDER BY c DESC LIMIT ".max(1, min(50, $limit)));
+    $st->execute($params);
+    return $st->fetchAll();
+}
+// Everything the vendor page shows, for one vendor on one day (a bounded single-day create_date range, so
+// it touches one partition set like the other pages).
+function vendor_detail(string $schema, string $vendor, string $date): array {
+    $out = ['total' => 0, 'ok' => 0, 'failed' => 0, 'avg_ms' => null, 'max_ms' => null, 'slow' => 0, 'hourly' => [], 'channels' => [], 'reasons' => [], 'recent_failures' => [], 'prev_total' => 0];
+    if (!table_exists($schema, AUDIT_LOG_TABLE)) return $out;
+    $db = pdo($schema); $t = ident(AUDIT_LOG_TABLE);
+    $from = $date.' 00:00:00'; $to = date('Y-m-d', strtotime($date.' +1 day')).' 00:00:00';
+    $v = "COALESCE(NULLIF(vendor_entity_name,''),'(none)') = ?"; $slowMs = (int)alert_config()['vendor_slow_ms'];
+    $st = $db->prepare("SELECT COUNT(*) total, SUM(CASE WHEN ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) ok, AVG(response_time) avg_ms, MAX(response_time) max_ms, SUM(response_time > $slowMs) slow FROM $t WHERE create_date >= ? AND create_date < ? AND $v");
+    $st->execute([$from, $to, $vendor]); $r = $st->fetch();
+    $out['total'] = (int)$r['total']; $out['ok'] = (int)$r['ok']; $out['failed'] = $out['total'] - $out['ok'];
+    $out['avg_ms'] = $r['avg_ms'] === null ? null : (int)round((float)$r['avg_ms']); $out['max_ms'] = $r['max_ms'] === null ? null : (int)$r['max_ms']; $out['slow'] = (int)$r['slow'];
+    $st = $db->prepare("SELECT HOUR(create_date) h, COUNT(*) total, SUM(CASE WHEN ".AUDIT_SUCCESS_SQL." THEN 0 ELSE 1 END) failed, AVG(response_time) avg_ms FROM $t WHERE create_date >= ? AND create_date < ? AND $v GROUP BY h ORDER BY h");
+    $st->execute([$from, $to, $vendor]); $out['hourly'] = $st->fetchAll();
+    $st = $db->prepare("SELECT COALESCE(NULLIF(channel,''),'(none)') channel, COUNT(*) total, SUM(CASE WHEN ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) ok, AVG(response_time) avg_ms FROM $t WHERE create_date >= ? AND create_date < ? AND $v GROUP BY 1 ORDER BY total DESC");
+    $st->execute([$from, $to, $vendor]); $out['channels'] = $st->fetchAll();
+    $out['reasons'] = failure_reasons_day($schema, $date, 8, $vendor);
+    $st = $db->prepare("SELECT id, create_date, transaction_id, msisdn, channel, result_description, response_time FROM $t WHERE create_date >= ? AND create_date < ? AND $v AND NOT ".AUDIT_SUCCESS_SQL." ORDER BY create_date DESC LIMIT 15");
+    $st->execute([$from, $to, $vendor]); $out['recent_failures'] = $st->fetchAll();
+    $st = $db->prepare("SELECT COUNT(*) FROM $t WHERE create_date >= ? AND create_date < ? AND $v");
+    $st->execute([date('Y-m-d', strtotime($date.' -1 day')).' 00:00:00', $from, $vendor]); $out['prev_total'] = (int)$st->fetchColumn();
+    return $out;
+}
+
+// One subscriber across both log sources, newest first. audit_log allows 31 days and subscription 7, so the
+// subscription side is clipped to its allowed window ending at $to (and the page says so).
+function customer_timeline(string $schema, string $msisdn, string $from, string $to): array {
+    $msisdn = preg_replace('/\D+/', '', $msisdn);
+    if ($msisdn === '' || strlen($msisdn) > 15) throw new RuntimeException('Enter the MSISDN as digits only.');
+    $events = []; $notes = [];
+    if (table_exists($schema, AUDIT_LOG_TABLE)) {
+        $f = audit_log_filters_from_request(['date_from' => $from, 'date_to' => $to, 'msisdn' => $msisdn]);
+        $d = search_audit_log($schema, $f, 1, 200);
+        foreach ($d['rows'] as $r) $events[] = ['when' => $r['create_date'], 'source' => 'audit_log', 'id' => $r['id'], 'date' => $r['create_date'], 'transaction_id' => $r['transaction_id'],
+            'channel' => $r['channel'], 'what' => (string)$r['vendor_entity_name'], 'ok' => is_success_status($r['result_status']), 'result' => (string)$r['result_description']];
+        if ($d['total'] > 200) $notes[] = 'audit_log: showing the newest 200 of '.number_format($d['total']).' — narrow the date range to see the rest.';
+    }
+    if (table_exists($schema, 'subscription')) {
+        $sf = max(strtotime($from), strtotime($to) - (SUBSCRIPTION_LOG_MAX_RANGE_DAYS - 1) * 86400);
+        if ($sf > strtotime($from)) $notes[] = 'subscription is only searched for the last '.SUBSCRIPTION_LOG_MAX_RANGE_DAYS.' days of the range (from '.date('Y-m-d', $sf).').';
+        $f = subscription_log_filters_from_request(['date_from' => date('Y-m-d', $sf), 'date_to' => $to, 'msisdn' => $msisdn]);
+        $d = search_subscription_log($schema, $f, 1, 200);
+        foreach ($d['rows'] as $r) $events[] = ['when' => $r['date'], 'source' => 'subscription', 'id' => $r['id'], 'date' => $r['date'], 'transaction_id' => $r['transaction_id'],
+            'channel' => $r['channel'], 'what' => (string)$r['subscription_type'], 'ok' => is_subscription_success($r['result_desc']), 'result' => (string)$r['result_desc']];
+        if ($d['total'] > 200) $notes[] = 'subscription: showing the newest 200 of '.number_format($d['total']).'.';
+    }
+    usort($events, fn($a, $b) => strcmp($b['when'], $a['when']));
+    return ['events' => $events, 'notes' => $notes, 'msisdn' => $msisdn];
+}
+
+// Who changed an offer and what, from the audit trail. Old entries (before changes were recorded as
+// from/to pairs) only know the values that were submitted, and are shown as such.
+function offer_history(string $schema, int $id): array {
+    $st = portal_pdo()->prepare("SELECT id, created_at, username, action, details FROM portal_audit_trail WHERE schema_name=? AND target_table='vas_offers' AND target_key IN (?,?) AND action IN ('insert','update') ORDER BY id DESC LIMIT 200");
+    $st->execute([$schema, json_encode(['id' => $id]), json_encode(['id' => (string)$id])]);
+    $rows = [];
+    foreach ($st->fetchAll() as $r) {
+        $d = json_decode((string)$r['details'], true); $changes = []; $legacy = false;
+        if (is_array($d) && isset($d['changed']) && is_array($d['changed'])) $changes = $d['changed'];
+        elseif (is_array($d)) { $legacy = true; foreach ($d as $k => $v) $changes[$k] = ['from' => null, 'to' => is_scalar($v) || $v === null ? $v : json_encode($v)]; }
+        $rows[] = ['at' => $r['created_at'], 'user' => $r['username'], 'action' => $r['action'], 'changes' => $changes, 'legacy' => $legacy];
+    }
+    return $rows;
+}
+
+function daily_summary_data(string $schema, string $date): array {
+    $t = ident(AUDIT_LOG_TABLE); $db = pdo($schema);
+    $from = $date.' 00:00:00'; $to = date('Y-m-d', strtotime($date.' +1 day')).' 00:00:00'; $pfrom = date('Y-m-d', strtotime($date.' -1 day')).' 00:00:00';
+    $ok = AUDIT_SUCCESS_SQL;
+    $q = function (string $col) use ($db, $t, $from, $to, $ok) {
+        $st = $db->prepare("SELECT COALESCE(NULLIF($col,''),'(none)') name, COUNT(*) total, SUM(CASE WHEN $ok THEN 1 ELSE 0 END) ok, AVG(response_time) avg_ms FROM $t WHERE create_date >= ? AND create_date < ? GROUP BY 1 ORDER BY total DESC LIMIT 15");
+        $st->execute([$from, $to]); return $st->fetchAll();
+    };
+    $st = $db->prepare("SELECT COUNT(*) total, SUM(CASE WHEN $ok THEN 1 ELSE 0 END) ok, AVG(response_time) avg_ms FROM $t WHERE create_date >= ? AND create_date < ?");
+    $st->execute([$from, $to]); $tot = $st->fetch();
+    $cfg = alert_config();
+    $st = $db->prepare("SELECT COALESCE(NULLIF(vendor_entity_name,''),'(none)') name, COUNT(*) c FROM $t WHERE create_date >= ? AND create_date < ? GROUP BY 1 HAVING c >= ?");
+    $st->execute([$pfrom, $from, $cfg['vendor_silent_min_baseline']]); $before = array_column($st->fetchAll(), 'c', 'name');
+    $vendors = $q('vendor_entity_name'); $seen = array_column($vendors, 'name');
+    $silent = []; foreach ($before as $name => $c) if (!in_array($name, $seen, true)) $silent[$name] = (int)$c;
+    return ['date' => $date, 'total' => (int)$tot['total'], 'ok' => (int)$tot['ok'], 'avg_ms' => $tot['avg_ms'] === null ? null : (int)round((float)$tot['avg_ms']),
+        'channels' => $q('channel'), 'vendors' => $vendors, 'reasons' => failure_reasons_day($schema, $date, 5), 'silent' => $silent];
+}
+function daily_summary_text(string $schema, array $d): string {
+    $pct = fn($ok, $t) => $t > 0 ? number_format(100 * $ok / $t, 1).'%' : '-';
+    $ms = fn($v) => $v === null ? '-' : number_format((float)$v).' ms';
+    $l = ['VAS Cloud daily summary - '.$schema.' - '.$d['date'], str_repeat('=', 50), ''];
+    $l[] = sprintf('Transactions: %s   Success: %s   Failed: %s   Avg response: %s', number_format($d['total']), $pct($d['ok'], $d['total']), number_format($d['total'] - $d['ok']), $ms($d['avg_ms']));
+    foreach (['channels' => 'By channel', 'vendors' => 'By vendor'] as $k => $title) {
+        $l[] = ''; $l[] = $title.':';
+        if (!$d[$k]) $l[] = '  (no traffic)';
+        foreach ($d[$k] as $r) $l[] = sprintf('  %-28s %9s   %7s ok   %s', mb_strimwidth($r['name'], 0, 28, '..'), number_format((int)$r['total']), $pct((int)$r['ok'], (int)$r['total']), $ms($r['avg_ms'] === null ? null : round((float)$r['avg_ms'])));
+    }
+    $l[] = ''; $l[] = 'Top failure reasons:';
+    if (!$d['reasons']) $l[] = '  (none)';
+    foreach ($d['reasons'] as $r) $l[] = sprintf('  %9s  %s', number_format((int)$r['c']), $r['reason']);
+    if ($d['silent']) { $l[] = ''; $l[] = 'Vendors active the day before but silent this day:'; foreach ($d['silent'] as $n => $c) $l[] = '  '.$n.' ('.number_format($c).' the day before)'; }
+    return implode("\n", $l)."\n";
+}
+// $force sends regardless of the schedule/duplicate check (the "Send now" button). Returns null on success.
+function send_daily_summary(string $schema, ?string $date = null, bool $force = false): ?string {
+    if (!smtp_settings('daily_summary')) return 'email is not configured or no recipient receives the daily summary';
+    $date = $date ?: date('Y-m-d', strtotime('yesterday'));
+    $text = daily_summary_text($schema, daily_summary_data($schema, $date));
+    $err = send_email_alert('[VAS Cloud] Daily summary '.$schema.' '.$date, $text, 'daily_summary');
+    audit('daily_summary', $schema, null, $date, $err ?? 'sent'.($force ? ' (manual)' : ''));
+    return $err;
+}
+// Called by the 5-minute cron. Sends yesterday's summary once per day, after the configured hour. The row
+// in alert_notification_log is claimed before sending so two overlapping runs can't both send it.
+function maybe_send_daily_summary(string $schema): void {
+    $cfg = alert_config();
+    if (!$cfg['summary_enabled'] || (int)date('G') < $cfg['summary_hour'] || !table_exists($schema, AUDIT_LOG_TABLE)) return;
+    $key = 'daily_summary:'.$schema.':'.date('Y-m-d');
+    $db = portal_pdo();
+    $claim = $db->prepare('INSERT IGNORE INTO alert_notification_log(alert_key,last_sent_at) VALUES(?,NOW())'); $claim->execute([$key]);
+    if ($claim->rowCount() !== 1) return;
+    if (send_daily_summary($schema) !== null) $db->prepare('DELETE FROM alert_notification_log WHERE alert_key=?')->execute([$key]);
 }
 
 // ===================== Sales Orders & Invoices (relational lookup) =====================
@@ -1837,17 +2009,19 @@ function activity_by_column(string $schema, string $col, int $limit): array {
     if (!in_array($col, ['channel', 'vendor_entity_name'], true) || !table_exists($schema, AUDIT_LOG_TABLE)) return [];
     $db = pdo($schema); $limit = max(1, min(30, $limit)); $t = ident(AUDIT_LOG_TABLE);
     $expr = "COALESCE(NULLIF($col,''),'(none)')";
-    $cur = $db->query("SELECT $expr name, COUNT(*) total, SUM(CASE WHEN ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) ok FROM $t WHERE create_date >= CURDATE() GROUP BY 1")->fetchAll();
+    $slowMs = (int)alert_config()['vendor_slow_ms'];
+    $cur = $db->query("SELECT $expr name, COUNT(*) total, SUM(CASE WHEN ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) ok, AVG(response_time) avg_ms, MAX(response_time) max_ms, SUM(response_time > $slowMs) slow FROM $t WHERE create_date >= CURDATE() GROUP BY 1")->fetchAll();
     $prev = array_column($db->query("SELECT $expr name, COUNT(*) total FROM $t WHERE create_date >= CURDATE() - INTERVAL 1 DAY AND create_date < NOW() - INTERVAL 1 DAY GROUP BY 1")->fetchAll(), 'total', 'name');
     $rows = [];
-    foreach ($cur as $r) $rows[$r['name']] = ['total' => (int)$r['total'], 'ok' => (int)$r['ok']];
-    foreach ($prev as $name => $p) if (!isset($rows[$name])) $rows[$name] = ['total' => 0, 'ok' => 0];
+    foreach ($cur as $r) $rows[$r['name']] = ['total' => (int)$r['total'], 'ok' => (int)$r['ok'], 'avg_ms' => $r['avg_ms'] === null ? null : (int)round((float)$r['avg_ms']), 'max_ms' => $r['max_ms'] === null ? null : (int)$r['max_ms'], 'slow' => (int)$r['slow']];
+    foreach ($prev as $name => $p) if (!isset($rows[$name])) $rows[$name] = ['total' => 0, 'ok' => 0, 'avg_ms' => null, 'max_ms' => null, 'slow' => 0];
     $out = [];
     foreach ($rows as $name => $r) {
         $total = $r['total']; $ok = $r['ok']; $p = (int)($prev[$name] ?? 0);
         $out[] = ['name' => $name, 'channel' => $name, 'total' => $total, 'ok' => $ok, 'failed' => $total - $ok,
             'success_pct' => $total > 0 ? round(100 * $ok / $total, 1) : 0, 'prev_total' => $p,
-            'delta_pct' => $p > 0 ? round(100 * ($total - $p) / $p) : null];
+            'delta_pct' => $p > 0 ? round(100 * ($total - $p) / $p) : null,
+            'avg_ms' => $r['avg_ms'], 'max_ms' => $r['max_ms'], 'slow_pct' => $total > 0 ? round(100 * $r['slow'] / $total, 1) : 0];
     }
     usort($out, fn($a, $b) => [$b['total'], $b['prev_total']] <=> [$a['total'], $a['prev_total']]);
     return array_slice($out, 0, $limit);
