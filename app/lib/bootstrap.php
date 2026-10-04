@@ -2245,6 +2245,52 @@ function render_menu_preview(array $tree, int $depth = 0): string {
     return $out;
 }
 
+// ===================== USSD screen engine =====================
+// Turns the Menu Builder's tree into the screens a subscriber sees. It is deliberately independent of how the
+// request arrives (the simulator now, the Mobius PROXY endpoint later): give it the short code and the replies
+// typed so far, get back the next screen. Stateless — the "session" is just the list of replies — so any
+// replica can serve any step.
+const USSD_MAX_CHARS = 182;
+// $statuses: which node states are served. Live traffic should use ['active']; the simulator also shows drafts.
+function ussd_screen(string $shortCode, array $replies, array $statuses = ['active'], ?array $nodes = null): array {
+    $nodes = $nodes ?? menu_nodes_flat($shortCode);
+    $nodes = array_values(array_filter($nodes, fn($n) => in_array($n['status'], $statuses, true)));
+    $kids = [];
+    foreach ($nodes as $n) $kids[$n['parent_id'] === null ? 0 : (int)$n['parent_id']][] = $n;
+    if (!$nodes) return ussd_result('No menu is set up for '.$shortCode.' yet.', true, [], 'empty');
+    // A single root "menu" node acts as the welcome screen (its text is the header, its children the options);
+    // otherwise the root nodes themselves are the options under a plain header.
+    $roots = $kids[0] ?? [];
+    $cur = (count($roots) === 1 && $roots[0]['node_type'] === 'menu' && !empty($kids[(int)$roots[0]['id']])) ? $roots[0] : null;
+    $trail = [$cur]; $path = []; $note = null;
+    foreach ($replies as $r) {
+        $r = trim((string)$r);
+        $options = $cur ? ($kids[(int)$cur['id']] ?? []) : $roots;
+        if ($r === '0' && count($trail) > 1) { array_pop($trail); $cur = end($trail) ?: null; array_pop($path); $note = null; continue; }
+        if (!ctype_digit($r) || (int)$r < 1 || (int)$r > count($options)) { $note = 'Invalid choice.'; continue; }
+        $pick = $options[(int)$r - 1]; $path[] = (int)$r; $note = null;
+        if ($pick['node_type'] === 'menu' && !empty($kids[(int)$pick['id']])) { $cur = $pick; $trail[] = $cur; continue; }
+        // a leaf: offer / action / end / an empty submenu — the session ends here
+        if ($pick['node_type'] === 'offer') {
+            $o = null; $code = trim((string)$pick['offer_code']);
+            if ($code !== '') foreach (['HeraProduction', 'HeraTesting'] as $s) { try { $st = pdo($s)->prepare('SELECT name, one_time_price, validity_amount FROM vas_offers WHERE offer_code=? LIMIT 1'); $st->execute([$code]); $o = $st->fetch() ?: null; } catch (Throwable $e) {} if ($o) break; }
+            $text = $pick['prompt_text'].($o ? "\n".$o['name'].($o['one_time_price'] !== null && $o['one_time_price'] !== '' ? ' - '.$o['one_time_price'] : '').($o['validity_amount'] ? ' / '.$o['validity_amount'].' days' : '') : '')."\nPurchase is not connected yet.";
+            return ussd_result($text, true, $path, 'offer', $pick);
+        }
+        if ($pick['node_type'] === 'action') return ussd_result($pick['prompt_text']."\n(action ".$pick['action_key']." is not connected yet)", true, $path, 'action', $pick);
+        return ussd_result($pick['prompt_text'], true, $path, 'end', $pick);
+    }
+    $options = $cur ? ($kids[(int)$cur['id']] ?? []) : $roots;
+    $lines = [$cur ? $cur['prompt_text'] : 'Welcome'];
+    if ($note) array_unshift($lines, $note);
+    foreach ($options as $i => $o) $lines[] = ($i + 1).'. '.$o['prompt_text'];
+    if (count($trail) > 1) $lines[] = '0. Back';
+    return ussd_result(implode("\n", $lines), false, $path, 'menu', $cur);
+}
+function ussd_result(string $text, bool $end, array $path, string $kind, ?array $node = null): array {
+    return ['text' => $text, 'end' => $end, 'path' => $path, 'kind' => $kind, 'node_id' => $node['id'] ?? null, 'chars' => mb_strlen($text), 'too_long' => mb_strlen($text) > USSD_MAX_CHARS];
+}
+
 // ===================== Unified Monitoring =====================
 // ===================== Monitoring page =====================
 // An integration check is only as fresh as the last time someone (or "Check all now") ran it — nothing

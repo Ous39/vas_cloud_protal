@@ -22,6 +22,7 @@ function nav_can_see(string $page): bool {
     if ($page==='sql') return can('run_sql');
     if ($page==='users') return can('manage_users');
     if ($page==='audit') return can('view_audit');
+    if ($page==='ussd_sim') return can('manage_ussd_menus');
     if ($page==='api_keys') return can('manage_api_keys');
     if ($page==='promotions') return can('manage_promotions');
     if (in_array($page,['alert_settings','retention'],true)) return can('manage_api_keys');
@@ -35,7 +36,7 @@ function layout_start(string $title): void {
         ['dashboard','fa-gauge','Dashboard'],
         ['monitoring','fa-heart-pulse','Monitoring'],
         ['group','fa-layer-group','Operations',[['subscriptions','fa-user-check','Subscriptions'],['offers','fa-tags','Offer Management'],['offer_health','fa-stethoscope','Offer Health'],['esim','fa-sim-card','eSIM Profiles'],['sales','fa-file-invoice-dollar','Sales & Invoices'],['friends_family','fa-user-group','Friends & Family'],['voting','fa-square-poll-vertical','Voting Service']]],
-        ['group','fa-tower-broadcast','Infrastructure',[['ussd_ivr','fa-mobile-screen-button','USSD & IVR'],['ussd_menu','fa-sitemap','USSD Menu Builder'],['integrations','fa-plug-circle-check','Integrations']]],
+        ['group','fa-tower-broadcast','Infrastructure',[['ussd_ivr','fa-mobile-screen-button','USSD & IVR'],['ussd_menu','fa-sitemap','USSD Menu Builder'],['ussd_sim','fa-mobile-screen','USSD Simulator'],['integrations','fa-plug-circle-check','Integrations']]],
         ['group','fa-chart-line','Reports',[['investigate','fa-headset','Complaint Investigation'],['timeline','fa-timeline','Customer Timeline'],['alerts','fa-triangle-exclamation','Alerts'],['offer_report','fa-bullhorn','Offer Performance'],['reports','fa-chart-line','Reports'],['sql','fa-code','SQL Console']]],
         ['group','fa-gears','Admin',[['tables','fa-database','Database Tables'],['promotions','fa-bullhorn','Promotions'],['projects','fa-diagram-project','Projects'],['shortcodes','fa-hashtag','Short Codes'],['api_keys','fa-key','Partner API Keys'],['alert_settings','fa-bell','Alert Settings'],['retention','fa-database','Data Retention'],['audit','fa-shield-halved','Audit Trail'],['users','fa-users-gear','Users']]],
     ];
@@ -894,6 +895,48 @@ if ($page==='ussd_ivr') {
         </div>
         <div class="cardx mt-3"><h3>Live Agent Queue</h3><p class="text-muted">Current USSD/IVR sessions held in <code>agent_queue</code>.</p>
             <?php if(!$queue):?><p class="text-muted mb-0">Queue is empty.</p><?php else:?><div class="table-scroll"><table class="table table-sm mb-0"><thead><tr><th>MSISDN</th><th>Service Code</th><th>Status</th></tr></thead><tbody><?php foreach($queue as $q):?><tr><td><?=e($q['msisdn'])?></td><td><?=e($q['service_code'])?></td><td><span class="badge bg-info text-dark"><?=e($q['status'])?></span></td></tr><?php endforeach;?></tbody></table></div><?php endif;?>
+        </div></div>
+    </div>
+    <?php layout_end(); exit;
+}
+
+if ($page==='ussd_sim') {
+    require_perm('manage_ussd_menus');
+    $known=menu_shortcodes(); $sc=trim((string)($_GET['sc']??'')); if($sc==='') $sc=$known[0]??'*9606*9090#';
+    $withDraft=($_GET['draft']??'1')==='1';
+    $prev=array_values(array_filter(explode(',',(string)($_GET['trail']??'')),fn($x)=>$x!==''));
+    $reply=trim((string)($_GET['reply']??''));
+    $replies=$prev; if($reply!=='') $replies[]=$reply;
+    if(count($replies)>30) $replies=array_slice($replies,-30);
+    $scr=ussd_screen($sc,$replies,$withDraft?['active','draft']:['active']);
+    $trail=implode(',',$replies);
+    layout_start('USSD Simulator');
+    ?>
+    <div class="row g-3">
+        <div class="col-lg-5"><div class="cardx">
+            <h3><i class="fa-solid fa-mobile-screen me-2"></i>Try a menu</h3>
+            <p class="text-muted">Shows exactly what a phone would show for a short code, walking the menu you built in the <a href="?page=ussd_menu">Menu Builder</a>. Nothing is sent to Mobius or any customer.</p>
+            <form method="get" class="mb-3"><input type="hidden" name="page" value="ussd_sim">
+                <label class="small text-muted mb-0">Short code</label>
+                <div class="input-group mb-2"><input class="form-control" name="sc" value="<?=e($sc)?>" list="scList"><datalist id="scList"><?php foreach($known as $k):?><option value="<?=e($k)?>"><?php endforeach;?></datalist><button class="btn btn-outline-primary">Dial</button></div>
+                <div class="form-check"><input class="form-check-input" type="checkbox" name="draft" value="1" id="dr" <?=$withDraft?'checked':''?> data-autosubmit><label class="form-check-label small" for="dr">Include <b>draft</b> items (the live service will only show <b>active</b> ones)</label></div>
+            </form>
+            <?php if(!in_array($sc,$known,true)):?><div class="alert alert-info py-2 small">No menu exists for <b><?=e($sc)?></b> yet. <a href="?page=ussd_menu&new_short_code=<?=urlencode($sc)?>">Start one in the Menu Builder</a>.</div><?php endif;?>
+            <div class="small text-muted">Replies so far: <b><?=$trail!==''?e(str_replace(',',' → ',$trail)):'(none)'?></b></div>
+        </div></div>
+        <div class="col-lg-7"><div class="cardx">
+            <div class="ussd-phone">
+                <div class="ussd-screen"><?=nl2br(e($scr['text']))?></div>
+                <div class="ussd-meta <?=$scr['too_long']?'text-danger fw-semibold':'text-muted'?>"><?=$scr['chars']?> / <?=USSD_MAX_CHARS?> characters<?=$scr['too_long']?' — too long: some phones cut or reject it':''?></div>
+                <?php if($scr['end']):?>
+                    <div class="alert alert-secondary py-2 mt-2 mb-2">Session ended (<?=e($scr['kind'])?>).</div>
+                    <a class="btn btn-primary" href="?page=ussd_sim&sc=<?=urlencode($sc)?>&draft=<?=$withDraft?1:0?>"><i class="fa-solid fa-rotate-right me-1"></i>Dial again</a>
+                <?php else:?>
+                <form method="get" class="d-flex gap-2 mt-2"><input type="hidden" name="page" value="ussd_sim"><input type="hidden" name="sc" value="<?=e($sc)?>"><input type="hidden" name="draft" value="<?=$withDraft?1:0?>"><input type="hidden" name="trail" value="<?=e($trail)?>">
+                    <input class="form-control" name="reply" inputmode="numeric" autocomplete="off" autofocus placeholder="Your reply, e.g. 1"><button class="btn btn-primary">Send</button>
+                    <a class="btn btn-outline-secondary" href="?page=ussd_sim&sc=<?=urlencode($sc)?>&draft=<?=$withDraft?1:0?>">Restart</a></form>
+                <?php endif;?>
+            </div>
         </div></div>
     </div>
     <?php layout_end(); exit;
