@@ -353,7 +353,7 @@ if ($page==='offer_report') {
     ?>
     <div class="cardx">
         <h3><i class="fa-solid fa-bullhorn me-2"></i>Offer Performance</h3>
-        <p class="text-muted">Success/failure breakdown by offer, including "Buy for Other" purchases, over a bounded date range (subscription has no supporting index, so the range is capped at <?=PROMOTION_REPORT_MAX_RANGE_DAYS?> days). Leave Offers empty to report on every offer.</p>
+        <p class="text-muted">Success/failure breakdown by offer, including "Buy for Other" purchases, over a bounded date range (capped at <?=PROMOTION_REPORT_MAX_RANGE_DAYS?> days; one or two days is fastest). Leave Offers empty to report on every offer.</p>
         <?php if($promotions):?>
         <form method="get" class="row g-2 mb-2"><input type="hidden" name="page" value="offer_report">
             <div class="col-md-4"><label class="small text-muted mb-0">Quick-load from a Promotion</label><select class="form-select" name="promotion_id" data-autosubmit><option value="">— none —</option><?php foreach($promotions as $p):?><option value="<?=e($p['id'])?>" <?=$promotionId===(int)$p['id']?'selected':''?>><?=e($p['name'])?></option><?php endforeach;?></select></div>

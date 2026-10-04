@@ -566,6 +566,11 @@ function column_exists(string $schema, string $table, string $col): bool {
     $st->execute([$schema, $table, $col]);
     return (int)$st->fetch()['c'] > 0;
 }
+function index_exists(string $schema, string $table, string $index): bool {
+    $st = pdo($schema)->prepare('SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND INDEX_NAME=?');
+    $st->execute([$schema, $table, $index]);
+    return (int)$st->fetchColumn() > 0;
+}
 function primary_columns(string $schema,string $table): array { $cols=columns($schema,$table); $pk=array_values(array_map(fn($c)=>$c['name'], array_filter($cols, fn($c)=>$c['ckey']==='PRI'))); if (!$pk && $cols) $pk=[$cols[0]['name']]; return $pk; }
 function table_count(string $schema,string $table): int { try { return (int)pdo($schema)->query('SELECT COUNT(*) c FROM '.ident($table))->fetch()['c']; } catch(Throwable $e) { return 0; } }
 // Estimate only (InnoDB's cached statistics, no table scan) — safe to call once per table on every
@@ -1116,6 +1121,14 @@ function offer_performance_report(string $schema, array $offerCodes, string $cha
     // yet (local dev, HeraTesting) rather than hard-requiring it everywhere.
     $txnSuffixExpr = column_exists($schema, 'subscription', 'txn_offer_suffix') ? 's.txn_offer_suffix' : 'RIGHT(s.transaction_id, 5)';
 
+    // Offer codes are not unique in vas_offers (several rows can share one code), so offers are de-duplicated
+    // above: joining raw rows multiplied every attempt by the number of rows sharing the code.
+    // For a short range, drive the query from the date index (one or two days of rows) instead of letting MySQL
+    // walk every row an offer has ever had through the suffix index and check the date afterwards.
+    $indexHint = '';
+    if (strtotime($dateTo) - strtotime($dateFrom) <= 3 * 86400 && !index_exists($schema, 'subscription', 'idx_subscription_suffix_date') && index_exists($schema, 'subscription', 'idx_subscription_date_channel')) {
+        $indexHint = 'FORCE INDEX (idx_subscription_date_channel)';
+    }
     $sql = "SELECT DATE(s.date) AS ReportDate, s.channel AS Channel, m.base_offer_code AS OfferCode, m.offer_code_used AS TransactionOfferCode, m.purchase_type AS PurchaseType, v.name AS OfferName,
         CASE WHEN s.result_desc = 'Operation successfully.' THEN 'Successful' ELSE 'Unsuccessful' END AS ResultStatus,
         CASE WHEN s.result_desc = 'Operation successfully.' THEN 'N/A' WHEN s.result_desc IS NULL OR TRIM(s.result_desc) = '' THEN 'Unknown failure reason' ELSE s.result_desc END AS FailureReason,
@@ -1123,13 +1136,15 @@ function offer_performance_report(string $schema, array $offerCodes, string $cha
         SUM(CASE WHEN s.result_desc = 'Operation successfully.' THEN 1 ELSE 0 END) AS SuccessfulAttempts,
         SUM(CASE WHEN s.result_desc = 'Operation successfully.' THEN 0 ELSE 1 END) AS UnsuccessfulAttempts,
         COUNT(DISTINCT s.subscriber_msisdn) AS TotalDistinctUsers
-        FROM subscription s
+        FROM subscription s $indexHint
         INNER JOIN (
-            SELECT offer_code AS offer_code_used, offer_code AS base_offer_code, 'Direct' AS purchase_type FROM vas_offers WHERE ".implode(' AND ',$directWhere)."
-            UNION ALL
-            SELECT offer_code_for_other, offer_code, 'Buy for Other' FROM vas_offers WHERE ".implode(' AND ',$otherWhere)."
+            SELECT DISTINCT offer_code AS offer_code_used, offer_code AS base_offer_code, 'Direct' AS purchase_type FROM vas_offers WHERE ".implode(' AND ',$directWhere)."
+            UNION
+            SELECT DISTINCT offer_code_for_other, offer_code, 'Buy for Other' FROM vas_offers WHERE ".implode(' AND ',$otherWhere)."
         ) m ON $txnSuffixExpr = m.offer_code_used
-        INNER JOIN vas_offers v ON m.base_offer_code = v.offer_code
+        INNER JOIN (
+            SELECT offer_code, SUBSTRING_INDEX(GROUP_CONCAT(name ORDER BY (status IN ('1','active')) DESC, id DESC SEPARATOR '||'), '||', 1) AS name FROM vas_offers GROUP BY offer_code
+        ) v ON m.base_offer_code = v.offer_code
         WHERE s.date >= ? AND s.date < ?";
     $params = array_merge($directParams, $otherParams, [$dateFrom.' 00:00:00', date('Y-m-d', strtotime($dateTo.' +1 day')).' 00:00:00']);
     if ($channel !== '') { $sql .= ' AND s.channel = ?'; $params[] = $channel; }
@@ -1750,17 +1765,25 @@ function daily_summary_data(string $schema, string $date): array {
     $from = $date.' 00:00:00'; $to = date('Y-m-d', strtotime($date.' +1 day')).' 00:00:00'; $pfrom = date('Y-m-d', strtotime($date.' -1 day')).' 00:00:00';
     $ok = AUDIT_SUCCESS_SQL;
     $q = function (string $col) use ($db, $t, $from, $to, $ok) {
-        $st = $db->prepare("SELECT COALESCE(NULLIF($col,''),'(none)') name, COUNT(*) total, SUM(CASE WHEN $ok THEN 1 ELSE 0 END) ok, AVG(response_time) avg_ms FROM $t WHERE create_date >= ? AND create_date < ? GROUP BY 1 ORDER BY total DESC LIMIT 15");
+        // per-session channel labels such as USSD-866195620-42018 are grouped under their prefix (USSD)
+        $expr = $col === 'channel' ? "COALESCE(NULLIF(SUBSTRING_INDEX(channel,'-',1),''),'(none)')" : "COALESCE(NULLIF($col,''),'(none)')";
+        $st = $db->prepare("SELECT $expr name, COUNT(*) total, SUM(CASE WHEN $ok THEN 1 ELSE 0 END) ok, AVG(response_time) avg_ms FROM $t WHERE create_date >= ? AND create_date < ? GROUP BY 1 ORDER BY total DESC LIMIT 15");
         $st->execute([$from, $to]); return $st->fetchAll();
     };
     $st = $db->prepare("SELECT COUNT(*) total, SUM(CASE WHEN $ok THEN 1 ELSE 0 END) ok, AVG(response_time) avg_ms FROM $t WHERE create_date >= ? AND create_date < ?");
     $st->execute([$from, $to]); $tot = $st->fetch();
+    // Failures split into those the admin marked as customer-side (e.g. no credit) and the rest, which are the
+    // ones that point at a system problem; plus the previous day's volume for comparison.
+    [$cf, $cfParams, $ignoredReasons] = alert_counted_failure_sql();
+    $st = $db->prepare("SELECT SUM(CASE WHEN $cf THEN 1 ELSE 0 END) counted FROM $t WHERE create_date >= ? AND create_date < ?");
+    $st->execute(array_merge($cfParams, [$from, $to])); $counted = (int)$st->fetchColumn();
+    $st = $db->prepare("SELECT COUNT(*) FROM $t WHERE create_date >= ? AND create_date < ?"); $st->execute([$pfrom, $from]); $prevTotal = (int)$st->fetchColumn();
     $cfg = alert_config();
     $st = $db->prepare("SELECT COALESCE(NULLIF(vendor_entity_name,''),'(none)') name, COUNT(*) c FROM $t WHERE create_date >= ? AND create_date < ? GROUP BY 1 HAVING c >= ?");
     $st->execute([$pfrom, $from, $cfg['vendor_silent_min_baseline']]); $before = array_column($st->fetchAll(), 'c', 'name');
     $vendors = $q('vendor_entity_name'); $seen = array_column($vendors, 'name');
     $silent = []; foreach ($before as $name => $c) if (!in_array($name, $seen, true)) $silent[$name] = (int)$c;
-    return ['date' => $date, 'total' => (int)$tot['total'], 'ok' => (int)$tot['ok'], 'avg_ms' => $tot['avg_ms'] === null ? null : (int)round((float)$tot['avg_ms']),
+    return ['date' => $date, 'prev_total' => $prevTotal, 'system_failed' => $counted, 'ignored_reasons' => $ignoredReasons, 'total' => (int)$tot['total'], 'ok' => (int)$tot['ok'], 'avg_ms' => $tot['avg_ms'] === null ? null : (int)round((float)$tot['avg_ms']),
         'channels' => $q('channel'), 'vendors' => $vendors, 'reasons' => failure_reasons_day($schema, $date, 5), 'silent' => $silent, 'retention' => (function () use ($schema) {
             try {
                 $rep = audit_log_partition_report($schema); if (!$rep['partitioned']) return null;
@@ -1773,15 +1796,20 @@ function daily_summary_text(string $schema, array $d): string {
     $pct = fn($ok, $t) => $t > 0 ? number_format(100 * $ok / $t, 1).'%' : '-';
     $ms = fn($v) => $v === null ? '-' : number_format((float)$v).' ms';
     $l = ['VAS Cloud daily summary - '.$schema.' - '.$d['date'], str_repeat('=', 50), ''];
-    $l[] = sprintf('Transactions: %s   Success: %s   Failed: %s   Avg response: %s', number_format($d['total']), $pct($d['ok'], $d['total']), number_format($d['total'] - $d['ok']), $ms($d['avg_ms']));
+    $failed = $d['total'] - $d['ok']; $customer = max(0, $failed - $d['system_failed']);
+    $delta = $d['prev_total'] > 0 ? sprintf(' (%s%d%% vs day before: %s)', $d['total'] >= $d['prev_total'] ? '+' : '-', abs(round(100 * ($d['total'] - $d['prev_total']) / $d['prev_total'])), number_format($d['prev_total'])) : '';
+    $l[] = sprintf('Transactions: %s%s', number_format($d['total']), $delta);
+    $l[] = sprintf('Success:      %s   Avg response: %s', $pct($d['ok'], $d['total']), $ms($d['avg_ms']));
+    $l[] = sprintf('Failed:       %s   of which customer-side (reasons you ignore in alerts): %s', number_format($failed), number_format($customer));
+    $l[] = sprintf('SYSTEM FAILURES: %s (%s of all transactions)', number_format($d['system_failed']), $pct($d['system_failed'], $d['total']));
     foreach (['channels' => 'By channel', 'vendors' => 'By vendor'] as $k => $title) {
         $l[] = ''; $l[] = $title.':';
         if (!$d[$k]) $l[] = '  (no traffic)';
-        foreach ($d[$k] as $r) $l[] = sprintf('  %-28s %9s   %7s ok   %s', mb_strimwidth($r['name'], 0, 28, '..'), number_format((int)$r['total']), $pct((int)$r['ok'], (int)$r['total']), $ms($r['avg_ms'] === null ? null : round((float)$r['avg_ms'])));
+        foreach ($d[$k] as $r) $l[] = sprintf('  %-28s %9s   %7s ok   %s', mb_strimwidth($r['name'] === '(none)' ? '(no '.($k === 'channels' ? 'channel' : 'vendor').' recorded)' : $r['name'], 0, 28, '..'), number_format((int)$r['total']), $pct((int)$r['ok'], (int)$r['total']), $ms($r['avg_ms'] === null ? null : round((float)$r['avg_ms'])));
     }
     $l[] = ''; $l[] = 'Top failure reasons:';
     if (!$d['reasons']) $l[] = '  (none)';
-    foreach ($d['reasons'] as $r) $l[] = sprintf('  %9s  %s', number_format((int)$r['c']), $r['reason']);
+    foreach ($d['reasons'] as $r) $l[] = sprintf('  %9s  %s%s', number_format((int)$r['c']), $r['reason'], in_array($r['reason'], $d['ignored_reasons'], true) ? '   [customer-side, ignored in alerts]' : '');
     if (!empty($d['retention'])) { $l[] = ''; $l[] = $d['retention']; }
     if ($d['silent']) { $l[] = ''; $l[] = 'Vendors active the day before but silent this day:'; foreach ($d['silent'] as $n => $c) $l[] = '  '.$n.' ('.number_format($c).' the day before)'; }
     return implode("\n", $l)."\n";
