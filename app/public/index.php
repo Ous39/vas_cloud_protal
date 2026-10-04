@@ -88,6 +88,8 @@ document.querySelectorAll('[data-filter-select]').forEach(input => {
         Array.from(sel.options).forEach(opt => { opt.hidden = q !== '' && !opt.textContent.toLowerCase().includes(q); });
     });
 });
+// Addresses shown on the USSD Proxy page are built from this browser's own address, so a path prefix the app can't see (/portal) is included.
+document.querySelectorAll('[data-public-url]').forEach(el => { el.textContent = new URL(el.dataset.publicUrl, location.href).href; });
 // Close an open nav dropdown when clicking outside it.
 document.addEventListener('click', e => { document.querySelectorAll('.topnav-group[open]').forEach(d => { if (!d.contains(e.target)) d.removeAttribute('open'); }); });
 // Mobile nav toggle.
@@ -938,7 +940,7 @@ if ($page==='ussd_proxy') {
         <p class="text-muted mb-2">The address a Mobius <b>PROXY</b> (or <b>MS_INITIATED</b>) menu calls. It is <b>off</b> until you switch it on below, so nothing changes in production until you decide. Start in <b>Capture</b> mode: it records exactly what Mobius sends (and answers with a fixed test text), so we can set the field names from a real request instead of guessing. Only the menu you point at it is affected — no other short code is touched.</p>
         <p class="mb-1 small text-muted">Put one of these in the Mobius menu's <b>URL</b> field (use the address Mobius can actually reach — the in-cluster one only works from inside the cluster):</p>
         <?php foreach(['proxy'=>'PROXY menu','ms_initiated'=>'MS_INITIATED menu'] as $m=>$lbl):?>
-        <div class="small fw-semibold mt-2"><?=e($lbl)?> — public address</div><pre class="mb-1"><?=e($urlFor($m))?></pre>
+        <div class="small fw-semibold mt-2"><?=e($lbl)?> — public address</div><pre class="mb-1 txid" title="Click to select, then copy" data-public-url="ussd.php?t=<?=e($token)?>&amp;m=<?=e($m)?>"><?=e($urlFor($m))?></pre>
         <div class="small text-muted">in-cluster: <code><?=e('http://vas-cloud-app.vas-cloud.svc.cluster.local/ussd.php?t='.$token.'&m='.$m)?></code></div>
         <?php endforeach;?>
         <form method="post" class="mt-3 d-inline" data-confirm="Create a new token? The URL in every Mobius menu must be updated."><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="rotate"><button class="btn btn-sm btn-outline-danger"><i class="fa-solid fa-rotate me-1"></i>New token</button></form>
