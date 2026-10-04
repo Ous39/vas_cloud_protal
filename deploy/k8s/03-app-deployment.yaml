@@ -16,6 +16,12 @@ spec:
       labels:
         app: vas-cloud-app
     spec:
+      # The cluster's DNS cannot resolve the Hera test host (it resolves from the office network), so USSD purchases
+      # to https://vas-testing.comium.gm/hera/... name its address here. Same address as vas-prod.comium.gm: the ingress.
+      hostAliases:
+        - ip: "192.168.164.150"
+          hostnames:
+            - vas-testing.comium.gm
       imagePullSecrets:
         - name: ghcr-pull-secret
       containers:
