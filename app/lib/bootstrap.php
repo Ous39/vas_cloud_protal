@@ -2493,10 +2493,10 @@ function mobius_handle(): CurlHandle {
     curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_POST => true, CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Accept: application/json'], CURLOPT_TIMEOUT => 5, CURLOPT_CONNECTTIMEOUT => 3, CURLOPT_COOKIEFILE => '']);
     return $ch;
 }
-function mobius_http(string $url, array $body, int $timeout = 5, ?CurlHandle $ch = null): array {
+function mobius_http(string $url, array $body, int $timeout = 5, ?CurlHandle $ch = null, string $method = 'POST'): array {
     $own = $ch === null; if ($own) $ch = mobius_handle();
     curl_setopt($ch, CURLOPT_URL, $url); curl_setopt($ch, CURLOPT_TIMEOUT, $timeout);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    if ($method === 'GET') curl_setopt($ch, CURLOPT_HTTPGET, true); else { curl_setopt($ch, CURLOPT_POST, true); curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)); }
     $raw = curl_exec($ch); $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE); $err = curl_error($ch);
     if ($own) curl_close($ch);
     $j = is_string($raw) ? json_decode($raw, true) : null;
@@ -2518,16 +2518,16 @@ function mobius_session_for(array $cfg, string $base, bool $force = false): arra
     if ($r['ok']) { $map[$base] = ['sid' => $r['session'], 'at' => time()]; try { ussd_proxy_set(['mobius_session' => encrypt_secret(json_encode($map))]); } catch (Throwable $e) {} }
     return $r;
 }
-// Mobius answers HTTP 200 with status ERROR for a refused call. These are the ways the session might have to be presented;
-// the first that works is remembered (mobius_variant). 0 = sessionID+username as documented, 1 = also the password hash,
-// 2 = documented body but on the same connection as a fresh login (cookies kept), 3 = both.
-const MOBIUS_VARIANTS = ['sessionID + username', '+ password hash', 'login cookie', 'login cookie + password hash'];
+// Mobius answers HTTP 200 with status ERROR for a refused call. These are the ways the session might have to be presented
+// (the first that works is remembered in mobius_variant): 0 = sessionID + username in the body as documented,
+// 1 = the same, but on the connection that logged in (so its cookie travels too). Mobius rejects a "password" field outright.
+const MOBIUS_VARIANTS = ['sessionID + username', 'login cookie'];
 function mobius_is_auth_error(array $r): bool {
     $m = strtolower((string)($r['json']['errorMessage'] ?? '')); $st = strtoupper((string)($r['json']['status'] ?? ''));
     return $r['code'] === 401 || $r['code'] === 403 || ($st === 'ERROR' && (str_contains($m, 'auth') || str_contains($m, 'session') || str_contains($m, 'login') || str_contains($m, 'credential')));
 }
 function mobius_call_variant(array $cfg, string $base, string $path, array $data, int $variant, bool $freshLogin): array {
-    $hash = decrypt_secret($cfg['mobius_pass']); $withPw = $variant === 1 || $variant === 3; $cookie = $variant >= 2;
+    $hash = decrypt_secret($cfg['mobius_pass']); $cookie = $variant === 1;
     $ch = null; $sid = null;
     if ($cookie) {
         $ch = mobius_handle(); $l = mobius_login_at($base, $cfg['mobius_user'], $hash, $ch);
@@ -2538,15 +2538,13 @@ function mobius_call_variant(array $cfg, string $base, string $path, array $data
         if (!$s['ok']) return ['code' => 0, 'raw' => '', 'json' => null, 'error' => 'login: '.$s['error']];
         $sid = $s['session'];
     }
-    $body = array_merge($data, ['sessionID' => $sid, 'username' => $cfg['mobius_user']]);
-    if ($withPw) $body['password'] = $hash;
-    $r = mobius_http($base.$path, $body, 5, $ch);
+    $r = mobius_http($base.$path, array_merge($data, ['sessionID' => $sid, 'username' => $cfg['mobius_user']]), 5, $ch);
     if ($ch) curl_close($ch);
     return $r;
 }
 function mobius_push(array $cfg, string $callId, string $text, bool $complete): array {
     $errors = []; $data = ['data' => ['callID' => $callId, 'isComplete' => $complete, 'request' => $text]];
-    $pref = max(0, min(3, (int)$cfg['mobius_variant'])); $order = array_values(array_unique(array_merge([$pref], [0, 1, 2, 3])));
+    $pref = max(0, min(1, (int)$cfg['mobius_variant'])); $order = array_values(array_unique([$pref, 0, 1]));
     foreach (mobius_bases($cfg) as $base) {
         foreach ($order as $n => $variant) {
             $r = mobius_call_variant($cfg, $base, 'ussdcalls/proxy', $data, $variant, $n > 0);
@@ -2562,20 +2560,41 @@ function mobius_push(array $cfg, string $callId, string $text, bool $complete): 
     }
     return ['ok' => false, 'error' => $errors ? implode(' | ', array_slice($errors, -4)) : 'no Mobius address configured'];
 }
-// Read-only: logs in, then calls ussdcalls/count (a harmless read) each way, to show which way Mobius accepts.
+function mobius_brief(array $r): string {
+    if ($r['error'] !== '') return $r['error'];
+    if (!$r['json']) return 'HTTP '.$r['code'].' '.mb_substr(trim(preg_replace('/\s+/', ' ', $r['raw'])), 0, 160);
+    $j = $r['json']; if (isset($j['sessionID'])) $j['sessionID'] = '…'.substr((string)$j['sessionID'], -4);
+    return 'HTTP '.$r['code'].' '.mb_substr(json_encode($j, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), 0, 220);
+}
+function mobius_probe_ok(array $r): bool {
+    return $r['code'] === 200 && !mobius_is_auth_error($r) && strtoupper((string)($r['json']['status'] ?? 'SUCCESS')) !== 'ERROR';
+}
+// Read-only: logs in, then makes harmless read calls in the ways Mobius might want the session presented, and shows
+// what it says to each (session ids are cut to their last 4 characters, the password hash is never shown).
 function mobius_probe(array $cfg): array {
     $out = []; $hash = decrypt_secret($cfg['mobius_pass']);
     if ($cfg['mobius_user'] === '' || $hash === '') return [['label' => 'Setup', 'ok' => false, 'msg' => 'Enter the Mobius API user name and password first.']];
     $base = mobius_bases($cfg)[0] ?? null; if (!$base) return [['label' => 'Setup', 'ok' => false, 'msg' => 'No valid Mobius address saved.']];
-    $ch = mobius_handle(); $l = mobius_http($base.'auth/login', ['username' => $cfg['mobius_user'], 'password' => $hash], 5, $ch);
-    $keys = $l['json'] ? implode(', ', array_map(fn($k) => $k.($k === 'sessionID' ? ' (…'.substr((string)$l['json'][$k], -4).')' : '='.mb_substr(is_scalar($l['json'][$k]) ? (string)$l['json'][$k] : 'object', 0, 40)), array_keys($l['json']))) : mb_substr($l['raw'], 0, 120);
-    $out[] = ['label' => 'Login', 'ok' => $l['code'] === 200, 'msg' => 'HTTP '.$l['code'].' — '.$keys];
-    curl_close($ch);
-    foreach ([0, 1, 2, 3] as $v) {
-        $r = mobius_call_variant($cfg, $base, 'ussdcalls/count', [], $v, true);
-        $m = $r['error'] !== '' ? $r['error'] : ($r['json'] ? 'status='.($r['json']['status'] ?? '?').(isset($r['json']['errorMessage']) ? ', '.mb_substr((string)$r['json']['errorMessage'], 0, 100) : '').(isset($r['json']['data']) && is_scalar($r['json']['data']) ? ', data='.$r['json']['data'] : '') : mb_substr($r['raw'], 0, 120));
-        $out[] = ['label' => 'Read call, '.MOBIUS_VARIANTS[$v], 'ok' => $r['code'] === 200 && !mobius_is_auth_error($r) && strtoupper((string)($r['json']['status'] ?? 'SUCCESS')) !== 'ERROR', 'msg' => 'HTTP '.$r['code'].' — '.$m];
+    $u = $cfg['mobius_user'];
+    $ch = mobius_handle(); $l = mobius_http($base.'auth/login', ['username' => $u, 'password' => $hash], 5, $ch);
+    $out[] = ['label' => 'Login (POST)', 'ok' => mobius_probe_ok($l), 'msg' => mobius_brief($l)];
+    $sid = (string)($l['json']['sessionID'] ?? '');
+    if ($sid !== '') {
+        foreach (['ussdmenues/count' => 'Read: menus count', 'ussdcalls/count' => 'Read: calls count', 'auditlog/count' => 'Read: audit log count (management)'] as $path => $label) {
+            $r = mobius_http($base.$path, array_merge($path === 'ussdcalls/count' ? ['msisdn' => ''] : [], ['sessionID' => $sid, 'username' => $u]), 5, $ch);
+            $out[] = ['label' => $label, 'ok' => mobius_probe_ok($r), 'msg' => mobius_brief($r)];
+        }
+        foreach (['Authorization: '.$sid => 'Header Authorization', 'sessionID: '.$sid => 'Header sessionID'] as $hdr => $label) {
+            $c2 = mobius_handle(); curl_setopt($c2, CURLOPT_HTTPHEADER, ['Content-Type: application/json', 'Accept: application/json', $hdr]);
+            $r = mobius_http($base.'ussdmenues/count', ['sessionID' => $sid, 'username' => $u], 5, $c2); curl_close($c2);
+            $out[] = ['label' => 'Read: menus count + '.$label, 'ok' => mobius_probe_ok($r), 'msg' => mobius_brief($r)];
+        }
     }
+    curl_close($ch);
+    // GET form of the login, then a read with that session
+    $g = mobius_http($base.'auth/login/'.rawurlencode($u).'/'.rawurlencode($hash), [], 5, null, 'GET');
+    $out[] = ['label' => 'Login (GET form)', 'ok' => mobius_probe_ok($g), 'msg' => mobius_brief($g)];
+    if (!empty($g['json']['sessionID'])) { $r = mobius_http($base.'ussdmenues/count', ['sessionID' => $g['json']['sessionID'], 'username' => $u]); $out[] = ['label' => 'Read: menus count with the GET-login session', 'ok' => mobius_probe_ok($r), 'msg' => mobius_brief($r)]; }
     return $out;
 }
 function mobius_test(array $cfg): array {
