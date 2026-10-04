@@ -2453,12 +2453,23 @@ function ussd_purchase_table(): void {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
     $done = true;
 }
-function ussd_purchase_http(array $cfg, string $msisdn, array $p, string $txn): array {
+// The parts of Mobius's own request that Hera's purchase call repeats (the subscriber's IMSI, the SS7 addresses, dialog ids).
+function ussd_purchase_ctx(string $raw): array {
+    $j = json_decode($raw, true); if (!is_array($j)) return [];
+    $out = [];
+    foreach (['imsi'] as $k) if (isset($j[$k]) && is_scalar($j[$k]) && preg_match('/^\d{5,20}$/', (string)$j[$k])) $out[$k] = (string)$j[$k];
+    foreach (['localDialogID', 'remoteDialogID'] as $k) if (isset($j[$k]) && is_numeric($j[$k])) $out[$k] = (int)$j[$k];
+    foreach (['localAddress', 'remoteAddress'] as $k) if (isset($j[$k]) && is_array($j[$k])) $out[$k] = $j[$k];
+    return $out;
+}
+function ussd_purchase_http(array $cfg, string $msisdn, array $p, string $txn, array $ctx = []): array {
     $url = trim($cfg['purchase_url']);
     if (!preg_match('#^https?://#i', $url) || !filter_var($url, FILTER_VALIDATE_URL)) return ['code' => 0, 'raw' => '', 'error' => 'no valid purchase address saved'];
     $esc = fn($s) => substr((string)json_encode((string)$s, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), 1, -1);
     $body = strtr($cfg['purchase_body'], ['{msisdn}' => $esc($msisdn), '{offer_code}' => $esc($p['offer_code']), '{vendor}' => $esc($p['vendor'] ?? ''), '{other_offer_code}' => $esc($p['other_offer_code'] ?? ''),
-        '{price}' => $esc($p['price']), '{price_d}' => $esc($p['price'] !== '' ? 'D'.$p['price'] : ''), '{txn}' => $esc($txn), '{shortcode}' => $esc($cfg['shortcode_proxy'])]);
+        '{price}' => $esc($p['price']), '{price_d}' => $esc($p['price'] !== '' ? 'D'.$p['price'] : ''), '{txn}' => $esc($txn), '{shortcode}' => $esc($cfg['shortcode_proxy']),
+        '{imsi}' => $esc($ctx['imsi'] ?? ''), '{local_dialog_id}' => isset($ctx['localDialogID']) ? (string)$ctx['localDialogID'] : 'null', '{remote_dialog_id}' => isset($ctx['remoteDialogID']) ? (string)$ctx['remoteDialogID'] : 'null',
+        '{local_address_json}' => json_encode($ctx['localAddress'] ?? null, JSON_UNESCAPED_SLASHES), '{remote_address_json}' => json_encode($ctx['remoteAddress'] ?? null, JSON_UNESCAPED_SLASHES)]);
     $hdr = ['Content-Type: application/json', 'Accept: application/json'];
     // one "Name: value" per line (e.g. the API key) — kept encrypted
     $auth = $cfg['purchase_auth'] !== '' ? decrypt_secret($cfg['purchase_auth']) : '';
@@ -2470,7 +2481,7 @@ function ussd_purchase_http(array $cfg, string $msisdn, array $p, string $txn): 
     return ['code' => $code, 'raw' => is_string($raw) ? $raw : '', 'error' => $err];
 }
 // $screen is a result of kind 'purchase'. Returns the text to show the customer and a short note for the request log.
-function ussd_execute_purchase(array $cfg, array $screen, string $msisdn, string $callId): array {
+function ussd_execute_purchase(array $cfg, array $screen, string $msisdn, string $callId, array $ctx = []): array {
     $p = $screen['purchase']; $mode = in_array($cfg['purchase_mode'], ['test', 'test_low', 'live'], true) ? $cfg['purchase_mode'] : 'off';
     $lowText = 'Sorry, your balance is too low for '.$p['name'].'. Please top up and try again.';
     $msisdn = preg_replace('/\D+/', '', $msisdn);
@@ -2490,7 +2501,7 @@ function ussd_execute_purchase(array $cfg, array $screen, string $msisdn, string
         if ($mode === 'test') { $status = 'test'; $text = 'TEST: '.$p['name'].' would be bought for '.$msisdn.'. You were not charged.'; }
         elseif ($mode === 'test_low') { $status = 'lowbal'; $text = $lowText; }
         else {
-            $r = ussd_purchase_http($cfg, $msisdn, $p, $callId);
+            $r = ussd_purchase_http($cfg, $msisdn, $p, $callId, $ctx);
             $httpCode = $r['code']; $resp = $r['error'] !== '' ? 'error: '.$r['error'] : mb_substr($r['raw'], 0, 1000);
             $http2xx = $r['error'] === '' && $r['code'] >= 200 && $r['code'] < 300;
             $low = false;
@@ -2554,7 +2565,8 @@ function ussd_result(string $text, bool $end, array $path, string $kind, ?array 
 // and then starts in CAPTURE mode (records what Mobius sends, replies with a fixed text) so the real request format can
 // be read from the log; in LIVE mode it maps the request's fields (configured there) onto the screen engine.
 // What Hera's /hera/VasOffers expects, copied from the request Mobius's own menu sends it (operation purchaseOffer).
-const USSD_PURCHASE_BODY = '{"callID":"{txn}","originalRequest":"{shortcode}","msisdn":"{msisdn}","isMobileOriginated":true,"mobileRequestIdentifier":1,"isInitial":false,"isProxy":false,"chargesWithCurrency":"{price_d}","offerCode":"{offer_code}","vendor":"{vendor}","channel":"USSD","otherOfferCode":"{other_offer_code}","operation":"purchaseOffer"}';
+const USSD_PURCHASE_BODY = '{"callID":"{txn}","originalRequest":"{shortcode}","localAddress":{local_address_json},"remoteAddress":{remote_address_json},"msisdn":"{msisdn}","imsi":"{imsi}","localDialogID":{local_dialog_id},"remoteDialogID":{remote_dialog_id},"isMobileOriginated":true,"mobileRequestIdentifier":1,"isInitial":false,"isProxy":false,"chargesWithCurrency":"{price_d}","offerCode":"{offer_code}","vendor":"{vendor}","channel":"USSD","otherOfferCode":"{other_offer_code}","operation":"purchaseOffer"}';
+const USSD_PURCHASE_BODY_V2 = '{"callID":"{txn}","originalRequest":"{shortcode}","msisdn":"{msisdn}","isMobileOriginated":true,"mobileRequestIdentifier":1,"isInitial":false,"isProxy":false,"chargesWithCurrency":"{price_d}","offerCode":"{offer_code}","vendor":"{vendor}","channel":"USSD","otherOfferCode":"{other_offer_code}","operation":"purchaseOffer"}';
 const USSD_PURCHASE_BODY_V1 = '{"msisdn":"{msisdn}","offer_code":"{offer_code}","transaction_id":"{txn}","channel":"USSD"}';
 const USSD_PROXY_DEFAULTS = [
     'enabled' => '0', 'token' => '', 'mode' => 'capture', 'allow_ips' => '',
@@ -2573,7 +2585,7 @@ function ussd_proxy_config(): array {
     $cfg = USSD_PROXY_DEFAULTS;
     try { foreach (portal_pdo()->query('SELECT name,value FROM ussd_proxy_config')->fetchAll() as $r) if (array_key_exists($r['name'], $cfg)) $cfg[$r['name']] = (string)$r['value']; }
     catch (Throwable $e) {}
-    if ($cfg['purchase_body'] === USSD_PURCHASE_BODY_V1) $cfg['purchase_body'] = USSD_PURCHASE_BODY; // the first guess, never edited
+    if (in_array($cfg['purchase_body'], [USSD_PURCHASE_BODY_V1, USSD_PURCHASE_BODY_V2], true)) $cfg['purchase_body'] = USSD_PURCHASE_BODY; // an earlier default, never edited
     return $cfg;
 }
 function ussd_proxy_set(array $vals): void {
@@ -2886,7 +2898,7 @@ function ussd_proxy_push_endpoint(array $cfg, array $flat, string $raw, array $g
             $screen = ussd_screen($sc, array_slice($replies, -30), ['active']);
             if ($screen['end']) $db->prepare('DELETE FROM ussd_proxy_sessions WHERE session_key=?')->execute([$callId]);
             else $db->prepare('REPLACE INTO ussd_proxy_sessions(session_key,shortcode,replies,updated_at) VALUES(?,?,?,NOW())')->execute([$callId, $sc, json_encode($replies)]);
-            if (($screen['kind'] ?? '') === 'purchase') { $pr = ussd_execute_purchase($cfg, $screen, $msisdn, $callId); $screen['text'] = $pr['text']; $note .= $pr['note'].'; '; }
+            if (($screen['kind'] ?? '') === 'purchase') { $pr = ussd_execute_purchase($cfg, $screen, $msisdn, $callId, ussd_purchase_ctx($raw)); $screen['text'] = $pr['text']; $note .= $pr['note'].'; '; }
             $text = $screen['text']; $complete = $screen['end'];
         }
     } catch (Throwable $e) { error_log('ussd.php push: '.$e->getMessage()); $note = 'error: '.substr($e->getMessage(), 0, 150); $text = null; }
