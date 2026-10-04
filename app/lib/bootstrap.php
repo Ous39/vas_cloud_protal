@@ -2470,8 +2470,13 @@ function ussd_purchase_http(array $cfg, string $msisdn, array $p, string $txn, a
         '{price}' => $esc($p['price']), '{price_d}' => $esc($p['price'] !== '' ? 'D'.$p['price'] : ''), '{txn}' => $esc($txn), '{shortcode}' => $esc($cfg['shortcode_proxy']),
         '{imsi}' => $esc($ctx['imsi'] ?? ''), '{local_dialog_id}' => isset($ctx['localDialogID']) ? (string)$ctx['localDialogID'] : 'null', '{remote_dialog_id}' => isset($ctx['remoteDialogID']) ? (string)$ctx['remoteDialogID'] : 'null',
         '{local_address_json}' => json_encode($ctx['localAddress'] ?? null, JSON_UNESCAPED_SLASHES), '{remote_address_json}' => json_encode($ctx['remoteAddress'] ?? null, JSON_UNESCAPED_SLASHES)]);
+    return ussd_hera_post($cfg, $body);
+}
+// POSTs a JSON body to the saved purchase address with the saved headers (one "Name: value" per line, kept encrypted).
+function ussd_hera_post(array $cfg, string $body): array {
+    $url = trim($cfg['purchase_url']);
+    if (!preg_match('#^https?://#i', $url) || !filter_var($url, FILTER_VALIDATE_URL)) return ['code' => 0, 'raw' => '', 'error' => 'no valid purchase address saved'];
     $hdr = ['Content-Type: application/json', 'Accept: application/json'];
-    // one "Name: value" per line (e.g. the API key) — kept encrypted
     $auth = $cfg['purchase_auth'] !== '' ? decrypt_secret($cfg['purchase_auth']) : '';
     foreach (preg_split('/\r\n|\n/', $auth) as $line) if (preg_match('/^[A-Za-z0-9\-]{1,40}:\s*\S.*$/', trim($line))) $hdr[] = trim($line);
     $ch = curl_init($url);
@@ -2521,6 +2526,20 @@ function ussd_execute_purchase(array $cfg, array $screen, string $msisdn, string
         error_log('ussd purchase: '.$e->getMessage());
         return ['text' => 'Sorry, we could not process this request. Please try again later.', 'note' => 'purchase error: '.substr($e->getMessage(), 0, 100)];
     }
+}
+// A read-only question to Hera, like the ones the phone menu asks while you browse: what it says about one offer
+// (chooseOffer) or one sub-category (listOffer). It can never buy: the operation is fixed to these two.
+function hera_ask(array $cfg, string $op, string $msisdn, string $offerCode, string $subCategory): array {
+    $msisdn = preg_replace('/\D+/', '', $msisdn);
+    if (!in_array($op, ['chooseOffer', 'listOffer'], true)) throw new RuntimeException('Only chooseOffer and listOffer can be asked from here.');
+    if ($msisdn === '') throw new RuntimeException('Enter a phone number.');
+    $body = ['callID' => 'check-'.bin2hex(random_bytes(5)), 'originalRequest' => $cfg['shortcode_proxy'], 'msisdn' => $msisdn, 'isMobileOriginated' => true, 'mobileRequestIdentifier' => 1, 'isInitial' => false, 'isProxy' => false];
+    if ($op === 'chooseOffer') { if (!preg_match('/^[A-Za-z0-9_.\-]{1,45}$/', $offerCode)) throw new RuntimeException('Enter the offer code.'); $body['offerCode'] = $offerCode; }
+    else { if ($subCategory === '' || mb_strlen($subCategory) > 80) throw new RuntimeException('Enter the sub-category.'); $body += ['subCategory' => $subCategory, 'category' => 'Data-commercial-Launch', 'page' => '0', 'limitDisplay' => '9']; }
+    $body['operation'] = $op;
+    $r = ussd_hera_post($cfg, (string)json_encode($body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    audit('hera_ask', null, 'ussd_proxy_config', null, $op.' '.($op === 'chooseOffer' ? $offerCode : $subCategory).' HTTP '.$r['code']);
+    return ['sent' => $body, 'code' => $r['code'], 'error' => $r['error'], 'raw' => mb_substr((string)$r['raw'], 0, 3000)];
 }
 function save_purchase_config(array $d): void {
     $mode = in_array($d['purchase_mode'] ?? '', ['test', 'test_low', 'live'], true) ? $d['purchase_mode'] : 'off';

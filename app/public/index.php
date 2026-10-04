@@ -914,7 +914,8 @@ if ($page==='ussd_proxy') {
         if ($do==='clear') { portal_pdo()->exec('DELETE FROM ussd_proxy_log'); audit('ussd_proxy_log_clear',null,'ussd_proxy_log',null,null); flash('success','Captured requests cleared.'); redirect('?page=ussd_proxy'); }
     }
     $cfg=ussd_proxy_config(); $token=ussd_proxy_token(); $mobiusTest=null;
-    $mobiusProbe=null;
+    $mobiusProbe=null; $heraAsk=null;
+    if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['do']??'')==='hera_ask') { $heraAsk=hera_ask($cfg,(string)($_POST['ask_op']??''),(string)($_POST['ask_msisdn']??''),trim((string)($_POST['ask_offer']??'')),trim((string)($_POST['ask_sub']??''))); }
     if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['do']??'')==='mobius_probe') { $mobiusProbe=mobius_probe($cfg); audit('ussd_proxy_mobius_probe',null,'ussd_proxy_config',null,json_encode(array_map(fn($r)=>['l'=>$r['label'],'ok'=>$r['ok']],$mobiusProbe))); }
     if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['do']??'')==='mobius_test') { $mobiusTest=mobius_test($cfg); audit('ussd_proxy_mobius_test',null,'ussd_proxy_config',null,json_encode(array_map(fn($r)=>['base'=>$r['base'],'ok'=>$r['ok']],$mobiusTest))); }
     $logs=portal_pdo()->query('SELECT * FROM ussd_proxy_log ORDER BY id DESC LIMIT 25')->fetchAll();
@@ -1013,6 +1014,15 @@ if ($page==='ussd_proxy') {
             <div class="col-md-2"><label class="small text-muted mb-0">Timeout (s)</label><input class="form-control" type="number" min="2" max="15" name="purchase_timeout" value="<?=e($cfg['purchase_timeout'])?>"></div>
             <div class="col-12"><button class="btn btn-primary">Save purchase settings</button></div>
         </form>
+        <form method="post" class="row g-2 mt-3 align-items-end"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="hera_ask">
+            <div class="col-12"><b class="small">Ask Hera about an offer</b> <small class="text-muted">— the same questions the phone menu asks while browsing. Buys nothing, and shows Hera's raw reply.</small></div>
+            <div class="col-md-3"><select class="form-select form-select-sm" name="ask_op"><option value="chooseOffer">Details of one offer (chooseOffer)</option><option value="listOffer">List a sub-category (listOffer)</option></select></div>
+            <div class="col-md-3"><input class="form-control form-control-sm" name="ask_msisdn" placeholder="Phone number, e.g. 220…" value="<?=e((string)($_POST['ask_msisdn']??($purchases[0]['msisdn']??'')))?>"></div>
+            <div class="col-md-2"><input class="form-control form-control-sm" name="ask_offer" placeholder="Offer code" value="<?=e((string)($_POST['ask_offer']??($purchases[0]['offer_code']??'')))?>"></div>
+            <div class="col-md-2"><input class="form-control form-control-sm" name="ask_sub" placeholder="or sub-category" value="<?=e((string)($_POST['ask_sub']??''))?>"></div>
+            <div class="col-md-2"><button class="btn btn-sm btn-outline-secondary w-100">Ask Hera</button></div>
+        </form>
+        <?php if($heraAsk):?><div class="mt-2 small"><div><b>Sent:</b> <code><?=e(json_encode($heraAsk['sent'],JSON_UNESCAPED_SLASHES))?></code></div><div><b>Hera answered</b> (HTTP <?=e($heraAsk['code'])?>)<?=$heraAsk['error']!==''?': '.e($heraAsk['error']):''?>:</div><pre class="mb-0"><?=e($heraAsk['raw'])?></pre></div><?php endif;?>
         <?php if($purchases):?><div class="table-scroll mt-3"><table class="table table-sm mb-0"><thead><tr><th>Time</th><th>Number</th><th>Offer</th><th>Mode</th><th>Result</th><th>Shown to customer</th></tr></thead><tbody>
             <?php foreach($purchases as $pu):?><tr><td class="text-nowrap"><?=e($pu['created_at'])?></td><td><?=e($pu['msisdn'])?></td><td><?=e($pu['offer_code'])?> <small class="text-muted"><?=e($pu['offer_name'])?></small></td><td><?=e($pu['mode'])?></td><td><span class="badge <?=['ok'=>'bg-success','sent'=>'bg-primary','test'=>'bg-info text-dark','lowbal'=>'bg-warning text-dark','failed'=>'bg-danger','pending'=>'bg-warning text-dark'][$pu['status']]??'bg-secondary'?>"><?=e($pu['status'])?></span><?=$pu['http_code']?' <small class="text-muted">HTTP '.e($pu['http_code']).'</small>':''?></td><td title="<?=e((string)$pu['response'])?>"><?=e((string)$pu['reply_text'])?></td></tr><?php endforeach;?></tbody></table></div><?php endif;?>
     </div>
