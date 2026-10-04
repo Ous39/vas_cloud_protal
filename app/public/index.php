@@ -23,6 +23,7 @@ function nav_can_see(string $page): bool {
     if ($page==='users') return can('manage_users');
     if ($page==='audit') return can('view_audit');
     if ($page==='ussd_sim') return can('manage_ussd_menus');
+    if ($page==='ussd_proxy') return can('manage_api_keys');
     if ($page==='api_keys') return can('manage_api_keys');
     if ($page==='promotions') return can('manage_promotions');
     if (in_array($page,['alert_settings','retention'],true)) return can('manage_api_keys');
@@ -36,7 +37,7 @@ function layout_start(string $title): void {
         ['dashboard','fa-gauge','Dashboard'],
         ['monitoring','fa-heart-pulse','Monitoring'],
         ['group','fa-layer-group','Operations',[['subscriptions','fa-user-check','Subscriptions'],['offers','fa-tags','Offer Management'],['offer_health','fa-stethoscope','Offer Health'],['esim','fa-sim-card','eSIM Profiles'],['sales','fa-file-invoice-dollar','Sales & Invoices'],['friends_family','fa-user-group','Friends & Family'],['voting','fa-square-poll-vertical','Voting Service']]],
-        ['group','fa-tower-broadcast','Infrastructure',[['ussd_ivr','fa-mobile-screen-button','USSD & IVR'],['ussd_menu','fa-sitemap','USSD Menu Builder'],['ussd_sim','fa-mobile-screen','USSD Simulator'],['integrations','fa-plug-circle-check','Integrations']]],
+        ['group','fa-tower-broadcast','Infrastructure',[['ussd_ivr','fa-mobile-screen-button','USSD & IVR'],['ussd_menu','fa-sitemap','USSD Menu Builder'],['ussd_sim','fa-mobile-screen','USSD Simulator'],['ussd_proxy','fa-plug','USSD Proxy'],['integrations','fa-plug-circle-check','Integrations']]],
         ['group','fa-chart-line','Reports',[['investigate','fa-headset','Complaint Investigation'],['timeline','fa-timeline','Customer Timeline'],['alerts','fa-triangle-exclamation','Alerts'],['offer_report','fa-bullhorn','Offer Performance'],['reports','fa-chart-line','Reports'],['sql','fa-code','SQL Console']]],
         ['group','fa-gears','Admin',[['tables','fa-database','Database Tables'],['promotions','fa-bullhorn','Promotions'],['projects','fa-diagram-project','Projects'],['shortcodes','fa-hashtag','Short Codes'],['api_keys','fa-key','Partner API Keys'],['alert_settings','fa-bell','Alert Settings'],['retention','fa-database','Data Retention'],['audit','fa-shield-halved','Audit Trail'],['users','fa-users-gear','Users']]],
     ];
@@ -896,6 +897,107 @@ if ($page==='ussd_ivr') {
         <div class="cardx mt-3"><h3>Live Agent Queue</h3><p class="text-muted">Current USSD/IVR sessions held in <code>agent_queue</code>.</p>
             <?php if(!$queue):?><p class="text-muted mb-0">Queue is empty.</p><?php else:?><div class="table-scroll"><table class="table table-sm mb-0"><thead><tr><th>MSISDN</th><th>Service Code</th><th>Status</th></tr></thead><tbody><?php foreach($queue as $q):?><tr><td><?=e($q['msisdn'])?></td><td><?=e($q['service_code'])?></td><td><span class="badge bg-info text-dark"><?=e($q['status'])?></span></td></tr><?php endforeach;?></tbody></table></div><?php endif;?>
         </div></div>
+    </div>
+    <?php layout_end(); exit;
+}
+
+if ($page==='ussd_proxy') {
+    require_perm('manage_api_keys');
+    if ($_SERVER['REQUEST_METHOD']==='POST') {
+        $do=(string)($_POST['do']??'');
+        if ($do==='save') { save_ussd_proxy_config($_POST); flash('success','USSD proxy settings saved.'); redirect('?page=ussd_proxy'); }
+        if ($do==='rotate') { ussd_proxy_rotate_token(); flash('warning','New token created. Update the URL in the Mobius menu(s) — the old URL no longer works.'); redirect('?page=ussd_proxy'); }
+        if ($do==='clear') { portal_pdo()->exec('DELETE FROM ussd_proxy_log'); audit('ussd_proxy_log_clear',null,'ussd_proxy_log',null,null); flash('success','Captured requests cleared.'); redirect('?page=ussd_proxy'); }
+    }
+    $cfg=ussd_proxy_config(); $token=ussd_proxy_token();
+    $logs=portal_pdo()->query('SELECT * FROM ussd_proxy_log ORDER BY id DESC LIMIT 25')->fetchAll();
+    // the tester: a sample request (or a captured one to replay), run through the live logic without storing any session
+    $test=null; $testIn=''; $testMode='proxy'; $testCt='application/json';
+    if ($_SERVER['REQUEST_METHOD']==='POST' && in_array($_POST['do']??'',['test','replay'],true)) {
+        $testMode=(($_POST['tmode']??'')==='ms_initiated')?'ms_initiated':'proxy';
+        if ($_POST['do']==='replay') {
+            $st=portal_pdo()->prepare('SELECT * FROM ussd_proxy_log WHERE id=?'); $st->execute([(int)($_POST['id']??0)]); $lg=$st->fetch();
+            if (!$lg) throw new RuntimeException('That captured request is gone.');
+            $testMode=$lg['mode']; $q=json_decode((string)$lg['query_text'],true)?:[]; $raw=(string)$lg['body_text'];
+            $flat=ussd_proxy_flatten('',$raw,$q,[]); $testIn=$raw!==''?$raw:http_build_query($q);
+        } else {
+            $testIn=(string)($_POST['sample']??''); $raw=$testIn; $q=[];
+            if (!ctype_space($testIn) && $testIn!=='' && $testIn[0]!=='{' && $testIn[0]!=='<' && !str_contains($testIn,"\n") ) { parse_str($testIn,$q); $raw=''; }
+            $flat=ussd_proxy_flatten('',$raw,$q,[]);
+        }
+        $test=ussd_proxy_process($cfg,$testMode,$flat,true,true); $test['flat']=$flat;
+    }
+    $keys=[]; foreach($logs as $lg){ $q=json_decode((string)$lg['query_text'],true)?:[]; $keys=array_merge($keys,array_keys(ussd_proxy_flatten('',(string)$lg['body_text'],$q,[]))); if(count($keys)>0) break; }
+    $keys=array_values(array_unique($keys));
+    $host=($_SERVER['HTTP_HOST']??'your-host'); $proto=(($_SERVER['HTTP_X_FORWARDED_PROTO']??'')==='https'||(!empty($_SERVER['HTTPS'])&&$_SERVER['HTTPS']!=='off'))?'https':'http';
+    $base=rtrim(dirname($_SERVER['SCRIPT_NAME']??'/'),'/'); $urlFor=fn($m)=>$proto.'://'.$host.$base.'/ussd.php?t='.$token.'&m='.$m;
+    layout_start('USSD Proxy');
+    ?>
+    <div class="cardx">
+        <h3><i class="fa-solid fa-plug me-2"></i>USSD proxy endpoint <span class="badge <?=$cfg['enabled']==='1'?($cfg['mode']==='live'?'bg-success':'bg-warning text-dark'):'bg-secondary'?> ms-2"><?=$cfg['enabled']==='1'?($cfg['mode']==='live'?'ON — serving menus':'ON — capture only'):'OFF'?></span></h3>
+        <p class="text-muted mb-2">The address a Mobius <b>PROXY</b> (or <b>MS_INITIATED</b>) menu calls. It is <b>off</b> until you switch it on below, so nothing changes in production until you decide. Start in <b>Capture</b> mode: it records exactly what Mobius sends (and answers with a fixed test text), so we can set the field names from a real request instead of guessing. Only the menu you point at it is affected — no other short code is touched.</p>
+        <p class="mb-1 small text-muted">Put one of these in the Mobius menu's <b>URL</b> field (use the address Mobius can actually reach — the in-cluster one only works from inside the cluster):</p>
+        <?php foreach(['proxy'=>'PROXY menu','ms_initiated'=>'MS_INITIATED menu'] as $m=>$lbl):?>
+        <div class="small fw-semibold mt-2"><?=e($lbl)?> — public address</div><pre class="mb-1"><?=e($urlFor($m))?></pre>
+        <div class="small text-muted">in-cluster: <code><?=e('http://vas-cloud-app.vas-cloud.svc.cluster.local/ussd.php?t='.$token.'&m='.$m)?></code></div>
+        <?php endforeach;?>
+        <form method="post" class="mt-3 d-inline" data-confirm="Create a new token? The URL in every Mobius menu must be updated."><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="rotate"><button class="btn btn-sm btn-outline-danger"><i class="fa-solid fa-rotate me-1"></i>New token</button></form>
+        <span class="small text-muted ms-2">The token is the password to this endpoint — treat the URL like a secret.</span>
+    </div>
+
+    <form method="post" class="cardx mt-3"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="save">
+        <h3>Settings</h3>
+        <div class="row g-3">
+            <div class="col-md-3"><div class="form-check form-switch"><input class="form-check-input" type="checkbox" name="enabled" value="1" id="pe" <?=$cfg['enabled']==='1'?'checked':''?>><label class="form-check-label fw-semibold" for="pe">Endpoint enabled</label></div></div>
+            <div class="col-md-3"><label class="small text-muted mb-0">Mode</label><select class="form-select" name="mode"><option value="capture" <?=$cfg['mode']!=='live'?'selected':''?>>Capture only (learn the format)</option><option value="live" <?=$cfg['mode']==='live'?'selected':''?>>Live (serve the menus)</option></select></div>
+            <div class="col-md-6"><label class="small text-muted mb-0">Only accept calls from these IPs <small>(optional — blank = any; e.g. 192.168.162.20)</small></label><input class="form-control" name="allow_ips" value="<?=e($cfg['allow_ips'])?>"></div>
+            <div class="col-md-6"><label class="small text-muted mb-0">Short code served for the PROXY menu</label><input class="form-control" name="shortcode_proxy" value="<?=e($cfg['shortcode_proxy'])?>"></div>
+            <div class="col-md-6"><label class="small text-muted mb-0">Short code served for the MS_INITIATED menu</label><input class="form-control" name="shortcode_ms_initiated" value="<?=e($cfg['shortcode_ms_initiated'])?>"></div>
+        </div>
+        <h5 class="mt-4">What Mobius sends <small class="text-muted">(fill in after a capture — the names below suggest themselves from the latest captured request)</small></h5>
+        <datalist id="keyList"><?php foreach($keys as $k):?><option value="<?=e($k)?>"><?php endforeach;?></datalist>
+        <div class="row g-3">
+            <div class="col-md-3"><label class="small text-muted mb-0">Field with the customer's number</label><input class="form-control" list="keyList" name="f_msisdn" value="<?=e($cfg['f_msisdn'])?>"></div>
+            <div class="col-md-3"><label class="small text-muted mb-0">Field with the session id</label><input class="form-control" list="keyList" name="f_session" value="<?=e($cfg['f_session'])?>"></div>
+            <div class="col-md-3"><label class="small text-muted mb-0">Field with what they typed</label><input class="form-control" list="keyList" name="f_input" value="<?=e($cfg['f_input'])?>"></div>
+            <div class="col-md-3"><label class="small text-muted mb-0">Field with the short code <small>(optional)</small></label><input class="form-control" list="keyList" name="f_shortcode" value="<?=e($cfg['f_shortcode'])?>"></div>
+            <div class="col-md-4"><label class="small text-muted mb-0">The typed text is…</label><select class="form-select" name="reply_mode"><option value="step" <?=$cfg['reply_mode']!=='cumulative'?'selected':''?>>just the latest reply (we remember the session)</option><option value="cumulative" <?=$cfg['reply_mode']==='cumulative'?'selected':''?>>everything so far, e.g. 1*2 or *9606*9090*1*2#</option></select></div>
+            <div class="col-md-2"><label class="small text-muted mb-0">Session timeout (s)</label><input class="form-control" type="number" name="session_ttl" value="<?=e($cfg['session_ttl'])?>"></div>
+        </div>
+        <h5 class="mt-4">What we send back</h5>
+        <div class="row g-3">
+            <div class="col-md-4"><label class="small text-muted mb-0">Content type</label><input class="form-control" name="resp_type" value="<?=e($cfg['resp_type'])?>"></div>
+            <div class="col-md-4"><label class="small text-muted mb-0">Word for "session continues" / "ends" in {end}</label><div class="input-group"><input class="form-control" name="end_false" value="<?=e($cfg['end_false'])?>"><input class="form-control" name="end_true" value="<?=e($cfg['end_true'])?>"></div></div>
+            <div class="col-12"><label class="small text-muted mb-0">Reply template <small>— placeholders: <code>{text}</code> <code>{text_json}</code> <code>{text_xml}</code> <code>{text_url}</code> <code>{end}</code> <code>{end_int}</code> <code>{con_end}</code> (CON/END) <code>{session}</code> <code>{msisdn}</code></small></label><textarea class="form-control code" rows="3" name="resp_body"><?=e($cfg['resp_body'])?></textarea></div>
+            <div class="col-12"><label class="small text-muted mb-0">Reply used in capture mode</label><input class="form-control" name="capture_body" value="<?=e($cfg['capture_body'])?>"></div>
+        </div>
+        <button class="btn btn-primary mt-3">Save settings</button>
+    </form>
+
+    <div class="cardx mt-3"><h3>Try it without Mobius</h3>
+        <p class="text-muted">Paste a sample request (JSON, XML or <code>name=value&amp;name=value</code>) — or press <b>Replay</b> on a captured one below. It runs the live logic with the settings above and shows what would be sent back. Nothing is stored and no session is kept.</p>
+        <form method="post" class="row g-2"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="test">
+            <div class="col-12"><textarea class="form-control code" rows="3" name="sample" placeholder='{"msisdn":"220xxxxxxx","sessionId":"abc123","text":"1"}'><?=e($testIn)?></textarea></div>
+            <div class="col-md-3"><select class="form-select" name="tmode"><option value="proxy" <?=$testMode==='proxy'?'selected':''?>>as the PROXY menu</option><option value="ms_initiated" <?=$testMode==='ms_initiated'?'selected':''?>>as the MS_INITIATED menu</option></select></div>
+            <div class="col-md-2"><button class="btn btn-outline-primary w-100">Run</button></div>
+        </form>
+        <?php if($test):?><div class="mt-3"><div class="small text-muted">Fields we read: <?php foreach($test['flat'] as $k=>$v):?><code><?=e($k)?></code>=<?=e(mb_strimwidth($v,0,40,'…'))?> · <?php endforeach; if(!$test['flat']):?><b class="text-danger">none — the sample couldn't be read</b><?php endif;?></div>
+            <?php if(!empty($test['screen'])):?><div class="small text-muted mt-1">Short code <b><?=e($test['sc'])?></b>, replies so far: <b><?=e(implode(' → ',$test['replies'])?:'(none)')?></b>, <?=e($test['note'])?></div><?php endif;?>
+            <pre class="mt-2 mb-0"><?=e($test['body'])?></pre><div class="small text-muted">Content type: <?=e($test['ctype'])?></div></div><?php endif;?>
+    </div>
+
+    <div class="cardx table-card mt-3"><div class="d-flex justify-content-between align-items-center px-3 pt-3"><h3 class="mb-0">Captured requests <small class="text-muted">(latest 25, kept 3 days)</small></h3>
+        <form method="post" data-confirm="Delete all captured requests?"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="clear"><button class="btn btn-sm btn-outline-secondary">Clear</button></form></div>
+        <p class="text-muted px-3 mb-0 small">These contain customers' phone numbers — they are visible to admins only and deleted after 3 days.</p>
+        <?php if(!$logs):?><p class="px-3 pb-3 pt-2 mb-0 text-muted">Nothing yet. Enable the endpoint, create the Mobius menu with the URL above, and dial the test short code.</p><?php else:?>
+        <div class="table-scroll"><table class="table table-sm align-middle"><thead><tr><th>Time</th><th>Menu</th><th>From</th><th>Request</th><th>We replied</th><th class="text-end">ms</th><th></th></tr></thead><tbody>
+        <?php foreach($logs as $lg): $q=json_decode((string)$lg['query_text'],true)?:[]; $fl=ussd_proxy_flatten('',(string)$lg['body_text'],$q,[]);?>
+        <tr><td class="text-nowrap"><?=e($lg['created_at'])?></td><td><?=e($lg['mode'])?></td><td class="text-nowrap"><?=e($lg['remote_ip'])?></td>
+            <td class="cell-full"><details><summary><?=e($lg['method'])?> <?php foreach(array_slice($fl,0,5,true) as $k=>$v):?><code><?=e($k)?></code>=<?=e(mb_strimwidth($v,0,24,'…'))?> <?php endforeach; if(!$fl):?>(empty)<?php endif;?></summary>
+                <div class="small mt-1"><b>Query</b> <code><?=e($lg['query_text'])?></code></div><div class="small"><b>Headers</b> <code><?=e($lg['headers_text'])?></code></div><div class="small"><b>Body</b></div><pre class="mb-0"><?=e($lg['body_text'])?></pre></details></td>
+            <td class="cell-full"><?=e(mb_strimwidth((string)$lg['response_text'],0,70,'…'))?><div class="small text-muted"><?=e($lg['note'])?></div></td><td class="text-end"><?=e($lg['ms'])?></td>
+            <td><form method="post"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="replay"><input type="hidden" name="id" value="<?=e($lg['id'])?>"><button class="btn btn-sm btn-outline-primary" title="Run this request through the live logic without sending anything">Replay</button></form></td></tr>
+        <?php endforeach;?></tbody></table></div><?php endif;?>
     </div>
     <?php layout_end(); exit;
 }
