@@ -2572,10 +2572,18 @@ function mobius_probe_ok(array $r): bool {
 // Read-only: logs in, then makes harmless read calls in the ways Mobius might want the session presented, and shows
 // what it says to each (session ids are cut to their last 4 characters, the password hash is never shown).
 function mobius_probe(array $cfg): array {
-    $out = []; $hash = decrypt_secret($cfg['mobius_pass']);
-    if ($cfg['mobius_user'] === '' || $hash === '') return [['label' => 'Setup', 'ok' => false, 'msg' => 'Enter the Mobius API user name and password first.']];
-    $base = mobius_bases($cfg)[0] ?? null; if (!$base) return [['label' => 'Setup', 'ok' => false, 'msg' => 'No valid Mobius address saved.']];
-    $u = $cfg['mobius_user'];
+    if ($cfg['mobius_user'] === '' || decrypt_secret($cfg['mobius_pass']) === '') return [['label' => 'Setup', 'ok' => false, 'msg' => 'Enter the Mobius API user name and password first.']];
+    $bases = mobius_bases($cfg); if (!$bases) return [['label' => 'Setup', 'ok' => false, 'msg' => 'No valid Mobius address saved.']];
+    $out = [];
+    foreach ($bases as $base) {
+        $rows = mobius_probe_base($cfg, $base);
+        if (count($bases) > 1) foreach ($rows as &$r) $r['label'] = parse_url($base, PHP_URL_HOST).' · '.$r['label'];
+        unset($r); $out = array_merge($out, $rows);
+    }
+    return $out;
+}
+function mobius_probe_base(array $cfg, string $base): array {
+    $out = []; $hash = decrypt_secret($cfg['mobius_pass']); $u = $cfg['mobius_user'];
     $ch = mobius_handle(); $l = mobius_http($base.'auth/login', ['username' => $u, 'password' => $hash], 5, $ch);
     $out[] = ['label' => 'Login (POST)', 'ok' => mobius_probe_ok($l), 'msg' => mobius_brief($l)];
     $sid = (string)($l['json']['sessionID'] ?? '');
