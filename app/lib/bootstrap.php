@@ -1172,13 +1172,14 @@ function offer_performance_report(string $schema, array $offerCodes, string $cha
 
 function dashboard_kpis(...$a) { return cached('dashboard_kpis:'.md5(serialize($a)), 60, fn() => dashboard_kpis_uncached(...$a)); }
 function dashboard_kpis_uncached(string $schema): array {
-    $out = ['tx_today'=>0, 'tx_today_success'=>0, 'tx_today_failed'=>0, 'offers_active'=>0, 'offers_inactive'=>0, 'subscription_rows_est'=>0];
+    $out = ['tx_today'=>0, 'tx_today_success'=>0, 'tx_today_failed'=>0, 'lookups_today'=>0, 'lookups_failed'=>0, 'offers_active'=>0, 'offers_inactive'=>0, 'subscription_rows_est'=>0];
     if (table_exists($schema, AUDIT_LOG_TABLE)) {
         $db = pdo($schema);
-        $st = $db->query("SELECT COUNT(*) total, SUM(CASE WHEN ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) ok FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= CURDATE()");
+        $st = $db->query("SELECT COUNT(*) total, SUM(CASE WHEN ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) ok, SUM(CASE WHEN ".LOOKUPS_SQL." THEN 1 ELSE 0 END) lk, SUM(CASE WHEN ".LOOKUPS_SQL." AND ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) lk_ok FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= CURDATE()");
         $r = $st->fetch();
-        $out['tx_today'] = (int)($r['total'] ?? 0);
-        $out['tx_today_success'] = (int)($r['ok'] ?? 0);
+        $out['lookups_today'] = (int)($r['lk'] ?? 0); $out['lookups_failed'] = (int)($r['lk'] ?? 0) - (int)($r['lk_ok'] ?? 0);
+        $out['tx_today'] = (int)($r['total'] ?? 0) - $out['lookups_today'];
+        $out['tx_today_success'] = (int)($r['ok'] ?? 0) - (int)($r['lk_ok'] ?? 0);
         $out['tx_today_failed'] = $out['tx_today'] - $out['tx_today_success'];
     }
     if (table_exists($schema, 'vas_offers')) {
@@ -1770,20 +1771,23 @@ function daily_summary_data(string $schema, string $date): array {
         $st = $db->prepare("SELECT $expr name, COUNT(*) total, SUM(CASE WHEN $ok THEN 1 ELSE 0 END) ok, AVG(response_time) avg_ms FROM $t WHERE create_date >= ? AND create_date < ? GROUP BY 1 ORDER BY total DESC LIMIT 15");
         $st->execute([$from, $to]); return $st->fetchAll();
     };
-    $st = $db->prepare("SELECT COUNT(*) total, SUM(CASE WHEN $ok THEN 1 ELSE 0 END) ok, AVG(response_time) avg_ms FROM $t WHERE create_date >= ? AND create_date < ?");
+    $lk = LOOKUPS_SQL;
+    $st = $db->prepare("SELECT COUNT(*) total, SUM(CASE WHEN $ok THEN 1 ELSE 0 END) ok, AVG(response_time) avg_ms FROM $t WHERE create_date >= ? AND create_date < ? AND NOT $lk");
     $st->execute([$from, $to]); $tot = $st->fetch();
+    $st = $db->prepare("SELECT COUNT(*) total, SUM(CASE WHEN $ok THEN 1 ELSE 0 END) ok, AVG(response_time) avg_ms FROM $t WHERE create_date >= ? AND create_date < ? AND $lk");
+    $st->execute([$from, $to]); $lookups = $st->fetch();
     // Failures split into those the admin marked as customer-side (e.g. no credit) and the rest, which are the
     // ones that point at a system problem; plus the previous day's volume for comparison.
     [$cf, $cfParams, $ignoredReasons] = alert_counted_failure_sql();
-    $st = $db->prepare("SELECT SUM(CASE WHEN $cf THEN 1 ELSE 0 END) counted FROM $t WHERE create_date >= ? AND create_date < ?");
-    $st->execute(array_merge($cfParams, [$from, $to])); $counted = (int)$st->fetchColumn();
-    $st = $db->prepare("SELECT COUNT(*) FROM $t WHERE create_date >= ? AND create_date < ?"); $st->execute([$pfrom, $from]); $prevTotal = (int)$st->fetchColumn();
+    $st = $db->prepare("SELECT SUM(CASE WHEN $cf AND NOT $lk THEN 1 ELSE 0 END) counted_customer, SUM(CASE WHEN $cf AND $lk THEN 1 ELSE 0 END) counted_lookups FROM $t WHERE create_date >= ? AND create_date < ?");
+    $st->execute(array_merge($cfParams, $cfParams, [$from, $to])); $cr = $st->fetch(); $counted = (int)$cr['counted_customer']; $countedLookups = (int)$cr['counted_lookups'];
+    $st = $db->prepare("SELECT COUNT(*) FROM $t WHERE create_date >= ? AND create_date < ? AND NOT $lk"); $st->execute([$pfrom, $from]); $prevTotal = (int)$st->fetchColumn();
     $cfg = alert_config();
     $st = $db->prepare("SELECT COALESCE(NULLIF(vendor_entity_name,''),'(none)') name, COUNT(*) c FROM $t WHERE create_date >= ? AND create_date < ? GROUP BY 1 HAVING c >= ?");
     $st->execute([$pfrom, $from, $cfg['vendor_silent_min_baseline']]); $before = array_column($st->fetchAll(), 'c', 'name');
     $vendors = $q('vendor_entity_name'); $seen = array_column($vendors, 'name');
     $silent = []; foreach ($before as $name => $c) if (!in_array($name, $seen, true)) $silent[$name] = (int)$c;
-    return ['date' => $date, 'prev_total' => $prevTotal, 'system_failed' => $counted, 'ignored_reasons' => $ignoredReasons, 'total' => (int)$tot['total'], 'ok' => (int)$tot['ok'], 'avg_ms' => $tot['avg_ms'] === null ? null : (int)round((float)$tot['avg_ms']),
+    return ['date' => $date, 'prev_total' => $prevTotal, 'system_failed' => $counted, 'lookups' => ['total' => (int)$lookups['total'], 'ok' => (int)$lookups['ok'], 'avg_ms' => $lookups['avg_ms'] === null ? null : (int)round((float)$lookups['avg_ms']), 'system_failed' => $countedLookups], 'ignored_reasons' => $ignoredReasons, 'total' => (int)$tot['total'], 'ok' => (int)$tot['ok'], 'avg_ms' => $tot['avg_ms'] === null ? null : (int)round((float)$tot['avg_ms']),
         'channels' => $q('channel'), 'vendors' => $vendors, 'reasons' => failure_reasons_day($schema, $date, 5), 'silent' => $silent, 'retention' => (function () use ($schema) {
             try {
                 $rep = audit_log_partition_report($schema); if (!$rep['partitioned']) return null;
@@ -1798,14 +1802,16 @@ function daily_summary_text(string $schema, array $d): string {
     $l = ['VAS Cloud daily summary - '.$schema.' - '.$d['date'], str_repeat('=', 50), ''];
     $failed = $d['total'] - $d['ok']; $customer = max(0, $failed - $d['system_failed']);
     $delta = $d['prev_total'] > 0 ? sprintf(' (%s%d%% vs day before: %s)', $d['total'] >= $d['prev_total'] ? '+' : '-', abs(round(100 * ($d['total'] - $d['prev_total']) / $d['prev_total'])), number_format($d['prev_total'])) : '';
-    $l[] = sprintf('Transactions: %s%s', number_format($d['total']), $delta);
+    $l[] = sprintf('Customer transactions: %s%s', number_format($d['total']), $delta);
     $l[] = sprintf('Success:      %s   Avg response: %s', $pct($d['ok'], $d['total']), $ms($d['avg_ms']));
     $l[] = sprintf('Failed:       %s   of which customer-side (reasons you ignore in alerts): %s', number_format($failed), number_format($customer));
-    $l[] = sprintf('SYSTEM FAILURES: %s (%s of all transactions)', number_format($d['system_failed']), $pct($d['system_failed'], $d['total']));
+    $l[] = sprintf('SYSTEM FAILURES: %s (%s of customer transactions)', number_format($d['system_failed']), $pct($d['system_failed'], $d['total']));
+    $lk = $d['lookups'];
+    $l[] = sprintf('System lookups (no channel): %s   %s ok   %s   [Hera\'s own background calls to its vendors, e.g. free-unit queries - not customer purchases%s]', number_format($lk['total']), $pct($lk['ok'], $lk['total']), $ms($lk['avg_ms']), $lk['system_failed'] > 0 ? '; '.number_format($lk['system_failed']).' failed' : '');
     foreach (['channels' => 'By channel', 'vendors' => 'By vendor'] as $k => $title) {
         $l[] = ''; $l[] = $title.':';
         if (!$d[$k]) $l[] = '  (no traffic)';
-        foreach ($d[$k] as $r) $l[] = sprintf('  %-28s %9s   %7s ok   %s', mb_strimwidth($r['name'] === '(none)' ? '(no '.($k === 'channels' ? 'channel' : 'vendor').' recorded)' : $r['name'], 0, 28, '..'), number_format((int)$r['total']), $pct((int)$r['ok'], (int)$r['total']), $ms($r['avg_ms'] === null ? null : round((float)$r['avg_ms'])));
+        foreach ($d[$k] as $r) $l[] = sprintf('  %-28s %9s   %7s ok   %s', mb_strimwidth(activity_label($r['name'], $k === 'channels' ? 'channel' : 'vendor'), 0, 28, '..'), number_format((int)$r['total']), $pct((int)$r['ok'], (int)$r['total']), $ms($r['avg_ms'] === null ? null : round((float)$r['avg_ms'])));
     }
     $l[] = ''; $l[] = 'Top failure reasons:';
     if (!$d['reasons']) $l[] = '  (none)';
@@ -2200,6 +2206,11 @@ function channel_activity_by_channel(string $schema, int $limit = 8): array { re
 function vendor_activity_today(string $schema, int $limit = 12): array { return activity_by_column($schema, 'vendor_entity_name', $limit); }
 // Shared by the channel and vendor cards. Anything seen at this time yesterday but silent today is included
 // with 0 transactions (-100%) — a vendor or channel that has quietly stopped is exactly what this view is for.
+// audit_log also records Hera's own background calls to its vendors (e.g. OCS free-unit queries, PCRF policy
+// calls) with no channel. They are not customer purchases, so they are reported apart from customer traffic.
+const LOOKUPS_LABEL = 'System lookups (no channel)';
+const LOOKUPS_SQL = "(channel IS NULL OR channel = '')";
+function activity_label(string $name, string $kind): string { return $name === '(none)' ? ($kind === 'channel' ? LOOKUPS_LABEL : '(no vendor recorded)') : $name; }
 function activity_by_column(...$a) { return cached('activity_by_column:'.md5(serialize($a)), 60, fn() => activity_by_column_uncached(...$a)); }
 function activity_by_column_uncached(string $schema, string $col, int $limit): array {
     if (!in_array($col, ['channel', 'vendor_entity_name'], true) || !table_exists($schema, AUDIT_LOG_TABLE)) return [];
@@ -2226,10 +2237,13 @@ function activity_by_column_uncached(string $schema, string $col, int $limit): a
 function monitoring_snapshot(string $schema): array {
     $integrations = list_integrations();
     $health = array_count_values(array_map(fn($i) => integration_health($i)['state'], $integrations));
-    $channels = channel_activity_by_channel($schema);
-    $total = array_sum(array_column($channels, 'total')); $ok = array_sum(array_column($channels, 'ok'));
+    $channels = channel_activity_by_channel($schema, 30);
+    $lk = ['total' => 0, 'ok' => 0, 'failed' => 0];
+    foreach ($channels as $c) if ($c['name'] === '(none)') $lk = ['total' => $c['total'], 'ok' => $c['ok'], 'failed' => $c['failed']];
+    // headline numbers are customer traffic; the no-channel bucket is shown separately
+    $total = array_sum(array_column($channels, 'total')) - $lk['total']; $ok = array_sum(array_column($channels, 'ok')) - $lk['ok'];
     return [
-        'channels' => $channels, 'vendors' => vendor_activity_today($schema),
+        'channels' => $channels, 'vendors' => vendor_activity_today($schema), 'lookups' => $lk,
         'tx_total' => $total, 'tx_failed' => $total - $ok, 'tx_success_pct' => $total > 0 ? round(100 * $ok / $total, 1) : null,
         'agent_queue_total' => table_exists($schema, 'agent_queue') ? (int)(pdo($schema)->query('SELECT COUNT(*) c FROM agent_queue')->fetch()['c'] ?? 0) : 0,
         'agent_queue_by_status' => table_exists($schema, 'agent_queue') ? pdo($schema)->query('SELECT status, COUNT(*) c FROM agent_queue GROUP BY status ORDER BY c DESC')->fetchAll() : [],

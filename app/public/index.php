@@ -107,7 +107,7 @@ if ($page==='dashboard') {
     ?>
     <?php if ($alerts): foreach($alerts as $a):?><div class="alert alert-<?=e($a['level'])?> shadow-sm">⚠ <?=e($a['message'])?> <a class="alert-link" href="?page=alerts">View alerts</a></div><?php endforeach; endif;?>
     <div class="metric-grid">
-        <div class="metric"><span>Transactions Today</span><strong><?=number_format($kpis['tx_today'])?></strong></div>
+        <div class="metric"><span>Customer Transactions Today</span><strong><?=number_format($kpis['tx_today'])?></strong><?php if(($kpis['lookups_today']??0)>0):?><small class="text-muted">+ <?=number_format($kpis['lookups_today']??0)?> system lookups</small><?php endif;?></div>
         <div class="metric"><span>Success Today</span><strong><?=number_format($kpis['tx_today_success'])?></strong></div>
         <div class="metric"><span>Failed Today</span><strong><?=number_format($kpis['tx_today_failed'])?></strong></div>
         <div class="metric"><span>Active Offers</span><strong><?=number_format($kpis['offers_active'])?></strong></div>
@@ -1060,7 +1060,7 @@ if ($page==='monitoring') {
     ?>
     <?php foreach($snap['alerts'] as $a):?><div class="alert alert-<?=e($a['level'])?> shadow-sm">⚠ <?=e($a['message'])?> <a class="alert-link" href="?page=alerts">View alerts</a></div><?php endforeach;?>
     <div class="metric-grid">
-        <div class="metric"><span>Transactions today</span><strong><?=number_format($snap['tx_total'])?></strong><small class="text-muted"><?=$snap['tx_success_pct']===null?'no traffic yet':$snap['tx_success_pct'].'% succeeded'?></small></div>
+        <div class="metric"><span>Customer transactions today</span><strong><?=number_format($snap['tx_total'])?></strong><small class="text-muted"><?=$snap['tx_success_pct']===null?'no traffic yet':$snap['tx_success_pct'].'% succeeded'?> · customer traffic<?=$snap['lookups']['total']>0?', plus '.number_format($snap['lookups']['total']).' system lookups':''?></small></div>
         <div class="metric"><span>Failed today</span><strong><?=number_format($snap['tx_failed'])?></strong><small class="text-muted"><a href="?page=investigate&date_from=<?=$today?>&date_to=<?=$today?>">Investigate →</a></small></div>
         <div class="metric"><span>Integrations</span><strong style="font-size:1.35rem;text-transform:none;white-space:nowrap"><span class="text-success"><?=$snap['int_up']?> up</span><?php if($snap['int_down']):?> <span class="text-danger">· <?=$snap['int_down']?> down</span><?php endif;?></strong><small class="text-muted"><?=$snap['int_stale']?> not recently checked</small></div>
         <div class="metric"><span>Active alerts</span><strong class="<?=$snap['alerts']?'text-danger':'text-success'?>"><?=count($snap['alerts'])?></strong><small class="text-muted"><a href="?page=alerts">Open Alerts →</a></small></div>
@@ -1072,12 +1072,13 @@ if ($page==='monitoring') {
         <?php if(!$snap[$cardKey]):?><p class="text-muted mb-0">No transactions yet today.</p><?php else:?>
         <div class="row g-3 mt-1"><?php foreach($snap[$cardKey] as $c):?>
             <div class="col-md-6 col-xl-3"><div class="border rounded p-3 h-100">
-                <div class="d-flex justify-content-between align-items-baseline"><strong class="text-break"><?php if($qParam==='vendor' && $c['name']!=='(none)'):?><a class="text-reset" href="?page=vendor&name=<?=urlencode($c['name'])?>"><?=e($c['name'])?></a><?php else:?><?=e($c['name'])?><?php endif;?></strong><?php if($c['delta_pct']!==null):?><small class="<?=$c['delta_pct']<=-30?'text-danger fw-semibold':'text-muted'?>"><?=$c['delta_pct']>=0?'▲':'▼'?> <?=abs($c['delta_pct'])?>%</small><?php endif;?></div>
+                <div class="d-flex justify-content-between align-items-baseline"><strong class="text-break"><?php if($qParam==='vendor' && $c['name']!=='(none)'):?><a class="text-reset" href="?page=vendor&name=<?=urlencode($c['name'])?>"><?=e($c['name'])?></a><?php else:?><?=e(activity_label($c['name'], $qParam))?><?php endif;?></strong><?php if($c['delta_pct']!==null):?><small class="<?=$c['delta_pct']<=-30?'text-danger fw-semibold':'text-muted'?>"><?=$c['delta_pct']>=0?'▲':'▼'?> <?=abs($c['delta_pct'])?>%</small><?php endif;?></div>
                 <div class="fs-3 fw-bold"><?=number_format($c['total'])?></div>
                 <div class="progress mb-1" style="height:8px"><div class="progress-bar bg-success" style="width:<?=min(100,$c['success_pct'])?>%"></div></div>
                 <small class="text-muted"><?=$c['success_pct']?>% success · <?=number_format($c['failed'])?> failed</small>
                 <?php if($c['avg_ms']!==null):?><div class="small <?=$c['avg_ms']>$slowLimit?'text-danger fw-semibold':'text-muted'?>"><i class="fa-regular fa-clock me-1"></i>avg <?=number_format($c['avg_ms'])?> ms<?=$c['slow_pct']>0?' · '.$c['slow_pct'].'% over '.number_format($slowLimit).' ms':''?></div><?php endif;?>
-                <a class="d-block small mt-1" href="?page=investigate&date_from=<?=$today?>&date_to=<?=$today?><?=$c['name']==='(none)'?'':'&'.$qParam.'='.urlencode($c['name'])?>">Investigate →</a>
+                <?php if($c['name']==='(none)' && $qParam==='channel'):?><div class="small text-muted mt-1">Background calls to vendors (e.g. balance / free-unit queries) — not customer purchases, so left out of the totals above.</div>
+                <?php else:?><a class="d-block small mt-1" href="?page=investigate&date_from=<?=$today?>&date_to=<?=$today?><?=$c['name']==='(none)'?'':'&'.$qParam.'='.urlencode($c['name'])?>">Investigate →</a><?php endif;?>
             </div></div>
         <?php endforeach;?></div><?php endif;?>
     </div>
