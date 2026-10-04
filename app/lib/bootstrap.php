@@ -2525,9 +2525,21 @@ function save_purchase_config(array $d): void {
     $auth = trim((string)($d['purchase_auth'] ?? ''));
     if (!empty($d['purchase_auth_clear'])) $vals['purchase_auth'] = '';
     elseif ($auth !== '') {
-        $lines = array_values(array_filter(array_map('trim', preg_split('/\r\n|\n/', $auth)), fn($l) => $l !== ''));
+        // Forgiving about what a paste brings along: a comma or quotes on the end, odd spaces or dashes, and headers with
+        // no value (Mobius sends X-HASHED-PASSWORD empty — such a line is simply skipped). A wrong line is reported by
+        // number only, never echoed back, because it may hold the key itself.
+        $lines = [];
+        foreach (preg_split('/\r\n|\n|\r/', $auth) as $n => $l) {
+            $l = trim(str_replace(["\xC2\xA0", "\xE2\x80\x90", "\xE2\x80\x91", "\xE2\x80\x93", "\xE2\x80\x94"], [' ', '-', '-', '-', '-'], $l));
+            if ($l === '') continue;
+            if (!preg_match('/^([A-Za-z0-9\-]{1,40})\s*:\s*(.*)$/', $l, $m)) throw new RuntimeException('Line '.($n + 1).' of the headers has no "Name: value" shape — write each one like  X-USERNAME: USSD');
+            $v = trim(rtrim(trim($m[2]), ','), " \t\"'");
+            if ($v === '') continue;
+            if (mb_strlen($v) > 400) throw new RuntimeException('The value on line '.($n + 1).' of the headers is too long.');
+            $lines[] = $m[1].': '.$v;
+        }
         if (count($lines) > 6) throw new RuntimeException('At most 6 headers.');
-        foreach ($lines as $l) if (!preg_match('/^[A-Za-z0-9\-]{1,40}:\s*\S.{0,400}$/', $l)) throw new RuntimeException('Each header goes on its own line and looks like  X-API-KEY: abc123');
+        if (!$lines) throw new RuntimeException('None of the header lines had a value. Write them like  X-API-KEY: your-key');
         $vals['purchase_auth'] = encrypt_secret(implode("\n", $lines));
     }
     ussd_proxy_set($vals);
