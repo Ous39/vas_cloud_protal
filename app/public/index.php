@@ -913,6 +913,8 @@ if ($page==='ussd_proxy') {
         if ($do==='clear') { portal_pdo()->exec('DELETE FROM ussd_proxy_log'); audit('ussd_proxy_log_clear',null,'ussd_proxy_log',null,null); flash('success','Captured requests cleared.'); redirect('?page=ussd_proxy'); }
     }
     $cfg=ussd_proxy_config(); $token=ussd_proxy_token(); $mobiusTest=null;
+    $mobiusProbe=null;
+    if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['do']??'')==='mobius_probe') { $mobiusProbe=mobius_probe($cfg); audit('ussd_proxy_mobius_probe',null,'ussd_proxy_config',null,json_encode(array_map(fn($r)=>['l'=>$r['label'],'ok'=>$r['ok']],$mobiusProbe))); }
     if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['do']??'')==='mobius_test') { $mobiusTest=mobius_test($cfg); audit('ussd_proxy_mobius_test',null,'ussd_proxy_config',null,json_encode(array_map(fn($r)=>['base'=>$r['base'],'ok'=>$r['ok']],$mobiusTest))); }
     $logs=portal_pdo()->query('SELECT * FROM ussd_proxy_log ORDER BY id DESC LIMIT 25')->fetchAll();
     // the tester: a sample request (or a captured one to replay), run through the live logic without storing any session
@@ -988,6 +990,8 @@ if ($page==='ussd_proxy') {
             <div class="col-12 d-flex gap-2"><button class="btn btn-primary">Save connection</button></div>
         </form>
         <form method="post" class="mt-2"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="mobius_test"><button class="btn btn-sm btn-outline-primary">Test connection</button> <small class="text-muted">Logs in with the saved details and reports the result. Nothing else is sent.</small></form>
+        <form method="post" class="mt-2"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="mobius_probe"><button class="btn btn-sm btn-outline-secondary">Run diagnostics</button> <small class="text-muted">For when screens aren't getting through: logs in, then makes a harmless read-only call (<code>ussdcalls/count</code>) in each way Mobius might want the login presented, and shows what Mobius says to each. Sends no screen and changes nothing.</small></form>
+        <?php if($mobiusProbe):?><div class="mt-2"><?php foreach($mobiusProbe as $mp):?><div class="small"><span class="badge <?=$mp['ok']?'bg-success':'bg-danger'?> me-1"><?=$mp['ok']?'OK':'Refused'?></span><b><?=e($mp['label'])?></b> — <?=e($mp['msg'])?></div><?php endforeach;?></div><?php endif;?>
         <?php if($mobiusTest):?><div class="mt-2"><?php foreach($mobiusTest as $mt):?><div class="small"><span class="badge <?=$mt['ok']?'bg-success':'bg-danger'?> me-1"><?=$mt['ok']?'OK':'Failed'?></span><code><?=e($mt['base'])?></code> <?=e($mt['msg'])?></div><?php endforeach;?></div><?php endif;?>
     </div>
     <div class="cardx mt-3"><h3>Try it without Mobius</h3>

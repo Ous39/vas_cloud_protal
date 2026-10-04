@@ -2333,7 +2333,7 @@ const USSD_PROXY_DEFAULTS = [
     'resp_type' => 'text/plain; charset=UTF-8', 'resp_body' => '{text}', 'end_true' => 'true', 'end_false' => 'false',
     'capture_body' => 'VAS Cloud test endpoint: request received.',
     // PROXY menus: Mobius sends each reply here and expects the screen to come back through ITS REST API
-    'push_enabled' => '0', 'mobius_base' => 'http://192.168.162.20:28080/rest/', 'mobius_user' => '', 'mobius_pass' => '', 'mobius_session' => '',
+    'push_enabled' => '0', 'mobius_base' => 'http://192.168.162.20:28080/rest/', 'mobius_user' => '', 'mobius_pass' => '', 'mobius_session' => '', 'mobius_variant' => '0',
 ];
 function ussd_proxy_config(): array {
     $cfg = USSD_PROXY_DEFAULTS;
@@ -2488,16 +2488,22 @@ function mobius_bases(array $cfg): array {
     $out = []; foreach (preg_split('/[\s,;]+/', trim($cfg['mobius_base']), -1, PREG_SPLIT_NO_EMPTY) as $x) { try { $out[] = mobius_norm_base($x); } catch (Throwable $e) {} }
     return array_values(array_unique($out));
 }
-function mobius_http(string $url, array $body, int $timeout = 5): array {
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_POST => true, CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Accept: application/json'],
-        CURLOPT_POSTFIELDS => json_encode($body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), CURLOPT_TIMEOUT => $timeout, CURLOPT_CONNECTTIMEOUT => 3]);
-    $raw = curl_exec($ch); $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE); $err = curl_error($ch); curl_close($ch);
+function mobius_handle(): CurlHandle {
+    $ch = curl_init();
+    curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_POST => true, CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Accept: application/json'], CURLOPT_TIMEOUT => 5, CURLOPT_CONNECTTIMEOUT => 3, CURLOPT_COOKIEFILE => '']);
+    return $ch;
+}
+function mobius_http(string $url, array $body, int $timeout = 5, ?CurlHandle $ch = null): array {
+    $own = $ch === null; if ($own) $ch = mobius_handle();
+    curl_setopt($ch, CURLOPT_URL, $url); curl_setopt($ch, CURLOPT_TIMEOUT, $timeout);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    $raw = curl_exec($ch); $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE); $err = curl_error($ch);
+    if ($own) curl_close($ch);
     $j = is_string($raw) ? json_decode($raw, true) : null;
     return ['code' => $code, 'raw' => (string)$raw, 'json' => is_array($j) ? $j : null, 'error' => $err];
 }
-function mobius_login_at(string $base, string $user, string $hash): array {
-    $r = mobius_http($base.'auth/login', ['username' => $user, 'password' => $hash]);
+function mobius_login_at(string $base, string $user, string $hash, ?CurlHandle $ch = null): array {
+    $r = mobius_http($base.'auth/login', ['username' => $user, 'password' => $hash], 5, $ch);
     $sid = $r['json']['sessionID'] ?? null; $status = strtoupper((string)($r['json']['status'] ?? ''));
     if ($r['code'] === 200 && is_string($sid) && $sid !== '' && $status !== 'ERROR') return ['ok' => true, 'session' => $sid];
     return ['ok' => false, 'error' => $r['error'] !== '' ? $r['error'] : 'HTTP '.$r['code'].' '.mb_substr((string)($r['json']['errorMessage'] ?? $r['raw']), 0, 120)];
@@ -2512,19 +2518,65 @@ function mobius_session_for(array $cfg, string $base, bool $force = false): arra
     if ($r['ok']) { $map[$base] = ['sid' => $r['session'], 'at' => time()]; try { ussd_proxy_set(['mobius_session' => encrypt_secret(json_encode($map))]); } catch (Throwable $e) {} }
     return $r;
 }
+// Mobius answers HTTP 200 with status ERROR for a refused call. These are the ways the session might have to be presented;
+// the first that works is remembered (mobius_variant). 0 = sessionID+username as documented, 1 = also the password hash,
+// 2 = documented body but on the same connection as a fresh login (cookies kept), 3 = both.
+const MOBIUS_VARIANTS = ['sessionID + username', '+ password hash', 'login cookie', 'login cookie + password hash'];
+function mobius_is_auth_error(array $r): bool {
+    $m = strtolower((string)($r['json']['errorMessage'] ?? '')); $st = strtoupper((string)($r['json']['status'] ?? ''));
+    return $r['code'] === 401 || $r['code'] === 403 || ($st === 'ERROR' && (str_contains($m, 'auth') || str_contains($m, 'session') || str_contains($m, 'login') || str_contains($m, 'credential')));
+}
+function mobius_call_variant(array $cfg, string $base, string $path, array $data, int $variant, bool $freshLogin): array {
+    $hash = decrypt_secret($cfg['mobius_pass']); $withPw = $variant === 1 || $variant === 3; $cookie = $variant >= 2;
+    $ch = null; $sid = null;
+    if ($cookie) {
+        $ch = mobius_handle(); $l = mobius_login_at($base, $cfg['mobius_user'], $hash, $ch);
+        if (!$l['ok']) return ['code' => 0, 'raw' => '', 'json' => null, 'error' => 'login: '.$l['error']];
+        $sid = $l['session'];
+    } else {
+        $s = mobius_session_for($cfg, $base, $freshLogin);
+        if (!$s['ok']) return ['code' => 0, 'raw' => '', 'json' => null, 'error' => 'login: '.$s['error']];
+        $sid = $s['session'];
+    }
+    $body = array_merge($data, ['sessionID' => $sid, 'username' => $cfg['mobius_user']]);
+    if ($withPw) $body['password'] = $hash;
+    $r = mobius_http($base.$path, $body, 5, $ch);
+    if ($ch) curl_close($ch);
+    return $r;
+}
 function mobius_push(array $cfg, string $callId, string $text, bool $complete): array {
-    $errors = [];
+    $errors = []; $data = ['data' => ['callID' => $callId, 'isComplete' => $complete, 'request' => $text]];
+    $pref = max(0, min(3, (int)$cfg['mobius_variant'])); $order = array_values(array_unique(array_merge([$pref], [0, 1, 2, 3])));
     foreach (mobius_bases($cfg) as $base) {
-        for ($attempt = 0; $attempt < 2; $attempt++) {
-            $s = mobius_session_for($cfg, $base, $attempt > 0);
-            if (!$s['ok']) { $errors[] = $base.' login: '.$s['error']; break; }
-            $r = mobius_http($base.'ussdcalls/proxy', ['data' => ['callID' => $callId, 'isComplete' => $complete, 'request' => $text], 'sessionID' => $s['session'], 'username' => $cfg['mobius_user']]);
+        foreach ($order as $n => $variant) {
+            $r = mobius_call_variant($cfg, $base, 'ussdcalls/proxy', $data, $variant, $n > 0);
             $bad = $r['json'] !== null && (strtoupper((string)($r['json']['status'] ?? '')) === 'ERROR' || trim((string)($r['json']['errorMessage'] ?? '')) !== '');
-            if ($r['code'] === 200 && !$bad) return ['ok' => true, 'base' => $base];
-            $errors[] = $base.' HTTP '.$r['code'].' '.($r['error'] !== '' ? $r['error'] : mb_substr((string)($r['json']['errorMessage'] ?? $r['raw']), 0, 100));
+            if ($r['code'] === 200 && !$bad) {
+                if ($variant !== $pref) { try { ussd_proxy_set(['mobius_variant' => (string)$variant]); } catch (Throwable $e) {} }
+                return ['ok' => true, 'base' => $base, 'variant' => MOBIUS_VARIANTS[$variant]];
+            }
+            $msg = $r['error'] !== '' ? $r['error'] : mb_substr((string)($r['json']['errorMessage'] ?? $r['raw']), 0, 100);
+            $errors[] = $base.' ['.MOBIUS_VARIANTS[$variant].'] HTTP '.$r['code'].' '.$msg;
+            if (!mobius_is_auth_error($r)) break; // not an authentication problem: other variants won't help
         }
     }
-    return ['ok' => false, 'error' => $errors ? implode(' | ', $errors) : 'no Mobius address configured'];
+    return ['ok' => false, 'error' => $errors ? implode(' | ', array_slice($errors, -4)) : 'no Mobius address configured'];
+}
+// Read-only: logs in, then calls ussdcalls/count (a harmless read) each way, to show which way Mobius accepts.
+function mobius_probe(array $cfg): array {
+    $out = []; $hash = decrypt_secret($cfg['mobius_pass']);
+    if ($cfg['mobius_user'] === '' || $hash === '') return [['label' => 'Setup', 'ok' => false, 'msg' => 'Enter the Mobius API user name and password first.']];
+    $base = mobius_bases($cfg)[0] ?? null; if (!$base) return [['label' => 'Setup', 'ok' => false, 'msg' => 'No valid Mobius address saved.']];
+    $ch = mobius_handle(); $l = mobius_http($base.'auth/login', ['username' => $cfg['mobius_user'], 'password' => $hash], 5, $ch);
+    $keys = $l['json'] ? implode(', ', array_map(fn($k) => $k.($k === 'sessionID' ? ' (…'.substr((string)$l['json'][$k], -4).')' : '='.mb_substr(is_scalar($l['json'][$k]) ? (string)$l['json'][$k] : 'object', 0, 40)), array_keys($l['json']))) : mb_substr($l['raw'], 0, 120);
+    $out[] = ['label' => 'Login', 'ok' => $l['code'] === 200, 'msg' => 'HTTP '.$l['code'].' — '.$keys];
+    curl_close($ch);
+    foreach ([0, 1, 2, 3] as $v) {
+        $r = mobius_call_variant($cfg, $base, 'ussdcalls/count', [], $v, true);
+        $m = $r['error'] !== '' ? $r['error'] : ($r['json'] ? 'status='.($r['json']['status'] ?? '?').(isset($r['json']['errorMessage']) ? ', '.mb_substr((string)$r['json']['errorMessage'], 0, 100) : '').(isset($r['json']['data']) && is_scalar($r['json']['data']) ? ', data='.$r['json']['data'] : '') : mb_substr($r['raw'], 0, 120));
+        $out[] = ['label' => 'Read call, '.MOBIUS_VARIANTS[$v], 'ok' => $r['code'] === 200 && !mobius_is_auth_error($r) && strtoupper((string)($r['json']['status'] ?? 'SUCCESS')) !== 'ERROR', 'msg' => 'HTTP '.$r['code'].' — '.$m];
+    }
+    return $out;
 }
 function mobius_test(array $cfg): array {
     $out = []; $hash = decrypt_secret($cfg['mobius_pass']);
@@ -2543,7 +2595,7 @@ function save_mobius_config(array $d): void {
     $pass = (string)($d['mobius_pass'] ?? '');
     // Mobius wants the MD5 of the password; only that hash is kept, encrypted, and the plain password is never stored.
     if ($pass !== '') $vals['mobius_pass'] = encrypt_secret(md5($pass));
-    if ($pass !== '' || $user !== $cfg['mobius_user'] || $vals['mobius_base'] !== $cfg['mobius_base']) $vals['mobius_session'] = '';
+    if ($pass !== '' || $user !== $cfg['mobius_user'] || $vals['mobius_base'] !== $cfg['mobius_base']) { $vals['mobius_session'] = ''; $vals['mobius_variant'] = '0'; }
     ussd_proxy_set($vals);
     audit('ussd_proxy_mobius_save', null, 'ussd_proxy_config', null, 'push='.$vals['push_enabled'].' user='.$user.' password_changed='.($pass !== '' ? 'yes' : 'no'));
 }
@@ -2577,7 +2629,7 @@ function ussd_proxy_push_endpoint(array $cfg, array $flat, string $raw, array $g
     if (function_exists('fastcgi_finish_request')) fastcgi_finish_request(); else { while (ob_get_level() > 0) @ob_end_flush(); flush(); }
     if ($text !== null) {
         $res = mobius_push($cfg, $callId, $text, $complete);
-        $note .= $res['ok'] ? 'pushed to Mobius'.($complete ? ' (final screen)' : '') : 'PUSH FAILED: '.$res['error'];
+        $note .= $res['ok'] ? 'pushed to Mobius'.($complete ? ' (final screen)' : '').' ['.$res['variant'].']' : 'PUSH FAILED: '.$res['error'];
     }
     ussd_proxy_write_log('proxy', $ip, $get, $raw, $text ?? $ack, (int)round((microtime(true) - $t0) * 1000), $note);
     exit;
