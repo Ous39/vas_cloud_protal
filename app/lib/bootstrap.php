@@ -2356,10 +2356,13 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
     // The options on the current screen. A catalogue list builds them from the offer catalogue, a page at a time.
     $current = function () use (&$cur, &$page, $kids, $roots, $catalogLookup): array {
         if ($cur && $cur['node_type'] === 'catalog') {
-            $all = [];
-            foreach ($catalogLookup($cur) as $o) {
+            $all = []; $rows = $catalogLookup($cur); $seen = [];
+            foreach ($rows as $o) { $k = strtolower(trim((string)($o['name'] ?? ''))); $seen[$k] = ($seen[$k] ?? 0) + 1; }
+            foreach ($rows as $o) {
                 $name = trim((string)($o['name'] ?? '')) ?: (string)$o['offer_code'];
-                $all[] = ['id' => 'c'.$cur['id'].'-'.$o['offer_code'], 'parent_id' => $cur['id'], 'node_type' => 'offer', 'status' => 'active', 'offer_code' => (string)$o['offer_code'], 'action_key' => '',
+                // several offers can share a name (e.g. 175MB for Facebook, TikTok…): tell them apart by their sub-category
+                if (($seen[strtolower($name)] ?? 0) > 1 && trim((string)($o['sub_category'] ?? '')) !== '') $name .= ' '.trim(preg_replace('/\s*bundles?$/i', '', (string)$o['sub_category']));
+                $all[] = ['id' => 'c'.$cur['id'].'-'.$o['offer_code'], 'parent_id' => $cur['id'], 'node_type' => 'offer', 'status' => 'active', 'offer_code' => (string)$o['offer_code'], 'action_key' => '', 'full_label' => $name,
                     'prompt_text' => mb_strimwidth($name, 0, 18, '…').(($o['one_time_price'] ?? '') !== '' ? ' - '.$o['one_time_price'] : '')];
             }
             return [array_slice($all, $page * USSD_PAGE_SIZE, USSD_PAGE_SIZE), count($all) > ($page + 1) * USSD_PAGE_SIZE];
@@ -2386,7 +2389,7 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
         if ($pick['node_type'] === 'offer') {
             $o = $offerLookup(trim((string)$pick['offer_code']));
             if (!$o) return ussd_result('Sorry, this offer is not available right now.', true, $path, 'offer_unavailable', $pick);
-            $confirm = [$pick, $o, trim((string)($o['name'] ?? '')) ?: trim((string)$pick['prompt_text'])];
+            $confirm = [$pick, $o, trim((string)($pick['full_label'] ?? '')) ?: (trim((string)($o['name'] ?? '')) ?: trim((string)$pick['prompt_text']))];
             continue;
         }
         // a leaf: action / end / an empty submenu — the session ends here
@@ -2412,7 +2415,7 @@ function ussd_catalog_offers(array $node): array {
     $subs = array_values(array_filter(array_map('trim', preg_split('/\R/', (string)($node['catalog_filter'] ?? '')))));
     if (!$subs) return [];
     try {
-        $st = pdo(USSD_OFFER_SCHEMA)->prepare('SELECT offer_code, name, one_time_price, validity_amount FROM vas_offers WHERE sub_category IN ('.implode(',', array_fill(0, count($subs), '?')).') AND '.OFFER_ACTIVE_SQL." AND (deleted_at IS NULL OR deleted_at='') AND offer_code IS NOT NULL AND offer_code<>'' ORDER BY id DESC LIMIT 200");
+        $st = pdo(USSD_OFFER_SCHEMA)->prepare('SELECT offer_code, name, sub_category, one_time_price, validity_amount FROM vas_offers WHERE sub_category IN ('.implode(',', array_fill(0, count($subs), '?')).') AND '.OFFER_ACTIVE_SQL." AND (deleted_at IS NULL OR deleted_at='') AND offer_code IS NOT NULL AND offer_code<>'' ORDER BY id DESC LIMIT 200");
         $st->execute($subs);
         $rows = []; foreach ($st->fetchAll() as $o) if (!isset($rows[$o['offer_code']])) $rows[$o['offer_code']] = $o;
         $rows = array_values($rows);
