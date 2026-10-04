@@ -908,6 +908,7 @@ if ($page==='ussd_proxy') {
     if ($_SERVER['REQUEST_METHOD']==='POST') {
         $do=(string)($_POST['do']??'');
         if ($do==='save') { save_ussd_proxy_config($_POST); flash('success','USSD proxy settings saved.'); redirect('?page=ussd_proxy'); }
+        if ($do==='save_purchase') { save_purchase_config($_POST); flash('success','Purchase settings saved.'); redirect('?page=ussd_proxy'); }
         if ($do==='save_mobius') { save_mobius_config($_POST); flash('success','Mobius connection saved. Use "Test connection" to check the login.'); redirect('?page=ussd_proxy'); }
         if ($do==='rotate') { ussd_proxy_rotate_token(); flash('warning','New token created. Update the URL in the Mobius menu(s) — the old URL no longer works.'); redirect('?page=ussd_proxy'); }
         if ($do==='clear') { portal_pdo()->exec('DELETE FROM ussd_proxy_log'); audit('ussd_proxy_log_clear',null,'ussd_proxy_log',null,null); flash('success','Captured requests cleared.'); redirect('?page=ussd_proxy'); }
@@ -917,6 +918,7 @@ if ($page==='ussd_proxy') {
     if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['do']??'')==='mobius_probe') { $mobiusProbe=mobius_probe($cfg); audit('ussd_proxy_mobius_probe',null,'ussd_proxy_config',null,json_encode(array_map(fn($r)=>['l'=>$r['label'],'ok'=>$r['ok']],$mobiusProbe))); }
     if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['do']??'')==='mobius_test') { $mobiusTest=mobius_test($cfg); audit('ussd_proxy_mobius_test',null,'ussd_proxy_config',null,json_encode(array_map(fn($r)=>['base'=>$r['base'],'ok'=>$r['ok']],$mobiusTest))); }
     $logs=portal_pdo()->query('SELECT * FROM ussd_proxy_log ORDER BY id DESC LIMIT 25')->fetchAll();
+    ussd_purchase_table(); $purchases=portal_pdo()->query('SELECT * FROM ussd_purchases ORDER BY id DESC LIMIT 15')->fetchAll();
     // the tester: a sample request (or a captured one to replay), run through the live logic without storing any session
     $test=null; $testIn=''; $testMode='proxy'; $testCt='application/json';
     if ($_SERVER['REQUEST_METHOD']==='POST' && in_array($_POST['do']??'',['test','replay'],true)) {
@@ -994,6 +996,23 @@ if ($page==='ussd_proxy') {
         <?php if($mobiusProbe):?><div class="mt-2"><?php foreach($mobiusProbe as $mp):?><div class="small"><span class="badge <?=$mp['ok']?'bg-success':'bg-danger'?> me-1"><?=$mp['ok']?'OK':'Refused'?></span><b><?=e($mp['label'])?></b> — <?=e($mp['msg'])?></div><?php endforeach;?></div><?php endif;?>
         <?php if($mobiusTest):?><div class="mt-2"><?php foreach($mobiusTest as $mt):?><div class="small"><span class="badge <?=$mt['ok']?'bg-success':'bg-danger'?> me-1"><?=$mt['ok']?'OK':'Failed'?></span><code><?=e($mt['base'])?></code> <?=e($mt['msg'])?></div><?php endforeach;?></div><?php endif;?>
     </div>
+    <div class="cardx mt-3"><h3>Buying from the menu <small class="text-muted">(offer items in the Menu Builder)</small></h3>
+        <p class="text-muted">When a customer picks an <b>offer</b> item, the menu shows its name and price (read from <b><?=e(USSD_OFFER_SCHEMA)?></b> only) and asks <i>1. Confirm / 2. Cancel</i>. What happens on Confirm depends on the mode. Each call can buy each offer only once, even if Mobius repeats a request.</p>
+        <form method="post" class="row g-3"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="save_purchase">
+            <div class="col-md-4"><label class="small text-muted mb-0">Mode</label><select class="form-select" name="purchase_mode">
+                <option value="off" <?=$cfg['purchase_mode']==='off'?'selected':''?>>Off — nothing is bought</option>
+                <option value="test" <?=$cfg['purchase_mode']==='test'?'selected':''?>>Test — record it, tell the customer it was a test</option>
+                <option value="live" <?=$cfg['purchase_mode']==='live'?'selected':''?>>Live — send the purchase request below</option></select></div>
+            <div class="col-md-8"><label class="small text-muted mb-0">Purchase address <small>(POST, JSON — the Hera <b>test</b> environment; needed for Live only)</small></label><input class="form-control" name="purchase_url" value="<?=e($cfg['purchase_url'])?>" placeholder="https://…"></div>
+            <div class="col-12"><label class="small text-muted mb-0">Request body <small>— placeholders: <code>{msisdn}</code> <code>{offer_code}</code> <code>{txn}</code> (the call id) <code>{price}</code></small></label><textarea class="form-control code" rows="3" name="purchase_body"><?=e($cfg['purchase_body'])?></textarea></div>
+            <div class="col-md-5"><label class="small text-muted mb-0">Header to send <small>(e.g. an API key — kept encrypted, never shown again)</small></label><input class="form-control" name="purchase_auth" autocomplete="off" placeholder="<?=$cfg['purchase_auth']!==''?'saved — leave blank to keep':'Authorization: Bearer …'?>"><?php if($cfg['purchase_auth']!==''):?><div class="form-check mt-1"><input class="form-check-input" type="checkbox" name="purchase_auth_clear" value="1" id="pac"><label class="form-check-label small" for="pac">Remove the saved header</label></div><?php endif;?></div>
+            <div class="col-md-5"><label class="small text-muted mb-0">Success means <small>(text the reply must contain; blank = any 2xx answer)</small></label><input class="form-control" name="purchase_ok_match" value="<?=e($cfg['purchase_ok_match'])?>" placeholder="e.g. success"></div>
+            <div class="col-md-2"><label class="small text-muted mb-0">Timeout (s)</label><input class="form-control" type="number" min="2" max="15" name="purchase_timeout" value="<?=e($cfg['purchase_timeout'])?>"></div>
+            <div class="col-12"><button class="btn btn-primary">Save purchase settings</button></div>
+        </form>
+        <?php if($purchases):?><div class="table-scroll mt-3"><table class="table table-sm mb-0"><thead><tr><th>Time</th><th>Number</th><th>Offer</th><th>Mode</th><th>Result</th><th>Shown to customer</th></tr></thead><tbody>
+            <?php foreach($purchases as $pu):?><tr><td class="text-nowrap"><?=e($pu['created_at'])?></td><td><?=e($pu['msisdn'])?></td><td><?=e($pu['offer_code'])?> <small class="text-muted"><?=e($pu['offer_name'])?></small></td><td><?=e($pu['mode'])?></td><td><span class="badge <?=['ok'=>'bg-success','test'=>'bg-info text-dark','failed'=>'bg-danger','pending'=>'bg-warning text-dark'][$pu['status']]??'bg-secondary'?>"><?=e($pu['status'])?></span><?=$pu['http_code']?' <small class="text-muted">HTTP '.e($pu['http_code']).'</small>':''?></td><td title="<?=e((string)$pu['response'])?>"><?=e((string)$pu['reply_text'])?></td></tr><?php endforeach;?></tbody></table></div><?php endif;?>
+    </div>
     <div class="cardx mt-3"><h3>Try it without Mobius</h3>
         <p class="text-muted">Paste a sample request (JSON, XML or <code>name=value&amp;name=value</code>) — or press <b>Replay</b> on a captured one below. It runs the live logic with the settings above and shows what would be sent back. Nothing is stored and no session is kept.</p>
         <form method="post" class="row g-2"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="test">
@@ -1051,6 +1070,7 @@ if ($page==='ussd_sim') {
                 <div class="ussd-screen"><?=nl2br(e($scr['text']))?></div>
                 <div class="ussd-meta <?=$scr['too_long']?'text-danger fw-semibold':'text-muted'?>"><?=$scr['chars']?> / <?=USSD_MAX_CHARS?> characters<?=$scr['too_long']?' — too long: some phones cut or reject it':''?></div>
                 <?php if($scr['end']):?>
+                    <?php if($scr['kind']==='purchase'):?><div class="alert alert-warning py-2 mt-2 mb-0 small">Simulator: nothing was bought. On the live short code this is where the purchase happens (purchase mode: <b><?=e(ussd_proxy_config()['purchase_mode'])?></b>).</div><?php endif;?>
                     <div class="alert alert-secondary py-2 mt-2 mb-2">Session ended (<?=e($scr['kind'])?>).</div>
                     <a class="btn btn-primary" href="?page=ussd_sim&sc=<?=urlencode($sc)?>&draft=<?=$withDraft?1:0?>"><i class="fa-solid fa-rotate-right me-1"></i>Dial again</a>
                 <?php else:?>
