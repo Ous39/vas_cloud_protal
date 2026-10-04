@@ -1207,7 +1207,7 @@ function hourly_transaction_trend_uncached(string $schema, int $hours = 24): arr
     if (!table_exists($schema, AUDIT_LOG_TABLE)) return [];
     $hours = max(1, min(168, $hours));
     [$cf, $params] = alert_counted_failure_sql();
-    $st = pdo($schema)->prepare("SELECT DATE_FORMAT(create_date, '%Y-%m-%d %H:00') hr, COUNT(*) total, SUM(CASE WHEN NOT ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) failed, SUM(CASE WHEN $cf THEN 1 ELSE 0 END) counted_failed FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL $hours HOUR GROUP BY hr ORDER BY hr");
+    $st = pdo($schema)->prepare("SELECT DATE_FORMAT(create_date, '%Y-%m-%d %H:00') hr, COUNT(*) total, SUM(CASE WHEN NOT ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) failed, SUM(CASE WHEN $cf THEN 1 ELSE 0 END) counted_failed FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL $hours HOUR AND NOT ".LOOKUPS_SQL." GROUP BY hr ORDER BY hr");
     $st->execute($params);
     return $st->fetchAll();
 }
@@ -1307,7 +1307,7 @@ function alert_window_stats_uncached(string $schema, int $hours = 1): array {
     if (!table_exists($schema, AUDIT_LOG_TABLE)) return $out;
     $hours = max(1, min(168, $hours));
     [$cf, $params] = alert_counted_failure_sql();
-    $st = pdo($schema)->prepare("SELECT COUNT(*) total, SUM(CASE WHEN NOT ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) failed, SUM(CASE WHEN $cf THEN 1 ELSE 0 END) counted FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL $hours HOUR");
+    $st = pdo($schema)->prepare("SELECT COUNT(*) total, SUM(CASE WHEN NOT ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) failed, SUM(CASE WHEN $cf THEN 1 ELSE 0 END) counted FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL $hours HOUR AND NOT ".LOOKUPS_SQL);
     $st->execute($params);
     $r = $st->fetch();
     return ['total' => (int)($r['total'] ?? 0), 'failed' => (int)($r['failed'] ?? 0), 'counted' => (int)($r['counted'] ?? 0)];
@@ -1324,13 +1324,15 @@ function compute_alerts_uncached(string $schema): array {
         // Reasons the admin chose to ignore (customer-side failures such as insufficient balance)
         // still count in the total but not as failures, so they can't trip the alert on their own.
         [$cf, $params, $ignored] = alert_counted_failure_sql();
-        $st = $db->prepare("SELECT COUNT(*) total, SUM(CASE WHEN $cf THEN 1 ELSE 0 END) failed FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL 1 HOUR");
+        // Customer traffic only: Hera's own background calls to its vendors (no channel, ~70k/day, nearly all
+        // successful) are left out so they can't dilute the failure rate.
+        $st = $db->prepare("SELECT COUNT(*) total, SUM(CASE WHEN $cf THEN 1 ELSE 0 END) failed FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL 1 HOUR AND NOT ".LOOKUPS_SQL);
         $st->execute($params);
         $r = $st->fetch(); $total = (int)($r['total'] ?? 0); $failed = (int)($r['failed'] ?? 0);
         if ($total >= $cfg['failure_min_sample']) {
             $rate = $failed / $total;
             if ($rate * 100 > $cfg['failure_rate_pct']) {
-                $alerts[] = ['key'=>'high_failure_rate:'.$schema, 'type'=>'failure_rate', 'level'=>'danger', 'message'=>sprintf('High failure rate in the last hour: %d of %d transactions failed (%.0f%%).%s', $failed, $total, $rate*100, $ignored ? ' Failure reasons you chose to ignore are not counted.' : '')];
+                $alerts[] = ['key'=>'high_failure_rate:'.$schema, 'type'=>'failure_rate', 'level'=>'danger', 'message'=>sprintf('High failure rate in the last hour: %d of %d customer transactions failed (%.0f%%).%s', $failed, $total, $rate*100, $ignored ? ' Failure reasons you chose to ignore are not counted.' : '')];
             }
         }
     }
@@ -1555,6 +1557,70 @@ function failure_reasons_breakdown_uncached(string $schema, int $hours = 1, int 
     $st = pdo($schema)->prepare("SELECT COALESCE(NULLIF(TRIM(result_description),''),'(no reason given)') reason, COUNT(*) c FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL $hours HOUR AND NOT ".AUDIT_SUCCESS_SQL." GROUP BY reason ORDER BY c DESC LIMIT $limit");
     $st->execute();
     return $st->fetchAll();
+}
+
+// ===================== Offer Catalog health =====================
+// Most recent purchase attempt per offer code. Uses the suffix index backwards (newest id first) so each code
+// costs one index seek instead of scanning a month of the 100M-row subscription table. Codes that are not
+// exactly 5 characters can never appear: subscription only records the last 5 characters of the transaction.
+function offer_last_purchase_dates(string $schema, array $codes, int $budgetSeconds = 20): array {
+    $out = ['dates' => [], 'partial' => false];
+    if (!table_exists($schema, 'subscription')) return $out;
+    $col = column_exists($schema, 'subscription', 'txn_offer_suffix') ? 'txn_offer_suffix' : 'RIGHT(transaction_id, 5)';
+    $st = pdo($schema)->prepare("SELECT date FROM subscription WHERE $col = ? ORDER BY id DESC LIMIT 1");
+    $start = microtime(true);
+    foreach (array_values(array_unique($codes)) as $code) {
+        if (strlen((string)$code) !== 5) continue;
+        if (microtime(true) - $start > $budgetSeconds) { $out['partial'] = true; break; }
+        $st->execute([$code]); $d = $st->fetchColumn();
+        $out['dates'][$code] = $d === false ? null : $d;
+    }
+    return $out;
+}
+function offer_health(string $schema, int $days): array {
+    $offers = pdo($schema)->query('SELECT id, vendor, offer_code, offer_code_for_other, name, status, one_time_price, rental_price, validity_amount FROM vas_offers ORDER BY offer_code, id')->fetchAll();
+    $empty = fn($v) => $v === null || trim((string)$v) === '' || (is_numeric($v) && (float)$v == 0.0);
+    $byCode = []; $byOther = []; $directCodes = [];
+    foreach ($offers as $o) {
+        $c = strtolower(trim((string)$o['offer_code'])); $byCode[$c][] = $o; $directCodes[$c] = true;
+        $x = strtolower(trim((string)$o['offer_code_for_other'])); if ($x !== '') $byOther[$x][] = $o;
+    }
+    $dups = [];
+    foreach ($byCode as $c => $rows) {
+        if (count($rows) < 2) continue;
+        $active = count(array_filter($rows, fn($r) => offer_is_active($r['status'])));
+        $dups[] = ['code' => $rows[0]['offer_code'], 'rows' => $rows, 'active' => $active, 'conflict' => $active > 1];
+    }
+    usort($dups, fn($a, $b) => [$b['conflict'], count($b['rows'])] <=> [$a['conflict'], count($a['rows'])]);
+    $otherClash = [];
+    foreach ($byOther as $x => $rows) {
+        $bases = array_unique(array_map(fn($r) => strtolower(trim((string)$r['offer_code'])), $rows));
+        if (count($bases) > 1) $otherClash[] = ['code' => $rows[0]['offer_code_for_other'], 'rows' => $rows, 'why' => 'shared by '.count($bases).' different offers'];
+        elseif (isset($directCodes[$x]) && $x !== $bases[array_key_first($bases)]) $otherClash[] = ['code' => $rows[0]['offer_code_for_other'], 'rows' => $rows, 'why' => 'also used as another offer\'s own code'];
+    }
+    $active = array_values(array_filter($offers, fn($o) => offer_is_active($o['status'])));
+    $incomplete = [];
+    foreach ($active as $o) {
+        $why = [];
+        if (trim((string)$o['name']) === '') $why[] = 'no name';
+        if ($empty($o['one_time_price']) && $empty($o['rental_price'])) $why[] = 'no price';
+        if ($empty($o['validity_amount'])) $why[] = 'no validity';
+        if ($why) $incomplete[] = ['offer' => $o, 'why' => $why];
+    }
+    $codes = []; foreach ($active as $o) { $codes[] = (string)$o['offer_code']; if (trim((string)$o['offer_code_for_other']) !== '') $codes[] = (string)$o['offer_code_for_other']; }
+    $last = cached('offer_last_purchase:'.$schema, 1800, fn() => offer_last_purchase_dates($schema, $codes));
+    $cut = date('Y-m-d H:i:s', strtotime("-$days days")); $quiet = []; $unchecked = [];
+    foreach ($active as $o) {
+        $mine = array_filter([$o['offer_code'], trim((string)$o['offer_code_for_other'])], fn($c) => $c !== '' && strlen((string)$c) === 5);
+        if (!$mine) { $unchecked[] = $o; continue; }
+        $latest = null; foreach ($mine as $c) { $d = $last['dates'][$c] ?? null; if ($d !== null && ($latest === null || $d > $latest)) $latest = $d; }
+        $known = false; foreach ($mine as $c) if (array_key_exists($c, $last['dates'])) $known = true;
+        if (!$known) continue; // not looked up (time budget) — don't guess
+        if ($latest === null || $latest < $cut) $quiet[] = ['offer' => $o, 'last' => $latest];
+    }
+    usort($quiet, fn($a, $b) => strcmp((string)$a['last'], (string)$b['last']));
+    return ['total' => count($offers), 'active' => count($active), 'dups' => $dups, 'other_clash' => $otherClash, 'incomplete' => $incomplete, 'quiet' => $quiet,
+        'unchecked' => $unchecked, 'partial' => !empty($last['partial']), 'days' => $days];
 }
 
 // ===================== Result cache =====================

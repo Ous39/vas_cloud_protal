@@ -26,7 +26,7 @@ function nav_can_see(string $page): bool {
     if ($page==='promotions') return can('manage_promotions');
     if (in_array($page,['alert_settings','retention'],true)) return can('manage_api_keys');
     if (in_array($page,['investigate','reports','alerts','monitoring','offer_report','timeline','vendor'],true)) return can('view_reports');
-    if (in_array($page,['subscriptions','offers','esim','sales','friends_family','voting','ussd_ivr','ussd_menu','integrations','tables','projects','shortcodes'],true)) return can('view_tables');
+    if (in_array($page,['subscriptions','offers','offer_health','esim','sales','friends_family','voting','ussd_ivr','ussd_menu','integrations','tables','projects','shortcodes'],true)) return can('view_tables');
     return true;
 }
 function layout_start(string $title): void {
@@ -34,7 +34,7 @@ function layout_start(string $title): void {
     $nav = [
         ['dashboard','fa-gauge','Dashboard'],
         ['monitoring','fa-heart-pulse','Monitoring'],
-        ['group','fa-layer-group','Operations',[['subscriptions','fa-user-check','Subscriptions'],['offers','fa-tags','Offer Management'],['esim','fa-sim-card','eSIM Profiles'],['sales','fa-file-invoice-dollar','Sales & Invoices'],['friends_family','fa-user-group','Friends & Family'],['voting','fa-square-poll-vertical','Voting Service']]],
+        ['group','fa-layer-group','Operations',[['subscriptions','fa-user-check','Subscriptions'],['offers','fa-tags','Offer Management'],['offer_health','fa-stethoscope','Offer Health'],['esim','fa-sim-card','eSIM Profiles'],['sales','fa-file-invoice-dollar','Sales & Invoices'],['friends_family','fa-user-group','Friends & Family'],['voting','fa-square-poll-vertical','Voting Service']]],
         ['group','fa-tower-broadcast','Infrastructure',[['ussd_ivr','fa-mobile-screen-button','USSD & IVR'],['ussd_menu','fa-sitemap','USSD Menu Builder'],['integrations','fa-plug-circle-check','Integrations']]],
         ['group','fa-chart-line','Reports',[['investigate','fa-headset','Complaint Investigation'],['timeline','fa-timeline','Customer Timeline'],['alerts','fa-triangle-exclamation','Alerts'],['offer_report','fa-bullhorn','Offer Performance'],['reports','fa-chart-line','Reports'],['sql','fa-code','SQL Console']]],
         ['group','fa-gears','Admin',[['tables','fa-database','Database Tables'],['promotions','fa-bullhorn','Promotions'],['projects','fa-diagram-project','Projects'],['shortcodes','fa-hashtag','Short Codes'],['api_keys','fa-key','Partner API Keys'],['alert_settings','fa-bell','Alert Settings'],['retention','fa-database','Data Retention'],['audit','fa-shield-halved','Audit Trail'],['users','fa-users-gear','Users']]],
@@ -482,7 +482,7 @@ if ($page==='alert_settings') {
         <form method="post" class="row g-3"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="save_rules">
             <div class="col-lg-6"><div class="border rounded p-3 h-100">
                 <div class="form-check form-switch mb-2"><input class="form-check-input" type="checkbox" name="failure_rate_enabled" value="1" id="fre" <?=$cfg['failure_rate_enabled']?'checked':''?>><label class="form-check-label fw-semibold" for="fre">High failure rate</label></div>
-                <p class="text-muted small">Alert when more than this share of the last hour's transactions failed.</p>
+                <p class="text-muted small">Alert when more than this share of the last hour's <b>customer</b> transactions failed. Hera's own background lookups (no channel) are not counted, so they can't hide a real problem.</p>
                 <div class="row g-2"><div class="col-6"><label class="small text-muted mb-0">Failure rate above (%)</label><input class="form-control" type="number" min="1" max="100" name="failure_rate_pct" value="<?=e($cfg['failure_rate_pct'])?>"></div>
                 <div class="col-6"><label class="small text-muted mb-0">Only if at least this many transactions</label><input class="form-control" type="number" min="1" name="failure_min_sample" value="<?=e($cfg['failure_min_sample'])?>"></div></div>
             </div></div>
@@ -586,7 +586,7 @@ if ($page==='alerts') {
     layout_start('Alerts & Monitoring');
     ?>
     <div class="metric-grid">
-        <div class="metric"><span>Transactions (last hour)</span><strong><?=number_format($stats['total'])?></strong></div>
+        <div class="metric"><span>Customer transactions (last hour)</span><strong><?=number_format($stats['total'])?></strong></div>
         <div class="metric"><span>Failed (last hour)</span><strong><?=number_format($stats['failed'])?></strong><small class="text-muted"><?=$pct($stats['failed'],$stats['total'])?>% of transactions</small></div>
         <div class="metric"><span>Counted toward the alert</span><strong><?=number_format($stats['counted'])?></strong><small class="text-muted"><?=$pct($stats['counted'],$stats['total'])?>%<?=$cfg['failure_rate_enabled']?' — alerts above '.(int)$cfg['failure_rate_pct'].'%':' — failure alert is off'?></small></div>
         <div class="metric"><span>Active alerts</span><strong class="<?=$alerts?'text-danger':'text-success'?>"><?=count($alerts)?></strong></div>
@@ -1182,6 +1182,67 @@ if ($page==='users') {
     layout_start('User & Access Control');
     $users=portal_pdo()->query('SELECT id,full_name,username,role,status,default_schema_name,allowed_schemas,last_login,created_at FROM portal_users ORDER BY id DESC')->fetchAll();
     ?><div class="row g-3"><div class="col-lg-4"><div class="cardx"><h3><?= $edit?'Edit User':'Create User' ?></h3><form method="post" data-confirm="Confirm saving this user?"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="id" value="<?=e($edit['id']??'')?>"><label class="form-label">Full name</label><input class="form-control mb-2" name="full_name" value="<?=e($edit['full_name']??'')?>" placeholder="Full name"><label class="form-label">Username</label><input class="form-control mb-2" name="username" value="<?=e($edit['username']??'')?>" placeholder="Username"><label class="form-label">Password <?php if($edit):?><small class="text-muted">(leave blank to keep current)</small><?php endif;?></label><input class="form-control mb-2" name="password" type="password" autocomplete="new-password" placeholder="<?=$edit?'Leave blank to keep current':'At least 10 characters'?>"><label class="form-label">Role</label><select name="role" class="form-select mb-2"><?php foreach(['viewer','operator','manager','admin'] as $r):?><option value="<?=e($r)?>" <?=($edit['role']??'viewer')===$r?'selected':''?>><?=e(ucfirst($r))?></option><?php endforeach;?></select><label class="form-label">Status</label><select name="status" class="form-select mb-2"><?php foreach(['active','disabled'] as $s):?><option value="<?=e($s)?>" <?=($edit['status']??'active')===$s?'selected':''?>><?=e(ucfirst($s))?></option><?php endforeach;?></select><label class="form-label">Default database</label><select name="default_schema_name" class="form-select mb-2"><?php foreach(allowed_schemas() as $s):?><option value="<?=e($s)?>" <?=($edit['default_schema_name']??'HeraTesting')===$s?'selected':''?>><?=e($s)?></option><?php endforeach;?></select><label class="form-label">Databases this user can open</label><div class="db-access mb-1"><?php $mine=($edit && ($edit['allowed_schemas']??null)!==null && trim((string)$edit['allowed_schemas'])!=='') ? explode(',',$edit['allowed_schemas']) : allowed_schemas(); foreach(allowed_schemas() as $s):?><label class="db-check env-<?=schema_kind($s)?>"><input type="checkbox" name="schemas[]" value="<?=e($s)?>" <?=in_array($s,$mine,true)?'checked':''?>><span class="dot"></span><span><strong><?=e(schema_label($s))?></strong><small><?=e($s)?></small></span></label><?php endforeach;?></div><p class="text-muted small mb-3">Admins can always open every database. Anyone else only sees the ones ticked here.</p><button class="btn btn-primary w-100">Save User</button><?php if($edit):?><a class="btn btn-outline-secondary w-100 mt-2" href="?page=users">Cancel Edit</a><?php endif;?></form></div></div><div class="col-lg-8"><div class="cardx"><h3>Users</h3><div class="table-scroll"><table class="table table-hover"><thead><tr><th>Name</th><th>User</th><th>Role</th><th>Status</th><th>Default</th><th>Databases</th><th>Last Login</th><th></th></tr></thead><tbody><?php foreach($users as $u):?><tr><td><?=e($u['full_name'])?></td><td><?=e($u['username'])?></td><td><span class="badge bg-<?=role_badge($u['role'])?>"><?=e($u['role'])?></span></td><td><span class="badge <?=$u['status']==='active'?'bg-success':'bg-secondary'?>"><?=e($u['status'])?></span></td><td><?=e($u['default_schema_name'])?></td><td class="cell-full"><?php if($u['role']==='admin' || $u['allowed_schemas']===null || trim((string)$u['allowed_schemas'])===''):?><span class="badge bg-light text-dark border">All</span><?php else: foreach(explode(',',$u['allowed_schemas']) as $ds):?><span class="badge bg-light text-dark border me-1"><?=e(schema_label(trim($ds)))?></span><?php endforeach; endif;?></td><td class="text-nowrap"><?=e($u['last_login'] ? substr($u['last_login'],0,16) : 'never')?></td><td><a class="btn btn-sm btn-warning" href="?page=users&id=<?=e($u['id'])?>">Edit</a></td></tr><?php endforeach;?></tbody></table></div></div></div></div><?php layout_end(); exit; }
+
+if ($page==='offer_health') {
+    require_perm('view_tables'); $schema=current_schema();
+    if (!table_exists($schema,'vas_offers')) throw new RuntimeException('vas_offers does not exist in '.$schema);
+    $days=(int)($_GET['days']??30); if(!in_array($days,[7,30,90],true)) $days=30;
+    $h=offer_health($schema,$days);
+    $canEdit=can('edit_records');
+    $row=function(array $o) use ($canEdit){ ob_start(); ?>
+        <tr><td class="text-nowrap"><b><?=e($o['offer_code'])?></b></td><td class="cell-full"><?=e($o['name'])?></td><td><?=e($o['vendor'])?></td>
+            <td><span class="badge <?=offer_is_active($o['status'])?'bg-success':'bg-secondary'?>"><?=offer_is_active($o['status'])?'Active':'Inactive'?></span></td>
+            <td class="text-nowrap"><?php if($canEdit):?><a class="btn btn-sm btn-warning" title="Edit offer" href="?page=offers&id=<?=e($o['id'])?>"><i class="fa-solid fa-pen"></i></a> <?php endif;?><a class="btn btn-sm btn-outline-secondary" title="History" href="?page=offer_history&id=<?=e($o['id'])?>"><i class="fa-solid fa-clock-rotate-left"></i></a></td></tr>
+    <?php return ob_get_clean(); };
+    $conflicts=count(array_filter($h['dups'],fn($d)=>$d['conflict']));
+    layout_start('Offer Health');
+    ?>
+    <div class="metric-grid">
+        <div class="metric"><span>Offers</span><strong><?=number_format($h['total'])?></strong><small class="text-muted"><?=number_format($h['active'])?> active</small></div>
+        <div class="metric"><span>Repeated offer codes</span><strong class="<?=$h['dups']?'text-danger':'text-success'?>"><?=count($h['dups'])?></strong><small class="text-muted"><?=$conflicts?> with more than one active row</small></div>
+        <div class="metric"><span>Active, no purchases in <?=$days?> days</span><strong class="<?=$h['quiet']?'text-warning':'text-success'?>"><?=count($h['quiet'])?></strong><small class="text-muted"><?=$h['partial']?'partial check — time limit':'checked '.($h['active']-count($h['unchecked'])).' offers'?></small></div>
+        <div class="metric"><span>Missing price / validity / name</span><strong class="<?=$h['incomplete']?'text-warning':'text-success'?>"><?=count($h['incomplete'])?></strong><small class="text-muted">active offers</small></div>
+    </div>
+    <div class="cardx mt-3"><h3><i class="fa-solid fa-stethoscope me-2"></i>What this checks</h3>
+        <p class="text-muted mb-0">Problems in the offer catalog that make reports wrong or confusing. Nothing here changes data — use the pen icon to fix an offer (every change asks for confirmation and is recorded in Offer history). Purchase dates are looked up per offer from <b>subscription</b> and cached for 30 minutes.</p>
+    </div>
+
+    <div class="cardx mt-3"><h3>Repeated offer codes <small class="text-muted">(<?=count($h['dups'])?>)</small></h3>
+        <p class="text-muted">Two or more offers share one code. The Offer Performance report used to multiply counts for these (up to 9×); it now counts correctly, but you still can't tell the offers apart in a report, and a purchase can only ever belong to one of them. <b>More than one active row</b> is the one to fix first: deactivate or recode the old version.</p>
+        <?php if(!$h['dups']):?><p class="text-success mb-0">No repeated codes.</p><?php else:?>
+        <div class="table-scroll"><table class="table table-sm align-middle mb-0"><thead><tr><th>Code</th><th>Offer</th><th>Vendor</th><th>Status</th><th></th></tr></thead><tbody>
+        <?php foreach($h['dups'] as $d): foreach($d['rows'] as $k=>$o): echo $row($o); endforeach;?>
+        <tr class="table-light"><td colspan="5" class="small <?=$d['conflict']?'text-danger fw-semibold':'text-muted'?>"><?=$d['conflict']?'⚠ '.$d['active'].' active rows share code '.e($d['code']).' — conflict':'Code '.e($d['code']).': one active row plus older versions — safe, but worth cleaning up'?></td></tr>
+        <?php endforeach;?></tbody></table></div><?php endif;?>
+    </div>
+
+    <?php if($h['other_clash']):?><div class="cardx mt-3"><h3>"Buy for other" code clashes <small class="text-muted">(<?=count($h['other_clash'])?>)</small></h3>
+        <p class="text-muted">A "buy for other" code that points at several offers, or is also another offer's own code, can't be matched to one offer in a report.</p>
+        <div class="table-scroll"><table class="table table-sm align-middle mb-0"><thead><tr><th>Code</th><th>Offer</th><th>Vendor</th><th>Status</th><th></th></tr></thead><tbody>
+        <?php foreach($h['other_clash'] as $d): foreach($d['rows'] as $o): echo $row($o); endforeach;?><tr class="table-light"><td colspan="5" class="small text-muted">Other-network code <?=e($d['code'])?> — <?=e($d['why'])?></td></tr><?php endforeach;?></tbody></table></div></div><?php endif;?>
+
+    <div class="cardx mt-3"><div class="d-flex justify-content-between align-items-center flex-wrap gap-2"><h3 class="mb-0">Active offers with no purchases in <?=$days?> days <small class="text-muted">(<?=count($h['quiet'])?>)</small></h3>
+        <form method="get" class="d-flex gap-2 align-items-center"><input type="hidden" name="page" value="offer_health"><select class="form-select form-select-sm" name="days" data-autosubmit><?php foreach([7,30,90] as $dd):?><option value="<?=$dd?>" <?=$dd===$days?'selected':''?>>last <?=$dd?> days</option><?php endforeach;?></select></form></div>
+        <p class="text-muted mt-2">"Purchase" here means any attempt recorded in <b>subscription</b>, successful or not, for the offer's code or its "buy for other" code. An offer nobody tried to buy is either seasonal, hidden from customers, or no longer wired up — decide whether to deactivate it.<?php if($h['partial']):?> <b>The check hit its time limit, so some offers weren't looked up (results refresh every 30 minutes).</b><?php endif;?></p>
+        <?php if(!$h['quiet']):?><p class="text-success mb-0">Every checked active offer has had purchase attempts in this period.</p><?php else:?>
+        <div class="table-scroll"><table class="table table-sm align-middle mb-0"><thead><tr><th>Code</th><th>Offer</th><th>Vendor</th><th>Last attempt</th><th></th></tr></thead><tbody>
+        <?php foreach($h['quiet'] as $q): $o=$q['offer'];?><tr><td class="text-nowrap"><b><?=e($o['offer_code'])?></b></td><td class="cell-full"><?=e($o['name'])?></td><td><?=e($o['vendor'])?></td><td class="text-nowrap"><?=$q['last']?e(substr($q['last'],0,10)).' <small class="text-muted">('.e(time_ago($q['last'])).')</small>':'<span class="text-danger">never</span>'?></td>
+            <td class="text-nowrap"><?php if($canEdit):?><a class="btn btn-sm btn-warning" title="Edit offer" href="?page=offers&id=<?=e($o['id'])?>"><i class="fa-solid fa-pen"></i></a><?php endif;?></td></tr><?php endforeach;?></tbody></table></div><?php endif;?>
+    </div>
+
+    <div class="cardx mt-3"><h3>Active offers missing price, validity or name <small class="text-muted">(<?=count($h['incomplete'])?>)</small></h3>
+        <p class="text-muted">Price counts as missing when both the one-time and rental price are empty or 0 (fine for genuinely free offers).</p>
+        <?php if(!$h['incomplete']):?><p class="text-success mb-0">Nothing missing.</p><?php else:?>
+        <div class="table-scroll"><table class="table table-sm align-middle mb-0"><thead><tr><th>Code</th><th>Offer</th><th>Vendor</th><th>Missing</th><th></th></tr></thead><tbody>
+        <?php foreach($h['incomplete'] as $x): $o=$x['offer'];?><tr><td class="text-nowrap"><b><?=e($o['offer_code'])?></b></td><td class="cell-full"><?=e($o['name'])?></td><td><?=e($o['vendor'])?></td><td><?php foreach($x['why'] as $w):?><span class="badge bg-warning text-dark me-1"><?=e($w)?></span><?php endforeach;?></td>
+            <td><?php if($canEdit):?><a class="btn btn-sm btn-warning" title="Edit offer" href="?page=offers&id=<?=e($o['id'])?>"><i class="fa-solid fa-pen"></i></a><?php endif;?></td></tr><?php endforeach;?></tbody></table></div><?php endif;?>
+    </div>
+
+    <?php if($h['unchecked']):?><div class="cardx mt-3"><h3>Active offers the reports can't see <small class="text-muted">(<?=count($h['unchecked'])?>)</small></h3>
+        <p class="text-muted">The purchase log (<b>subscription</b>) records only the <b>last 5 characters</b> of the transaction as the offer code, so an offer whose code isn't exactly 5 characters (e.g. <code>Bonanza_165</code>, <code>PayAsYouGo</code>) can never match in Offer Performance or in the checks above. If these are sold through USSD/IVR they will show as empty in reports. Ask whoever builds the transaction IDs whether they can be matched another way.</p>
+        <details><summary class="fw-semibold">Show the <?=count($h['unchecked'])?> offers</summary><div class="table-scroll mt-2"><table class="table table-sm mb-0"><tbody><?php foreach($h['unchecked'] as $o): echo $row($o); endforeach;?></tbody></table></div></details></div><?php endif;?>
+    <?php layout_end(); exit;
+}
 
 if ($page==='retention') {
     require_perm('manage_api_keys'); $schema=current_schema();
