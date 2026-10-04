@@ -287,6 +287,15 @@ function ensure_portal_runtime_schema(): void {
             CONSTRAINT fk_promo_offer_promotion FOREIGN KEY (promotion_id) REFERENCES promotions(id) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
 
+        // Short-lived results of heavy aggregate queries (shared by every pod and viewer) so the Dashboard,
+        // Monitoring and Alerts pages don't each re-scan today's audit_log on every view. See cached().
+        $db->exec("CREATE TABLE IF NOT EXISTS metric_cache (
+            cache_key VARCHAR(190) NOT NULL PRIMARY KEY,
+            value MEDIUMTEXT NOT NULL,
+            expires_at INT NOT NULL,
+            INDEX idx_expires (expires_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
         // Notes people leave against a subscriber while handling a complaint (shown on Customer Timeline).
         // Never deleted, like everything else here.
         $db->exec("CREATE TABLE IF NOT EXISTS complaint_notes (
@@ -577,7 +586,8 @@ function distinct_column_values(string $schema, string $table, string $col, int 
 // no supporting index for an unbounded DISTINCT) — fine for vas_offers, not fine here. Bounded to a
 // recent window so it can use the (date, channel) index instead of scanning the whole table; channel
 // is a small, stable set of values, so recent history is all a dropdown actually needs.
-function distinct_recent_channels(string $schema, int $days = 30): array {
+function distinct_recent_channels(...$a) { return cached('distinct_recent_channels:'.md5(serialize($a)), 21600, fn() => distinct_recent_channels_uncached(...$a)); }
+function distinct_recent_channels_uncached(string $schema, int $days = 30): array {
     if (!table_exists($schema, 'subscription')) return [];
     $st = pdo($schema)->prepare("SELECT DISTINCT channel v FROM subscription WHERE date >= NOW() - INTERVAL ? DAY AND channel IS NOT NULL AND channel != '' ORDER BY v LIMIT 50");
     $st->bindValue(1, $days, PDO::PARAM_INT);
@@ -816,7 +826,8 @@ function audit_log_where(array $f, array &$params): string {
     if ($f['transaction_id'] !== '') { $where[] = 'transaction_id = ?'; $params[] = $f['transaction_id']; }
     if ($f['result_status'] !== '') { $where[] = 'result_status = ?'; $params[] = $f['result_status']; }
     if ($f['vendor'] !== '') { $where[] = 'vendor_entity_name LIKE ?'; $params[] = '%'.$f['vendor'].'%'; }
-    if ($f['channel'] !== '') { $where[] = 'channel = ?'; $params[] = $f['channel']; }
+    // 'USSD' also matches per-session labels such as 'USSD-866195620-42018' (what Monitoring groups under 'USSD')
+    if ($f['channel'] !== '') { $where[] = '(channel = ? OR channel LIKE ?)'; $params[] = $f['channel']; $params[] = str_replace(['%', '_'], ['\\%', '\\_'], $f['channel']).'-%'; }
     if ($f['result_desc'] !== '') { $where[] = 'result_description LIKE ?'; $params[] = '%'.$f['result_desc'].'%'; }
     return implode(' AND ', $where);
 }
@@ -1144,7 +1155,8 @@ function offer_performance_report(string $schema, array $offerCodes, string $cha
 // All of these are bounded to short, recent create_date windows so they only ever touch one or two
 // audit_log partitions, never a full-table scan of a 200M+ row table.
 
-function dashboard_kpis(string $schema): array {
+function dashboard_kpis(...$a) { return cached('dashboard_kpis:'.md5(serialize($a)), 60, fn() => dashboard_kpis_uncached(...$a)); }
+function dashboard_kpis_uncached(string $schema): array {
     $out = ['tx_today'=>0, 'tx_today_success'=>0, 'tx_today_failed'=>0, 'offers_active'=>0, 'offers_inactive'=>0, 'subscription_rows_est'=>0];
     if (table_exists($schema, AUDIT_LOG_TABLE)) {
         $db = pdo($schema);
@@ -1164,7 +1176,8 @@ function dashboard_kpis(string $schema): array {
     return $out;
 }
 
-function top_vendors_today(string $schema, int $limit = 6): array {
+function top_vendors_today(...$a) { return cached('top_vendors_today:'.md5(serialize($a)), 60, fn() => top_vendors_today_uncached(...$a)); }
+function top_vendors_today_uncached(string $schema, int $limit = 6): array {
     if (!table_exists($schema, AUDIT_LOG_TABLE)) return [];
     $st = pdo($schema)->prepare("SELECT vendor_entity_name, COUNT(*) total, SUM(CASE WHEN NOT ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) failed FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= CURDATE() GROUP BY vendor_entity_name ORDER BY total DESC LIMIT ?");
     $st->bindValue(1, $limit, PDO::PARAM_INT); $st->execute();
@@ -1173,7 +1186,8 @@ function top_vendors_today(string $schema, int $limit = 6): array {
 
 // Hourly buckets over the last $hours (bounded, same one-or-two-partition footprint as the rest of
 // this section) for the trend charts on the Dashboard and Alerts pages.
-function hourly_transaction_trend(string $schema, int $hours = 24): array {
+function hourly_transaction_trend(...$a) { return cached('hourly_transaction_trend:'.md5(serialize($a)), 60, fn() => hourly_transaction_trend_uncached(...$a)); }
+function hourly_transaction_trend_uncached(string $schema, int $hours = 24): array {
     if (!table_exists($schema, AUDIT_LOG_TABLE)) return [];
     $hours = max(1, min(168, $hours));
     [$cf, $params] = alert_counted_failure_sql();
@@ -1234,6 +1248,7 @@ function save_alert_config(array $d): void {
     $st = portal_pdo()->prepare('INSERT INTO alert_config(name,value) VALUES(?,?) ON DUPLICATE KEY UPDATE value=VALUES(value)');
     foreach ($vals as $k => $v) $st->execute([$k, (string)$v]);
     audit('alert_config_save', null, 'alert_config', null, json_encode($vals));
+    cache_clear();
 }
 function save_summary_config(array $d): void {
     $hour = filter_var($d['summary_hour'] ?? null, FILTER_VALIDATE_INT);
@@ -1258,6 +1273,7 @@ function save_alert_ignored_reasons(array $reasons): void {
         $db->commit();
     } catch (Throwable $e) { $db->rollBack(); throw $e; }
     audit('alert_ignored_save', null, 'alert_ignored_reasons', null, count($reasons).' reason(s) ignored');
+    cache_clear();
 }
 
 // SQL condition (+ bind params) for a failure that counts toward the failure-rate alert: not a
@@ -1269,7 +1285,8 @@ function alert_counted_failure_sql(): array {
     if ($ignored) { $sql .= " AND COALESCE(result_description,'') NOT IN (".implode(',', array_fill(0, count($ignored), '?')).")"; $params = $ignored; }
     return [$sql, $params, $ignored];
 }
-function alert_window_stats(string $schema, int $hours = 1): array {
+function alert_window_stats(...$a) { return cached('alert_window_stats:'.md5(serialize($a)), 60, fn() => alert_window_stats_uncached(...$a)); }
+function alert_window_stats_uncached(string $schema, int $hours = 1): array {
     $out = ['total' => 0, 'failed' => 0, 'counted' => 0];
     if (!table_exists($schema, AUDIT_LOG_TABLE)) return $out;
     $hours = max(1, min(168, $hours));
@@ -1280,7 +1297,8 @@ function alert_window_stats(string $schema, int $hours = 1): array {
     return ['total' => (int)($r['total'] ?? 0), 'failed' => (int)($r['failed'] ?? 0), 'counted' => (int)($r['counted'] ?? 0)];
 }
 
-function compute_alerts(string $schema): array {
+function compute_alerts(...$a) { return cached('compute_alerts:'.md5(serialize($a)), 60, fn() => compute_alerts_uncached(...$a)); }
+function compute_alerts_uncached(string $schema): array {
     $alerts = [];
     if (!table_exists($schema, AUDIT_LOG_TABLE)) return $alerts;
     $db = pdo($schema);
@@ -1514,13 +1532,39 @@ function dispatch_pending_alert_notifications(string $schema): void {
     }
 }
 
-function failure_reasons_breakdown(string $schema, int $hours = 1, int $limit = 8): array {
+function failure_reasons_breakdown(...$a) { return cached('failure_reasons_breakdown:'.md5(serialize($a)), 60, fn() => failure_reasons_breakdown_uncached(...$a)); }
+function failure_reasons_breakdown_uncached(string $schema, int $hours = 1, int $limit = 8): array {
     if (!table_exists($schema, AUDIT_LOG_TABLE)) return [];
     $hours = max(1, $hours); $limit = max(1, $limit);
     $st = pdo($schema)->prepare("SELECT COALESCE(NULLIF(TRIM(result_description),''),'(no reason given)') reason, COUNT(*) c FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL $hours HOUR AND NOT ".AUDIT_SUCCESS_SQL." GROUP BY reason ORDER BY c DESC LIMIT $limit");
     $st->execute();
     return $st->fetchAll();
 }
+
+// ===================== Result cache =====================
+// cached(key, ttl, fn): returns a stored result younger than ttl seconds, else runs fn and stores it. Kept in
+// vas_portal (not on the Hera server) so all replicas share it, and anything unexpected simply falls back
+// to running the query. Settings that change what a result means call cache_clear().
+function cached(string $key, int $ttl, callable $fn) {
+    static $memo = [];
+    $k = strlen($key) > 190 ? substr($key, 0, 120).md5($key) : $key;
+    if (array_key_exists($k, $memo)) return $memo[$k];
+    try {
+        $st = portal_pdo()->prepare('SELECT value FROM metric_cache WHERE cache_key=? AND expires_at > ?');
+        $st->execute([$k, time()]); $v = $st->fetchColumn();
+        if ($v !== false) { $d = json_decode((string)$v, true); if (is_array($d) && array_key_exists('v', $d)) return $memo[$k] = $d['v']; }
+    } catch (Throwable $e) { return $fn(); }
+    $val = $fn();
+    try {
+        $json = json_encode(['v' => $val], JSON_INVALID_UTF8_SUBSTITUTE);
+        if ($json !== false) {
+            portal_pdo()->prepare('REPLACE INTO metric_cache(cache_key,value,expires_at) VALUES(?,?,?)')->execute([$k, $json, time() + $ttl]);
+            if (random_int(1, 50) === 1) portal_pdo()->prepare('DELETE FROM metric_cache WHERE expires_at < ?')->execute([time() - 3600]);
+        }
+    } catch (Throwable $e) {}
+    return $memo[$k] = $val;
+}
+function cache_clear(): void { try { portal_pdo()->exec('DELETE FROM metric_cache'); } catch (Throwable $e) {} }
 
 // ===================== Data retention (audit_log), complaint notes, token rotation =====================
 const MONTH_NAMES = [1 => 'January', 2 => 'February', 3 => 'March', 4 => 'April', 5 => 'May', 6 => 'June', 7 => 'July', 8 => 'August', 9 => 'September', 10 => 'October', 11 => 'November', 12 => 'December'];
@@ -1561,15 +1605,19 @@ function audit_log_retention_plan(array $report, int $keep, ?int $currentMonth =
     $plan = ['rows' => [], 'stale' => [], 'stale_bytes' => 0, 'kept_bytes' => 0, 'sql' => null];
     foreach ($report['months'] as $m => $r) {
         $isKept = isset($keepSet[$m]);
-        $status = $isKept ? ($m === $cur ? 'current' : 'kept') : (($r['bytes'] > 100 * 1024 && $r['rows'] > 0) ? 'stale' : 'empty');
+        $status = $isKept ? ($m === $cur ? 'current' : 'kept') : ($r['rows'] > 0 ? 'stale' : 'empty');
         $plan['rows'][$m] = $r + ['status' => $status, 'age' => $isKept ? $keepSet[$m] : null];
         if ($status === 'stale') { $plan['stale'][] = $r['name']; $plan['stale_bytes'] += $r['bytes']; }
         if ($isKept) $plan['kept_bytes'] += $r['bytes'];
     }
     if ($plan['stale']) $plan['sql'] = 'ALTER TABLE '.($schema !== '' ? '`'.$schema.'`.' : '').'`'.AUDIT_LOG_TABLE.'` TRUNCATE PARTITION '.implode(', ', $plan['stale']).';';
-    $nonEmpty = array_filter($report['months'], fn($r) => $r['bytes'] > 100 * 1024);
-    $plan['avg_month_bytes'] = $nonEmpty ? (int)(array_sum(array_column($nonEmpty, 'bytes')) / count($nonEmpty)) : 0;
+    // An empty partition still occupies ~1 MB, so "has rows" (not "has bytes") decides what counts. The average is
+    // taken over finished months; the current month is only used if nothing else has data yet.
+    $full = array_filter($report['months'], fn($r) => $r['rows'] > 0 && $r['month'] !== $cur);
+    $use = $full ?: array_filter($report['months'], fn($r) => $r['rows'] > 0);
+    $plan['avg_month_bytes'] = $use ? (int)(array_sum(array_column($use, 'bytes')) / count($use)) : 0;
     $plan['steady_state_bytes'] = $plan['avg_month_bytes'] * ($keep + 1);
+    $plan['options'] = []; for ($n = 1; $n <= 6; $n++) $plan['options'][$n] = $plan['avg_month_bytes'] * ($n + 1);
     return $plan;
 }
 // Oldest/newest create_date inside ONE month partition: reveals last year's rows sitting in a month we keep.
@@ -1622,7 +1670,8 @@ function valid_day(string $d, int $maxBackDays = 31): string {
     if ($t === false || $t > strtotime('today') || $t < strtotime("-$maxBackDays days")) return date('Y-m-d');
     return date('Y-m-d', $t);
 }
-function failure_reasons_day(string $schema, string $date, int $limit = 8, ?string $vendor = null): array {
+function failure_reasons_day(...$a) { return cached('failure_reasons_day:'.md5(serialize($a)), 60, fn() => failure_reasons_day_uncached(...$a)); }
+function failure_reasons_day_uncached(string $schema, string $date, int $limit = 8, ?string $vendor = null): array {
     if (!table_exists($schema, AUDIT_LOG_TABLE)) return [];
     $params = [$date.' 00:00:00', date('Y-m-d', strtotime($date.' +1 day')).' 00:00:00']; $vsql = '';
     if ($vendor !== null) { $vsql = " AND COALESCE(NULLIF(vendor_entity_name,''),'(none)') = ?"; $params[] = $vendor; }
@@ -1632,7 +1681,8 @@ function failure_reasons_day(string $schema, string $date, int $limit = 8, ?stri
 }
 // Everything the vendor page shows, for one vendor on one day (a bounded single-day create_date range, so
 // it touches one partition set like the other pages).
-function vendor_detail(string $schema, string $vendor, string $date): array {
+function vendor_detail(...$a) { return cached('vendor_detail:'.md5(serialize($a)), 60, fn() => vendor_detail_uncached(...$a)); }
+function vendor_detail_uncached(string $schema, string $vendor, string $date): array {
     $out = ['total' => 0, 'ok' => 0, 'failed' => 0, 'avg_ms' => null, 'max_ms' => null, 'slow' => 0, 'hourly' => [], 'channels' => [], 'reasons' => [], 'recent_failures' => [], 'prev_total' => 0];
     if (!table_exists($schema, AUDIT_LOG_TABLE)) return $out;
     $db = pdo($schema); $t = ident(AUDIT_LOG_TABLE);
@@ -1864,7 +1914,8 @@ function agent_queue_snapshot(string $schema): array {
 }
 // Transaction activity for a given channel set (USSD, IVR, SMS, ...), reusing the same bounded,
 // partition-aware audit_log query the Complaint Investigation report uses.
-function channel_activity_today(string $schema, array $channels): array {
+function channel_activity_today(...$a) { return cached('channel_activity_today:'.md5(serialize($a)), 60, fn() => channel_activity_today_uncached(...$a)); }
+function channel_activity_today_uncached(string $schema, array $channels): array {
     if (!table_exists($schema, AUDIT_LOG_TABLE)) return ['total' => 0, 'success' => 0, 'failed' => 0];
     $placeholders = implode(',', array_fill(0, count($channels), '?'));
     $st = pdo($schema)->prepare("SELECT COUNT(*) total, SUM(CASE WHEN ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) ok FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= CURDATE() AND channel IN ($placeholders)");
@@ -1995,7 +2046,8 @@ function test_integration(int $id): array {
     audit('test_integration', null, 'integrations', (string)$id, "$message ({$latency}ms)");
     return ['ok' => $ok, 'latency_ms' => $latency, 'message' => $message];
 }
-function smsc_activity_today(string $schema): array { return channel_activity_today($schema, ['SMS', 'SMSC']); }
+function smsc_activity_today(...$a) { return cached('smsc_activity_today:'.md5(serialize($a)), 60, fn() => smsc_activity_today_uncached(...$a)); }
+function smsc_activity_today_uncached(string $schema): array { return channel_activity_today($schema, ['SMS', 'SMSC']); }
 
 function integration_check_history(int $id, int $limit = 20): array {
     $st = portal_pdo()->prepare('SELECT ok, latency_ms, message, checked_at FROM integration_checks WHERE integration_id=? ORDER BY checked_at DESC LIMIT ?');
@@ -2120,10 +2172,11 @@ function channel_activity_by_channel(string $schema, int $limit = 8): array { re
 function vendor_activity_today(string $schema, int $limit = 12): array { return activity_by_column($schema, 'vendor_entity_name', $limit); }
 // Shared by the channel and vendor cards. Anything seen at this time yesterday but silent today is included
 // with 0 transactions (-100%) — a vendor or channel that has quietly stopped is exactly what this view is for.
-function activity_by_column(string $schema, string $col, int $limit): array {
+function activity_by_column(...$a) { return cached('activity_by_column:'.md5(serialize($a)), 60, fn() => activity_by_column_uncached(...$a)); }
+function activity_by_column_uncached(string $schema, string $col, int $limit): array {
     if (!in_array($col, ['channel', 'vendor_entity_name'], true) || !table_exists($schema, AUDIT_LOG_TABLE)) return [];
     $db = pdo($schema); $limit = max(1, min(30, $limit)); $t = ident(AUDIT_LOG_TABLE);
-    $expr = "COALESCE(NULLIF($col,''),'(none)')";
+    $expr = $col === 'channel' ? "COALESCE(NULLIF(SUBSTRING_INDEX(channel,'-',1),''),'(none)')" : "COALESCE(NULLIF($col,''),'(none)')";
     $slowMs = (int)alert_config()['vendor_slow_ms'];
     $cur = $db->query("SELECT $expr name, COUNT(*) total, SUM(CASE WHEN ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) ok, AVG(response_time) avg_ms, MAX(response_time) max_ms, SUM(response_time > $slowMs) slow FROM $t WHERE create_date >= CURDATE() GROUP BY 1")->fetchAll();
     $prev = array_column($db->query("SELECT $expr name, COUNT(*) total FROM $t WHERE create_date >= CURDATE() - INTERVAL 1 DAY AND create_date < NOW() - INTERVAL 1 DAY GROUP BY 1")->fetchAll(), 'total', 'name');
