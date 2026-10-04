@@ -211,4 +211,6 @@ footer{text-align:center;padding:16px 0;background:#232323;color:#fff}
 .hb small{font-size:.62rem;color:var(--muted);margin-top:3px}
 .dot-ok,.dot-bad{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:middle}
 .dot-ok{background:#198754}.dot-bad{background:#dc3545}
-
+.metric-grid a.metric{color:inherit;transition:box-shadow .12s,transform .12s}
+.metric-grid a.metric:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(0,0,0,.08)}
+.metric-grid a.metric-on{outline:2px solid var(--brand);outline-offset:-2px}

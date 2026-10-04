@@ -1619,8 +1619,24 @@ function offer_health(string $schema, int $days): array {
         if ($latest === null || $latest < $cut) $quiet[] = ['offer' => $o, 'last' => $latest];
     }
     usort($quiet, fn($a, $b) => strcmp((string)$a['last'], (string)$b['last']));
+    // One entry per offer with all of its problems, so the page can filter/sort a single list.
+    $items = [];
+    foreach ($offers as $o) $items[(int)$o['id']] = $o + ['issues' => [], 'last' => null, 'score' => 0];
+    $add = function (int $id, string $key, string $label, string $sev, int $score) use (&$items) { if (isset($items[$id])) { $items[$id]['issues'][] = ['key' => $key, 'label' => $label, 'sev' => $sev]; $items[$id]['score'] += $score; } };
+    foreach ($dups as $d) foreach ($d['rows'] as $r) $d['conflict'] && offer_is_active($r['status'])
+        ? $add((int)$r['id'], 'dup', 'Repeated code — '.$d['active'].' active rows', 'danger', 50)
+        : $add((int)$r['id'], 'dup', 'Repeated code'.(offer_is_active($r['status']) ? ' (newest active)' : ' (old version)'), 'secondary', 5);
+    foreach ($otherClash as $d) foreach ($d['rows'] as $r) $add((int)$r['id'], 'other', '"Buy for other" code: '.$d['why'], 'warning', 30);
+    foreach ($incomplete as $x) foreach ($x['why'] as $w) $add((int)$x['offer']['id'], 'missing', ucfirst($w), 'warning', 20);
+    foreach ($quiet as $q) $add((int)$q['offer']['id'], 'quiet', $q['last'] ? 'No purchases in '.$days.' days' : 'Never bought', 'warning', 10);
+    foreach ($unchecked as $o) $add((int)$o['id'], 'invisible', 'Code not 5 characters — reports can\'t see it', 'info', 8);
+    foreach ($active as $o) {
+        $mine = array_filter([$o['offer_code'], trim((string)$o['offer_code_for_other'])], fn($c) => $c !== '' && strlen((string)$c) === 5);
+        $latest = null; foreach ($mine as $c) { $d = $last['dates'][$c] ?? null; if ($d !== null && ($latest === null || $d > $latest)) $latest = $d; }
+        $items[(int)$o['id']]['last'] = $latest;
+    }
     return ['total' => count($offers), 'active' => count($active), 'dups' => $dups, 'other_clash' => $otherClash, 'incomplete' => $incomplete, 'quiet' => $quiet,
-        'unchecked' => $unchecked, 'partial' => !empty($last['partial']), 'days' => $days];
+        'unchecked' => $unchecked, 'partial' => !empty($last['partial']), 'days' => $days, 'items' => array_values($items)];
 }
 
 // ===================== Result cache =====================
