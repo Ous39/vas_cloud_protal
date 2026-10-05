@@ -3112,6 +3112,10 @@ function ussd_proxy_push_endpoint(array $cfg, array $flat, string $raw, array $g
     $callId = trim((string)($flat['callID'] ?? '')); $msisdn = (string)($flat['msisdn'] ?? '');
     $initial = ($flat['isInitial'] ?? '') === 'true'; $ended = ($flat['isComplete'] ?? '') === 'true'; $typed = trim((string)($flat['request'] ?? ''));
     $note = ''; $text = null; $complete = false; $sc = $cfg['shortcode_proxy'];
+    // Serve whichever short code was dialled, as long as it has a menu in the Menu Builder; the code saved on the
+    // USSD Proxy page is only the fallback. So several PROXY menus in Mobius can share this one address.
+    $dialled = trim((string)($flat['originalRequest'] ?? ''));
+    try { if ($dialled !== '' && $dialled !== $sc && in_array($dialled, menu_shortcodes(), true)) { $sc = $dialled; $cfg['shortcode_proxy'] = $sc; } } catch (Throwable $e) {}
     try {
         $db = portal_pdo();
         if ($callId === '') $note = 'no callID in request';
