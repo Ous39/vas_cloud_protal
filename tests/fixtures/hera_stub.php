@@ -14,6 +14,7 @@ if ($parts[0] === 'purchase') {
     switch ($parts[1] ?? 'ok') {
         case 'ok': $j(['resultCode' => '000', 'resultDescription' => 'Success', 'result' => ['resultCode' => '0', 'resultDescription' => "\nYour subscription is successful"]]); break;
         case 'low': $j(['resultCode' => '000', 'resultDescription' => 'Success', 'result' => ['resultCode' => '20000005', 'resultDescription' => "\n Low balance"]]); break;
+        case 'deduct': $j(['resultCode' => '000', 'resultDescription' => 'Success', 'result' => ['resultCode' => '-1', 'resultDescription' => "\nDeduction for Subscription failed"]]); break;
         case 'err500': http_response_code(500); $j(['timestamp' => 'x', 'status' => 500, 'error' => 'Internal Server Error']); break;
         default: $j(['resultCode' => '000', 'resultDescription' => 'Success']);
     }
