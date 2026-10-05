@@ -231,5 +231,16 @@ footer{text-align:center;padding:16px 0;background:#232323;color:#fff}
 .nodeform:has(#node_type option[value="sharedbundle"]:checked) .fld.t-sharedbundle,
 .nodeform:has(#node_type option[value="quiz"]:checked) .fld.t-quiz,
 .nodeform:has(#node_type option[value="action"]:checked) .fld.t-action{display:block}
+.nodeform:has(#node_type option[value="flow"]:checked) .fld.t-flow{display:block}
 @supports not selector(:has(*)){.nodeform .fld{display:block}}
+/* Service Flows: the step form shows only the fields that fit the chosen kind of step */
+.stepform .fld{display:none}
+.stepform:has(#step_type option[value="choices"]:checked) .fld.t-choices,
+.stepform:has(#step_type option[value="offers"]:checked) .fld.t-offers,
+.stepform:has(#step_type option[value="ask"]:checked) .fld.t-ask,
+.stepform:has(#step_type option[value="lookup"]:checked) .fld.t-lookup,
+.stepform:has(#step_type option[value="confirm"]:checked) .fld.t-confirm,
+.stepform:has(#step_type option[value="call"]:checked) .fld.t-call,
+.stepform:has(#step_type option[value="message"]:checked) .fld.t-message{display:block}
+@supports not selector(:has(*)){.stepform .fld{display:block}}
 .menu-row:hover{background:rgba(0,0,0,.035);border-radius:6px}

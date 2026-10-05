@@ -22,7 +22,7 @@ function nav_can_see(string $page): bool {
     if ($page==='sql') return can('run_sql');
     if ($page==='users') return can('manage_users');
     if ($page==='audit') return can('view_audit');
-    if ($page==='ussd_sim' || $page==='ussd_quiz') return can('manage_ussd_menus');
+    if ($page==='ussd_sim' || $page==='ussd_quiz' || $page==='ussd_flows') return can('manage_ussd_menus');
     if ($page==='ussd_proxy') return can('manage_api_keys');
     if ($page==='api_keys') return can('manage_api_keys');
     if ($page==='promotions') return can('manage_promotions');
@@ -37,7 +37,7 @@ function layout_start(string $title): void {
         ['dashboard','fa-gauge','Dashboard'],
         ['monitoring','fa-heart-pulse','Monitoring'],
         ['group','fa-layer-group','Operations',[['subscriptions','fa-user-check','Subscriptions'],['offers','fa-tags','Offer Management'],['offer_health','fa-stethoscope','Offer Health'],['esim','fa-sim-card','eSIM Profiles'],['sales','fa-file-invoice-dollar','Sales & Invoices'],['friends_family','fa-user-group','Friends & Family'],['voting','fa-square-poll-vertical','Voting Service']]],
-        ['group','fa-tower-broadcast','Infrastructure',[['ussd_ivr','fa-mobile-screen-button','USSD & IVR'],['ussd_menu','fa-sitemap','USSD Menu Builder'],['ussd_sim','fa-mobile-screen','USSD Simulator'],['ussd_quiz','fa-circle-question','USSD Quiz'],['ussd_proxy','fa-plug','USSD Proxy'],['integrations','fa-plug-circle-check','Integrations']]],
+        ['group','fa-tower-broadcast','Infrastructure',[['ussd_ivr','fa-mobile-screen-button','USSD & IVR'],['ussd_menu','fa-sitemap','USSD Menu Builder'],['ussd_sim','fa-mobile-screen','USSD Simulator'],['ussd_quiz','fa-circle-question','USSD Quiz'],['ussd_flows','fa-diagram-project','Service Flows'],['ussd_proxy','fa-plug','USSD Proxy'],['integrations','fa-plug-circle-check','Integrations']]],
         ['group','fa-chart-line','Reports',[['investigate','fa-headset','Complaint Investigation'],['timeline','fa-timeline','Customer Timeline'],['alerts','fa-triangle-exclamation','Alerts'],['offer_report','fa-bullhorn','Offer Performance'],['reports','fa-chart-line','Reports'],['sql','fa-code','SQL Console']]],
         ['group','fa-gears','Admin',[['tables','fa-database','Database Tables'],['promotions','fa-bullhorn','Promotions'],['projects','fa-diagram-project','Projects'],['shortcodes','fa-hashtag','Short Codes'],['api_keys','fa-key','Partner API Keys'],['alert_settings','fa-bell','Alert Settings'],['retention','fa-database','Data Retention'],['status','fa-server','System Status'],['audit','fa-shield-halved','Audit Trail'],['users','fa-users-gear','Users']]],
     ];
@@ -1085,7 +1085,8 @@ if ($page==='ussd_sim') {
     $reply=trim((string)($_GET['reply']??'')); $seed=trim((string)($_GET['seed']??'')); if($seed==='') $seed='sim'.mt_rand();
     $replies=$prev; if($reply!=='') $replies[]=$reply;
     if(count($replies)>30) $replies=array_slice($replies,-30);
-    $scr=ussd_screen($sc,$replies,$withDraft?['active','draft']:['active'],null,['seed'=>$seed,'share'=>'ussd_share_sim','msisdn'=>'2200000000']);
+    $fsim=(string)($_GET['fsim']??'success'); if(!in_array($fsim,['success','lowbal,success','lowbal,fail','lowbal','fail'],true)) $fsim='success';
+    $scr=ussd_screen($sc,$replies,$withDraft?['active','draft']:['active'],null,['seed'=>$seed,'share'=>'ussd_share_sim','msisdn'=>'2200000000','flow_sim'=>$fsim]);
     $trail=implode(',',$replies);
     layout_start('USSD Simulator');
     ?>
@@ -1096,6 +1097,7 @@ if ($page==='ussd_sim') {
             <form method="get" class="mb-3"><input type="hidden" name="page" value="ussd_sim">
                 <label class="small text-muted mb-0">Short code</label>
                 <div class="input-group mb-2"><input class="form-control" name="sc" value="<?=e($sc)?>" list="scList"><datalist id="scList"><?php foreach($known as $k):?><option value="<?=e($k)?>"><?php endforeach;?></datalist><button class="btn btn-outline-primary">Dial</button></div>
+                <label class="small text-muted mb-0 mt-1">If a service flow asks Hera, pretend it says</label><select class="form-select form-select-sm mb-2" name="fsim" data-autosubmit><?php foreach(['success'=>'success','lowbal,success'=>'low balance, then success on the next call (e.g. a loan)','lowbal,fail'=>'low balance, then failure','lowbal'=>'low balance','fail'=>'failure'] as $fv=>$fl):?><option value="<?=e($fv)?>" <?=$fsim===$fv?'selected':''?>><?=e($fl)?></option><?php endforeach;?></select>
                 <div class="form-check"><input class="form-check-input" type="checkbox" name="draft" value="1" id="dr" <?=$withDraft?'checked':''?> data-autosubmit><label class="form-check-label small" for="dr">Include <b>draft</b> items (the live service will only show <b>active</b> ones)</label></div>
             </form>
             <?php if(!in_array($sc,$known,true)):?><div class="alert alert-info py-2 small">No menu exists for <b><?=e($sc)?></b> yet. <a href="?page=ussd_menu&new_short_code=<?=urlencode($sc)?>">Start one in the Menu Builder</a>.</div><?php endif;?>
@@ -1108,11 +1110,11 @@ if ($page==='ussd_sim') {
                 <?php if($scr['end']):?>
                     <?php if($scr['kind']==='purchase'):?><div class="alert alert-warning py-2 mt-2 mb-0 small">Simulator: nothing was bought. On the live short code this is where the purchase happens (purchase mode: <b><?=e(ussd_proxy_config()['purchase_mode'])?></b>).</div><?php endif;?>
                     <div class="alert alert-secondary py-2 mt-2 mb-2">Session ended (<?=e($scr['kind'])?>).</div>
-                    <a class="btn btn-primary" href="?page=ussd_sim&sc=<?=urlencode($sc)?>&draft=<?=$withDraft?1:0?>&seed=<?=mt_rand()?>"><i class="fa-solid fa-rotate-right me-1"></i>Dial again</a>
+                    <a class="btn btn-primary" href="?page=ussd_sim&sc=<?=urlencode($sc)?>&draft=<?=$withDraft?1:0?>&fsim=<?=urlencode($fsim)?>&seed=<?=mt_rand()?>"><i class="fa-solid fa-rotate-right me-1"></i>Dial again</a>
                 <?php else:?>
-                <form method="get" class="d-flex gap-2 mt-2"><input type="hidden" name="page" value="ussd_sim"><input type="hidden" name="sc" value="<?=e($sc)?>"><input type="hidden" name="draft" value="<?=$withDraft?1:0?>"><input type="hidden" name="trail" value="<?=e($trail)?>"><input type="hidden" name="seed" value="<?=e($seed)?>">
+                <form method="get" class="d-flex gap-2 mt-2"><input type="hidden" name="page" value="ussd_sim"><input type="hidden" name="sc" value="<?=e($sc)?>"><input type="hidden" name="draft" value="<?=$withDraft?1:0?>"><input type="hidden" name="trail" value="<?=e($trail)?>"><input type="hidden" name="seed" value="<?=e($seed)?>"><input type="hidden" name="fsim" value="<?=e($fsim)?>">
                     <input class="form-control" name="reply" inputmode="numeric" autocomplete="off" autofocus placeholder="Your reply, e.g. 1"><button class="btn btn-primary">Send</button>
-                    <a class="btn btn-outline-secondary" href="?page=ussd_sim&sc=<?=urlencode($sc)?>&draft=<?=$withDraft?1:0?>&seed=<?=mt_rand()?>">Restart</a></form>
+                    <a class="btn btn-outline-secondary" href="?page=ussd_sim&sc=<?=urlencode($sc)?>&draft=<?=$withDraft?1:0?>&fsim=<?=urlencode($fsim)?>&seed=<?=mt_rand()?>">Restart</a></form>
                 <?php endif;?>
             </div>
         </div></div>
@@ -1212,6 +1214,133 @@ if ($page==='status') {
     <?php endforeach; layout_end(); exit;
 }
 
+if ($page==='ussd_flows') {
+    require_perm('manage_ussd_menus'); flow_tables();
+    $flowUrl=fn(string $k,string $x='')=>'?page=ussd_flows&flow='.urlencode($k).$x;
+    if ($_SERVER['REQUEST_METHOD']==='POST') {
+        $do=(string)($_POST['do']??''); $fk=trim((string)($_POST['flow_key']??''));
+        if ($do==='new_flow') { $k=save_flow($_POST); flash('success','Flow created. Add or change its steps below.'); redirect($flowUrl($k)); }
+        if ($do==='flow_settings') { $k=save_flow($_POST); flash('success','Saved.'); redirect($flowUrl($k)); }
+        if ($do==='save_step') { save_flow_step($fk,$_POST); flash('success','Step saved.'); redirect($flowUrl($fk)); }
+        if ($do==='delete_step') { flow_delete_step($fk,trim((string)($_POST['step_key']??''))); flash('success','Step removed.'); redirect($flowUrl($fk)); }
+        if ($do==='set_start') { flow_set_start($fk,trim((string)($_POST['step_key']??''))); flash('success','That is now the first step.'); redirect($flowUrl($fk)); }
+        if ($do==='restore') { $k=flow_restore_version((int)($_POST['id']??0)); flash('success','That version is back.'); redirect($flowUrl($k)); }
+        if ($do==='save_json') { flow_save_json($fk,(string)($_POST['json']??'')); flash('success','Flow replaced from JSON.'); redirect($flowUrl($fk)); }
+        if ($do==='save_conn') { $k=save_flow_connection($_POST); flash('success','Connection "'.$k.'" saved.'); redirect('?page=ussd_flows'.($fk!==''?'&flow='.urlencode($fk):'').'#conns'); }
+    }
+    $flows=flow_list(); $fk=trim((string)($_GET['flow']??'')); $flow=$fk!==''?flow_get($fk):null;
+    $conns=flow_connections(); $tplList=flow_templates(); $fromLog=null; $fromLogErr='';
+    if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['do']??'')==='from_log') { try { $fromLog=flow_body_from_log((string)($_POST['log_line']??'')); } catch(Throwable $e){ $fromLogErr=$e->getMessage(); } }
+    $def=$flow?$flow['def']:null; $steps=$def['steps']??[]; $edit=null; $editKey=trim((string)($_GET['step']??'')); if($flow && $editKey!=='' && isset($steps[$editKey])) $edit=$steps[$editKey];
+    $health=$flow?flow_validate($def):[]; $nErr=count(array_filter($health,fn($h)=>$h['level']==='error')); $nWarn=count(array_filter($health,fn($h)=>$h['level']==='warn'));
+    $versions=[]; if($flow){ $st=portal_pdo()->prepare('SELECT id,reason,created_by,created_at FROM ussd_flow_versions WHERE flow_key=? ORDER BY id DESC LIMIT 12'); $st->execute([$fk]); $versions=$st->fetchAll(); }
+    $recent=[]; if($flow){ $st=portal_pdo()->prepare('SELECT * FROM ussd_flow_calls WHERE flow_key=? ORDER BY id DESC LIMIT 10'); $st->execute([$fk]); $recent=$st->fetchAll(); }
+    $typeName=['choices'=>'choices','offers'=>'offers','ask'=>'ask','lookup'=>'look up','confirm'=>'confirm','call'=>'call','message'=>'message']; $typeBadge=['choices'=>'bg-primary','offers'=>'bg-warning text-dark','ask'=>'bg-info text-dark','lookup'=>'bg-secondary','confirm'=>'bg-dark','call'=>'bg-danger','message'=>'bg-success'];
+    $go=function(array $s):string{ $t=$s['type']??''; $a=[]; if($t==='choices') foreach($s['options']??[] as $o) $a[]='“'.($o['label']??'').'” → '.($o['next']??'?'); elseif($t==='confirm') { $a[]='yes → '.($s['yes']??'?'); $a[]='no → '.($s['no']??'?'); } elseif($t==='call') foreach(['success'=>'success','lowbal'=>'low balance','fail'=>'other failure'] as $k=>$l) $a[]=$l.' → '.($s['outcomes'][$k]??'?'); elseif(in_array($t,['offers','ask'],true)) $a[]='then → '.($s['next']??'?'); elseif($t==='lookup') $a[]='shows the reply, 0 = back'; elseif($t==='message') $a[]='ends the session'; return implode('  ·  ',$a); };
+    $stepKeys=array_keys($steps);
+    layout_start('Service Flows');
+    ?>
+    <div class="cardx">
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2"><h3 class="mb-0"><i class="fa-solid fa-diagram-project me-2"></i>Service Flows</h3></div>
+        <p class="text-muted small mt-2 mb-2">A service flow is a special menu built from a few blocks — <b>choices</b>, <b>offers</b>, <b>ask</b> (the customer types something), <b>look up</b> (read something from Hera), <b>confirm</b>, <b>call</b> (the call that changes something; its <i>outcome</i> — success, low balance or other failure — decides the next step) and <b>message</b>. Build one here, try it right on this page, then put it in a menu with the <b>Service flow</b> item type in the <a href="?page=ussd_menu">Menu Builder</a>. Every flow starts in <b>Test</b>: calls are rehearsed, nothing is sent.</p>
+        <div class="d-flex flex-wrap gap-2 mb-2"><?php foreach($flows as $f0):?><a class="btn btn-sm <?=$f0['flow_key']===$fk?'btn-primary':'btn-outline-primary'?>" href="<?=e($flowUrl($f0['flow_key']))?>"><?=e($f0['title'])?> <span class="badge <?=$f0['mode']==='live'?'bg-danger':'bg-secondary'?>"><?=e($f0['mode'])?></span><?=$f0['status']==='inactive'?' (off)':''?></a><?php endforeach;?><?php if(!$flows):?><span class="text-muted small">No flows yet.</span><?php endif;?></div>
+        <details <?=$flows?'':'open'?>><summary class="small">New flow</summary>
+            <form method="post" class="row g-2 mt-1"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="new_flow">
+                <div class="col-md-3"><input class="form-control" name="flow_key" placeholder="key, e.g. loan_offer" maxlength="40"></div>
+                <div class="col-md-4"><input class="form-control" name="title" placeholder="Title, e.g. Purchase with loan" maxlength="80"></div>
+                <div class="col-md-4"><select class="form-select" name="template"><option value="">Empty — I will add the steps</option><?php foreach($tplList as $tk=>$tp):?><option value="<?=e($tk)?>">Start from: <?=e($tp['title'])?></option><?php endforeach;?></select></div>
+                <div class="col-md-1"><button class="btn btn-primary w-100">Create</button></div></form></details>
+    </div>
+    <?php if($flow):?>
+    <div class="row g-3 mt-1">
+        <div class="col-lg-7">
+            <div class="cardx"><div class="d-flex justify-content-between align-items-center"><h3 class="mb-2">Check — <?=e($flow['title'])?></h3><span><?php if($nErr):?><span class="badge bg-danger"><?=$nErr?> to fix</span><?php elseif($nWarn):?><span class="badge bg-warning text-dark"><?=$nWarn?> to look at</span><?php else:?><span class="badge bg-success">all good</span><?php endif;?></span></div>
+                <?php if(!$health):?><p class="small text-muted mb-0">Every step leads somewhere and every call is set up.</p><?php else:?><ul class="list-unstyled small mb-0"><?php foreach($health as $h):?><li class="py-1"><span class="badge <?=['error'=>'bg-danger','warn'=>'bg-warning text-dark','info'=>'bg-info text-dark'][$h['level']]?> me-1"><?=['error'=>'fix','warn'=>'check','info'=>'note'][$h['level']]?></span><?=e($h['msg'])?></li><?php endforeach;?></ul><?php endif;?></div>
+            <div class="cardx mt-3"><h3>Steps</h3>
+                <?php foreach($steps as $sk=>$s0): $isStart=($def['start']??'')===$sk;?>
+                <div class="border rounded p-2 mb-2 <?=$isStart?'border-primary':''?>">
+                    <div class="d-flex flex-wrap align-items-center gap-2"><code><?=e($sk)?></code><span class="badge <?=$typeBadge[$s0['type']]??'bg-secondary'?>"><?=e($typeName[$s0['type']]??$s0['type'])?></span><?php if($isStart):?><span class="badge bg-primary">first step</span><?php endif;?>
+                        <span class="ms-auto text-nowrap"><a class="btn btn-sm btn-light border py-0 px-1" title="Edit" href="<?=e($flowUrl($fk,'&step='.urlencode($sk)))?>#stepform"><i class="fa-solid fa-pen"></i></a>
+                        <?php if(!$isStart):?><form method="post" class="d-inline"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="set_start"><input type="hidden" name="flow_key" value="<?=e($fk)?>"><input type="hidden" name="step_key" value="<?=e($sk)?>"><button class="btn btn-sm btn-light border py-0 px-1" title="Make this the first step"><i class="fa-solid fa-flag"></i></button></form>
+                        <form method="post" class="d-inline" data-confirm="Remove the step <?=e($sk)?>? Steps that lead to it will point nowhere."><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="delete_step"><input type="hidden" name="flow_key" value="<?=e($fk)?>"><input type="hidden" name="step_key" value="<?=e($sk)?>"><button class="btn btn-sm btn-light border py-0 px-1 text-danger" title="Remove"><i class="fa-solid fa-trash"></i></button></form><?php endif;?></span></div>
+                    <?php if(!empty($s0['text'])):?><div class="small mt-1" style="white-space:pre-wrap"><?=e($s0['text'])?></div><?php endif;?>
+                    <?php if($s0['type']==='offers'):?><div class="small text-muted">offers of: <?=e(implode('; ',(array)($s0['sub_categories']??[])))?></div><?php endif;?>
+                    <?php if(in_array($s0['type'],['call','lookup'],true)):?><div class="small text-muted"><?=e(($s0['connection']??'')?:'(no connection yet)')?> / <?=e(($s0['path']??'')?:'(no path yet)')?></div><?php endif;?>
+                    <div class="small text-muted"><?=e($go($s0))?></div></div>
+                <?php endforeach;?>
+            </div>
+            <div class="cardx mt-3" id="stepform"><h3><?=$edit?'Change step “'.e($editKey).'”':'Add a step'?></h3>
+                <datalist id="stepKeys"><?php foreach($stepKeys as $k0):?><option value="<?=e($k0)?>"><?php endforeach;?><option value="@exit"></datalist>
+                <form method="post" class="stepform row g-2"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="save_step"><input type="hidden" name="flow_key" value="<?=e($fk)?>">
+                    <div class="col-md-4"><label class="small text-muted mb-0">Step name <small>(letters, digits, _)</small></label><input class="form-control" name="step_key" value="<?=e($edit?$editKey:'')?>" <?=$edit?'readonly':''?> placeholder="e.g. confirm_buy" maxlength="30"></div>
+                    <div class="col-md-8"><label class="small text-muted mb-0">What does this step do?</label><select class="form-select" name="type" id="step_type"><?php foreach(['choices'=>'Show choices (a list of options)','offers'=>'Show offers from the catalogue','ask'=>'Ask the customer to type something','lookup'=>'Look something up and show it','confirm'=>'Ask to confirm (yes / no)','call'=>'Make a call (changes something) — then branch on the result','message'=>'Show a message and end'] as $v=>$la):?><option value="<?=e($v)?>" <?=($edit['type']??'choices')===$v?'selected':''?>><?=e($la)?></option><?php endforeach;?></select></div>
+                    <div class="fld t-choices t-offers t-ask t-lookup t-confirm t-message col-12"><label class="small text-muted mb-0">Screen text <small>(you can use {offer.name} {offer.price_d} {other_local} {result.…} {reply_text} …)</small></label><textarea class="form-control" rows="2" name="text" maxlength="400"><?=e($edit['text']??'')?></textarea></div>
+                    <div class="fld t-choices col-12"><label class="small text-muted mb-0">Options — one per line: <code>Label -&gt; step_name</code> (<code>@exit</code> leaves the flow)</label><textarea class="form-control code" rows="3" name="options" placeholder="Purchase offer -&gt; pick&#10;Check balance -&gt; balance"><?php foreach(($edit['options']??[]) as $o0) echo e(($o0['label']??'').' -> '.($o0['next']??''))."\n";?></textarea></div>
+                    <div class="fld t-offers col-md-8"><label class="small text-muted mb-0">Sub-categories <small>(one per line or separated by ;)</small></label><textarea class="form-control" rows="2" name="sub_categories"><?=e(implode("\n",(array)($edit['sub_categories']??[])))?></textarea></div>
+                    <div class="fld t-offers col-md-4"><div class="form-check mt-4"><input class="form-check-input" type="checkbox" name="auto_single" value="1" id="as" <?=(!$edit||($edit['auto_single']??true))?'checked':''?>><label class="form-check-label small" for="as">If only one offer, choose it for the customer</label></div></div>
+                    <div class="fld t-ask col-md-4"><label class="small text-muted mb-0">Expecting</label><select class="form-select" name="kind"><?php foreach(['phone'=>'a phone number','digits'=>'digits only','text'=>'a short text'] as $v=>$la):?><option value="<?=e($v)?>" <?=($edit['kind']??'phone')===$v?'selected':''?>><?=e($la)?></option><?php endforeach;?></select></div>
+                    <div class="fld t-ask col-md-4"><label class="small text-muted mb-0">Keep it as <small>({name}, {name_local}, {name_raw})</small></label><input class="form-control" name="var" value="<?=e($edit['var']??'other')?>" maxlength="21"></div>
+                    <div class="fld t-offers t-ask col-md-4"><label class="small text-muted mb-0">Then go to</label><input class="form-control" name="next" list="stepKeys" value="<?=e($edit['next']??'')?>"></div>
+                    <div class="fld t-confirm col-md-6"><label class="small text-muted mb-0">If they answer 1 (yes) go to</label><input class="form-control" name="yes" list="stepKeys" value="<?=e($edit['yes']??'')?>"></div>
+                    <div class="fld t-confirm col-md-6"><label class="small text-muted mb-0">If they answer 0 or 2 (no) go to</label><input class="form-control" name="no" list="stepKeys" value="<?=e($edit['no']??'@exit')?>"></div>
+                    <div class="fld t-lookup t-call col-md-5"><label class="small text-muted mb-0">Connection <small>(below)</small></label><select class="form-select" name="connection"><option value="">—</option><?php foreach($conns as $c0):?><option value="<?=e($c0['conn_key'])?>" <?=($edit['connection']??'')===$c0['conn_key']?'selected':''?>><?=e($c0['title'])?> (<?=e($c0['conn_key'])?>)</option><?php endforeach;?></select></div>
+                    <div class="fld t-lookup t-call col-md-7"><label class="small text-muted mb-0">Path added to the connection's address</label><input class="form-control" name="path" value="<?=e($edit['path']??'')?>" placeholder="e.g. subscribe"></div>
+                    <div class="fld t-lookup t-call col-12"><label class="small text-muted mb-0">Request body <small>(JSON; placeholders like {msisdn} {offer.code} {other_msisdn} {imsi} {local_address_json}. Paste a Mobius log line under “Connections” to get one.)</small></label><textarea class="form-control code" rows="4" name="body"><?=e($edit['body']??'')?></textarea></div>
+                    <div class="fld t-call col-md-4"><label class="small text-muted mb-0">On success go to</label><input class="form-control" name="on_success" list="stepKeys" value="<?=e($edit['outcomes']['success']??'')?>"></div>
+                    <div class="fld t-call col-md-4"><label class="small text-muted mb-0">On low balance go to</label><input class="form-control" name="on_lowbal" list="stepKeys" value="<?=e($edit['outcomes']['lowbal']??'')?>"></div>
+                    <div class="fld t-call col-md-4"><label class="small text-muted mb-0">On any other failure go to</label><input class="form-control" name="on_fail" list="stepKeys" value="<?=e($edit['outcomes']['fail']??'')?>"></div>
+                    <div class="col-12 d-flex gap-2 align-items-center"><button class="btn btn-primary"><?=$edit?'Save changes':'Add step'?></button><?php if($edit):?><a class="btn btn-outline-secondary" href="<?=e($flowUrl($fk))?>">Cancel</a><?php endif;?><div class="form-check ms-2"><input class="form-check-input" type="checkbox" name="make_start" value="1" id="ms"><label class="form-check-label small" for="ms">make it the first step</label></div></div>
+                </form>
+            </div>
+        </div>
+        <div class="col-lg-5">
+            <div class="cardx"><h3>Settings</h3>
+                <form method="post"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="flow_settings"><input type="hidden" name="flow_key" value="<?=e($fk)?>">
+                    <label class="small text-muted mb-0">Title</label><input class="form-control mb-2" name="title" value="<?=e($flow['title'])?>">
+                    <div class="row g-2"><div class="col-6"><label class="small text-muted mb-0">Mode</label><select class="form-select mb-2" name="mode"><option value="test" <?=$flow['mode']==='test'?'selected':''?>>Test — calls are rehearsed</option><option value="live" <?=$flow['mode']==='live'?'selected':''?>>Live — calls are real</option></select></div>
+                    <div class="col-6"><label class="small text-muted mb-0">In Test, every call ends as</label><select class="form-select mb-2" name="test_outcome"><?php foreach(['success'=>'success','lowbal'=>'low balance','fail'=>'failure'] as $v=>$la):?><option value="<?=e($v)?>" <?=$flow['test_outcome']===$v?'selected':''?>><?=e($la)?></option><?php endforeach;?></select></div></div>
+                    <label class="small text-muted mb-0">Status</label><select class="form-select mb-2" name="status"><option value="active" <?=$flow['status']==='active'?'selected':''?>>Active</option><option value="inactive" <?=$flow['status']==='inactive'?'selected':''?>>Off</option></select>
+                    <button class="btn btn-primary w-100">Save settings</button></form>
+                <p class="small text-muted mt-2 mb-0">To put it in a menu: <a href="?page=ussd_menu">Menu Builder</a> → add an item → <b>Service flow</b> → <code><?=e($fk)?></code>.</p></div>
+            <?php
+            $tr=array_values(array_filter(explode(',',(string)($_GET['trail']??'')),fn($x)=>$x!=='')); $rp=trim((string)($_GET['reply']??'')); if($rp!=='') $tr[]=$rp; $tr=array_slice($tr,-30);
+            $tsim=(string)($_GET['fsim']??'success'); if(!in_array($tsim,['success','lowbal,success','lowbal,fail','lowbal','fail'],true)) $tsim='success';
+            $tscr=flow_screen($def,$tr,['call'=>flow_sim_call_hook($tsim),'lookup'=>'flow_sim_lookup','msisdn'=>'220866000001']); $tshow=($tscr['text']??'') !== '' ? (string)$tscr['text'] : (isset($tscr['exit_at'])?'(back to the menu)':'(nothing to show)'); $tend=!empty($tscr['end'])||isset($tscr['exit_at']);
+            ?>
+            <div class="cardx mt-3"><h3>Try it</h3>
+                <form method="get" class="mb-2"><input type="hidden" name="page" value="ussd_flows"><input type="hidden" name="flow" value="<?=e($fk)?>"><input type="hidden" name="trail" value="<?=e(implode(',',array_slice($tr,0,max(0,count($tr)-0))))?>">
+                    <label class="small text-muted mb-0">If a call is made, pretend Hera says</label><select class="form-select form-select-sm" name="fsim" data-autosubmit><?php foreach(['success'=>'success','lowbal,success'=>'low balance, then success on the next call (e.g. a loan)','lowbal,fail'=>'low balance, then failure','lowbal'=>'low balance','fail'=>'failure'] as $fv=>$fl):?><option value="<?=e($fv)?>" <?=$tsim===$fv?'selected':''?>><?=e($fl)?></option><?php endforeach;?></select></form>
+                <div class="ussd-phone"><div class="ussd-screen"><?=nl2br(e($tshow))?></div>
+                    <?php if($tend):?><div class="alert alert-secondary py-2 mt-2 mb-2">Session ended.</div><a class="btn btn-primary" href="<?=e($flowUrl($fk,'&fsim='.urlencode($tsim)))?>">Dial again</a>
+                    <?php else:?><form method="get" class="d-flex gap-2 mt-2"><input type="hidden" name="page" value="ussd_flows"><input type="hidden" name="flow" value="<?=e($fk)?>"><input type="hidden" name="trail" value="<?=e(implode(',',$tr))?>"><input type="hidden" name="fsim" value="<?=e($tsim)?>"><input class="form-control" name="reply" autocomplete="off" autofocus placeholder="Your reply"><button class="btn btn-primary">Send</button><a class="btn btn-outline-secondary" href="<?=e($flowUrl($fk,'&fsim='.urlencode($tsim)))?>">Restart</a></form><?php endif;?></div>
+                <div class="small text-muted mt-2">Replies so far: <b><?=$tr?e(implode(' → ',$tr)):'(none)'?></b>. Calls and look-ups here are always simulated.</div></div>
+            <?php if($recent):?><div class="cardx mt-3"><h3>Recent calls</h3><div class="table-scroll" style="max-height:240px;overflow-y:auto"><table class="table table-sm mb-0 small"><tbody><?php foreach($recent as $r0):?><tr><td class="text-nowrap"><?=e($r0['created_at'])?></td><td><?=e($r0['msisdn'])?></td><td><?=e($r0['step_key'])?></td><td><span class="badge <?=['success'=>'bg-success','lowbal'=>'bg-warning text-dark','fail'=>'bg-danger'][$r0['outcome']??'']??'bg-secondary'?>"><?=e($r0['outcome']??'…')?></span> <span class="text-muted"><?=e($r0['mode'])?></span></td><td title="<?=e((string)$r0['response'])?>"><i class="fa-solid fa-circle-info text-muted"></i></td></tr><?php endforeach;?></tbody></table></div></div><?php endif;?>
+            <div class="cardx mt-3"><h3>History</h3>
+                <?php if(!$versions):?><p class="small text-muted mb-0">Every change is kept here.</p><?php else:?><div class="table-scroll" style="max-height:220px;overflow-y:auto"><table class="table table-sm mb-0 small"><tbody><?php foreach($versions as $v):?><tr><td class="text-nowrap"><?=e(date('M j H:i',strtotime($v['created_at'])))?></td><td><?=e($v['created_by']??'')?></td><td><?=e($v['reason'])?></td><td class="text-end"><form method="post" data-confirm="Bring this version back?"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="restore"><input type="hidden" name="id" value="<?=e($v['id'])?>"><button class="btn btn-sm btn-outline-secondary py-0">Restore</button></form></td></tr><?php endforeach;?></tbody></table></div><?php endif;?>
+                <details class="mt-2"><summary class="small">Advanced: the whole flow as JSON</summary><form method="post" class="mt-2"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="save_json"><input type="hidden" name="flow_key" value="<?=e($fk)?>"><textarea class="form-control code mb-2" rows="8" name="json"><?=e(json_encode($def,JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES))?></textarea><button class="btn btn-outline-primary btn-sm">Replace the flow with this JSON</button></form></details></div>
+        </div>
+    </div>
+    <?php endif;?>
+    <div class="cardx mt-3" id="conns"><h3>Connections <small class="text-muted">— where a call goes</small></h3>
+        <p class="small text-muted">A connection is an address plus its headers (kept encrypted, never shown again), what result code means success, and which words mean "low balance". A call step picks a connection and adds its own path.</p>
+        <?php if($conns):?><table class="table table-sm small"><thead><tr><th>Key</th><th>Title</th><th>Address</th><th>Headers</th><th>Success code</th></tr></thead><tbody><?php foreach($conns as $c0):?><tr><td><code><?=e($c0['conn_key'])?></code></td><td><?=e($c0['title'])?></td><td><?=e($c0['base_url'])?></td><td><?=$c0['has_headers']?'saved':'none'?></td><td><?=e($c0['ok_code'])?></td></tr><?php endforeach;?></tbody></table><?php endif;?>
+        <form method="post" class="row g-2"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="save_conn"><input type="hidden" name="flow_key" value="<?=e($fk)?>">
+            <div class="col-md-3"><input class="form-control" name="conn_key" placeholder="key, e.g. hera_loans" value="<?=e((string)($_POST['conn_key']??''))?>"></div><div class="col-md-3"><input class="form-control" name="title" placeholder="Title"></div>
+            <div class="col-md-6"><input class="form-control" name="base_url" placeholder="Address, e.g. https://vas-testing.comium.gm/hera/prepaid/" value="<?=e($fromLog['address']??'')?>"></div>
+            <div class="col-md-6"><textarea class="form-control code" rows="2" name="headers" placeholder="Headers, one per line:  X-USERNAME: USSD  (leave empty to keep the saved ones)"></textarea></div>
+            <div class="col-md-2"><input class="form-control" name="ok_code" value="0" title="Result code that means success"></div><div class="col-md-2"><input class="form-control" name="timeout" value="8" title="Timeout in seconds"></div>
+            <div class="col-md-12"><input class="form-control" name="lowbal" value="insufficient,low balance,not enough" title="Words that mean low balance"></div>
+            <div class="col-12"><button class="btn btn-outline-primary btn-sm">Save connection</button> <small class="text-muted">saving a key that exists updates it</small></div></form>
+        <hr>
+        <h3 class="fs-6">Get a request body from a Mobius log line</h3>
+        <form method="post"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="from_log"><input type="hidden" name="flow_key" value="<?=e($fk)?>">
+            <textarea class="form-control code mb-2" rows="3" name="log_line" placeholder="Paste a line like:  … Sending request :{&quot;callID&quot;:… to application:https://…  (the keys in it are ignored)"><?=e((string)($_POST['log_line']??''))?></textarea><button class="btn btn-outline-secondary btn-sm">Make the body</button></form>
+        <?php if($fromLogErr):?><div class="alert alert-warning py-2 mt-2 small mb-0"><?=e($fromLogErr)?></div><?php endif;?>
+        <?php if($fromLog):?><div class="mt-2 small"><div><b>Address</b>: <code><?=e($fromLog['address'])?></code> · <b>path</b>: <code><?=e($fromLog['path'])?></code> (the address is pre-filled in the form above)</div><div class="mt-1"><b>Request body</b> — copy into a call or look-up step:</div><pre class="mb-1" style="white-space:pre-wrap"><?=e($fromLog['body'])?></pre><?php foreach($fromLog['notes'] as $n0):?><div class="text-muted">• <?=e($n0)?></div><?php endforeach;?></div><?php endif;?>
+    </div>
+    <?php layout_end(); exit;
+}
+
 if ($page==='ussd_menu') {
     require_perm('view_tables'); menu_versions_table();
     $canEdit = can('manage_ussd_menus');
@@ -1247,7 +1376,7 @@ if ($page==='ussd_menu') {
     $pathLabel=function(int $id) use (&$pathLabel,$labelOf){ $n=$labelOf[$id]??null; if(!$n) return ''; $pp=$n['parent_id']!==null?$pathLabel((int)$n['parent_id']):''; return ($pp!==''?$pp.' › ':'').$n['prompt_text']; };
     $offers = table_exists(current_schema(),'vas_offers') ? pdo(current_schema())->query("SELECT offer_code, name FROM vas_offers WHERE ".OFFER_ACTIVE_SQL." ORDER BY name")->fetchAll() : [];
     $subCats=[]; try { if(table_exists(USSD_OFFER_SCHEMA,'vas_offers')) $subCats=pdo(USSD_OFFER_SCHEMA)->query("SELECT sub_category, SUM(".OFFER_ACTIVE_SQL.") act FROM vas_offers WHERE sub_category IS NOT NULL AND sub_category<>'' AND (deleted_at IS NULL OR deleted_at='') GROUP BY sub_category HAVING act>0 ORDER BY sub_category")->fetchAll(); } catch(Throwable $e){}
-    ussd_quiz_tables(); $quizOpts=portal_pdo()->query('SELECT quiz_key,title FROM ussd_quizzes ORDER BY title')->fetchAll();
+    ussd_quiz_tables(); $quizOpts=portal_pdo()->query('SELECT quiz_key,title FROM ussd_quizzes ORDER BY title')->fetchAll(); $flowOpts=flow_list();
     $health = ($shortCode!=='' && $flatNodes) ? menu_health($shortCode) : [];
     $nErr=count(array_filter($health,fn($h)=>$h['level']==='error')); $nWarn=count(array_filter($health,fn($h)=>$h['level']==='warn'));
     $versions=[]; if($shortCode!==''){ $st=portal_pdo()->prepare('SELECT id,reason,nodes,created_by,created_at FROM ussd_menu_versions WHERE short_code=? ORDER BY id DESC LIMIT 12'); $st->execute([$shortCode]); $versions=$st->fetchAll(); }
@@ -1286,14 +1415,14 @@ if ($page==='ussd_menu') {
             <div class="cardx mt-3"><h3>Menu — <?=e($shortCode)?></h3>
                 <?php if(!$tree):?><p class="text-muted mb-0">No items yet. Use <b>Quick add</b> (right) to type the first list.</p><?php else:?>
                 <?php
-                $badgeOf=['menu'=>'bg-primary','offer'=>'bg-success','catalog'=>'bg-warning text-dark','recipient'=>'bg-dark','quiz'=>'bg-danger','sharedbundle'=>'bg-success','action'=>'bg-info text-dark','end'=>'bg-secondary'];
-                $nameOf=['menu'=>'submenu','offer'=>'offer','catalog'=>'catalogue list','recipient'=>'buy for other','quiz'=>'quiz','sharedbundle'=>'shared bundle','action'=>'action','end'=>'message'];
+                $badgeOf=['flow'=>'bg-primary','menu'=>'bg-primary','offer'=>'bg-success','catalog'=>'bg-warning text-dark','recipient'=>'bg-dark','quiz'=>'bg-danger','sharedbundle'=>'bg-success','action'=>'bg-info text-dark','end'=>'bg-secondary'];
+                $nameOf=['flow'=>'service flow','menu'=>'submenu','offer'=>'offer','catalog'=>'catalogue list','recipient'=>'buy for other','quiz'=>'quiz','sharedbundle'=>'shared bundle','action'=>'action','end'=>'message'];
                 $btn=function(string $do,int $id,string $icon,string $title,array $extra=[]) use ($canEdit){ if(!$canEdit) return ''; $h='<form method="post" class="d-inline"><input type="hidden" name="csrf" value="'.e(csrf_token()).'"><input type="hidden" name="do" value="'.e($do).'"><input type="hidden" name="id" value="'.$id.'">'; foreach($extra as $k=>$v) $h.='<input type="hidden" name="'.e($k).'" value="'.e($v).'">'; return $h.'<button class="btn btn-sm btn-light border py-0 px-1" title="'.e($title).'"><i class="fa-solid '.$icon.'"></i></button></form>'; };
                 $renderTree = function($nodes, $depth=0) use (&$renderTree, $shortCode, $badgeOf, $nameOf, $btn, $canEdit) { $last=count($nodes)-1; foreach($nodes as $i=>$n): $id=(int)$n['id']; $on=$n['status']==='active'; ?>
                     <div style="margin-left:<?=$depth*22?>px" class="menu-row d-flex align-items-center gap-2 py-1 <?=$on?'':'text-muted'?>">
                         <span class="badge <?=$badgeOf[$n['node_type']]??'bg-secondary'?>" style="min-width:5.2rem"><?=e($nameOf[$n['node_type']]??$n['node_type'])?></span>
                         <span class="flex-grow-1"><?=e($n['prompt_text'])?>
-                            <?php if($n['node_type']==='offer'):?><small class="text-muted">(<?=e($n['offer_code'])?>)</small><?php elseif($n['node_type']==='catalog'||$n['node_type']==='sharedbundle'):?><small class="text-muted">[<?=e(str_replace("\n",', ',(string)($n['catalog_filter']??'')))?>]</small><?php elseif($n['node_type']==='quiz'):?><small class="text-muted">(<?=e($n['offer_code'])?>)</small><?php endif;?>
+                            <?php if($n['node_type']==='offer'):?><small class="text-muted">(<?=e($n['offer_code'])?>)</small><?php elseif($n['node_type']==='catalog'||$n['node_type']==='sharedbundle'):?><small class="text-muted">[<?=e(str_replace("\n",', ',(string)($n['catalog_filter']??'')))?>]</small><?php elseif($n['node_type']==='quiz' || $n['node_type']==='flow'):?><small class="text-muted">(<?=e($n['offer_code'])?>)</small><?php endif;?>
                             <?php if(!$on):?><span class="badge status-<?=e($n['status'])?>"><?=e($n['status'])?></span><?php endif;?></span>
                         <span class="text-nowrap"><?php if($canEdit):?><?=$btn('move',$id,'fa-arrow-up','Move up',['dir'=>'up'])?><?=$btn('move',$id,'fa-arrow-down','Move down',['dir'=>'down'])?><?php endif;?>
                             <a class="btn btn-sm btn-light border py-0 px-1" title="Edit" href="?page=ussd_menu&short_code=<?=urlencode($shortCode)?>&id=<?=$id?>#nodeform"><i class="fa-solid fa-pen"></i></a>
@@ -1312,17 +1441,19 @@ if ($page==='ussd_menu') {
                 <form method="post" class="nodeform"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="id" value="<?=e($edit['id']??'')?>"><input type="hidden" name="data[short_code]" value="<?=e($shortCode)?>">
                     <label class="small text-muted mb-0">Where it goes</label><select class="form-select mb-2" name="data[parent_id]"><option value="">The first menu (top level)</option><?php foreach($flatNodes as $n): if($edit && (int)$n['id']===(int)$edit['id']) continue; if($n['node_type']!=='menu') continue; ?><option value="<?=e($n['id'])?>" <?=(string)$addParent===(string)$n['id']?'selected':''?>>inside: <?=e($pathLabel((int)$n['id']))?></option><?php endforeach;?></select>
                     <label class="small text-muted mb-0">Label <small>(the line in the menu)</small></label><input class="form-control mb-2" name="data[prompt_text]" value="<?=e($edit['prompt_text']??'')?>" placeholder="e.g. Sakan Bundles" maxlength="120">
-                    <label class="small text-muted mb-0">What is it?</label><select class="form-select mb-1" name="data[node_type]" id="node_type"><?php foreach(['menu'=>'A list of more items (submenu)','catalog'=>'Offers from the catalogue (kept up to date by itself)','offer'=>'One offer to buy','end'=>'Just a message (ends the session)','recipient'=>'Buy for another number','sharedbundle'=>'Shared Bundle service (Seddo)','quiz'=>'Quiz game','action'=>'Action (not connected yet)'] as $v=>$la):?><option value="<?=e($v)?>" <?=($edit['node_type']??'menu')===$v?'selected':''?>><?=e($la)?></option><?php endforeach;?></select>
+                    <label class="small text-muted mb-0">What is it?</label><select class="form-select mb-1" name="data[node_type]" id="node_type"><?php foreach(['menu'=>'A list of more items (submenu)','catalog'=>'Offers from the catalogue (kept up to date by itself)','offer'=>'One offer to buy','end'=>'Just a message (ends the session)','recipient'=>'Buy for another number','sharedbundle'=>'Shared Bundle service (Seddo)','flow'=>'Service flow (a special menu built on the Service Flows page)','quiz'=>'Quiz game','action'=>'Action (not connected yet)'] as $v=>$la):?><option value="<?=e($v)?>" <?=($edit['node_type']??'menu')===$v?'selected':''?>><?=e($la)?></option><?php endforeach;?></select>
                     <div class="fld help t-menu small text-muted mb-2">Opens a screen listing the Active items you put inside it.</div>
                     <div class="fld help t-catalog small text-muted mb-2">Lists the <b>Active</b> offers of the sub-categories you choose, cheapest first, 5 per screen. Add or switch off an offer in the catalogue and the menu follows.</div>
                     <div class="fld help t-offer small text-muted mb-2">Shows the offer's name and price and asks <i>1. Confirm / 2. Cancel</i> before buying.</div>
                     <div class="fld help t-end small text-muted mb-2">Shows its text and ends the session — good for help or "coming soon" screens.</div>
                     <div class="fld help t-recipient small text-muted mb-2">Asks for the other person's number, then shows the main menu again so they can buy for them.</div>
                     <div class="fld help t-sharedbundle small text-muted mb-2">The whole Shared Bundle flow: buy, add a sharing number, balance, numbers. Set it up on the <a href="?page=ussd_proxy">USSD Proxy</a> page.</div>
+                    <div class="fld help t-flow small text-muted mb-2">Opens a special menu you built on the <a href="?page=ussd_flows">Service Flows</a> page — ask, look something up, confirm, make a call, and branch on the result.</div>
                     <div class="fld help t-quiz small text-muted mb-2">Plays one of the quizzes from the <a href="?page=ussd_quiz">USSD Quiz</a> page.</div>
                     <div class="fld help t-action small text-muted mb-2">Reserved for things like "check balance". Today it shows a placeholder, so avoid it in a live menu.</div>
                     <div class="fld t-menu t-catalog t-end"><label class="small text-muted mb-0">Screen text <small>(optional — what shows when it opens; otherwise the label is used)</small></label><textarea class="form-control mb-2" rows="2" name="data[body_text]" maxlength="400" placeholder="e.g. Choose your Sakan bundle:"><?=e($edit['body_text']??'')?></textarea></div>
                     <div class="fld t-offer"><label class="small text-muted mb-0">Offer</label><select class="form-select mb-2" name="data[offer_code]"><option value="">—</option><?php foreach($offers as $o):?><option value="<?=e($o['offer_code'])?>" <?=($edit['offer_code']??'')===$o['offer_code']?'selected':''?>><?=e($o['name'])?> (<?=e($o['offer_code'])?>)</option><?php endforeach;?></select></div>
+                    <div class="fld t-flow"><label class="small text-muted mb-0">Service flow <small>(<a href="?page=ussd_flows">manage flows</a>)</small></label><select class="form-select mb-2" name="data[flow_key]"><option value="">—</option><?php foreach($flowOpts as $fo):?><option value="<?=e($fo['flow_key'])?>" <?=(($edit['node_type']??'')==='flow' && ($edit['offer_code']??'')===$fo['flow_key'])?'selected':''?>><?=e($fo['title'])?> (<?=e($fo['flow_key'])?>)<?=$fo['status']==='inactive'?' — off':''?></option><?php endforeach;?></select></div>
                     <div class="fld t-quiz"><label class="small text-muted mb-0">Quiz <small>(<a href="?page=ussd_quiz">manage quizzes</a>)</small></label><select class="form-select mb-2" name="data[quiz_key]"><option value="">—</option><?php foreach($quizOpts as $qo):?><option value="<?=e($qo['quiz_key'])?>" <?=(($edit['node_type']??'')==='quiz' && ($edit['offer_code']??'')===$qo['quiz_key'])?'selected':''?>><?=e($qo['title'])?> (<?=e($qo['quiz_key'])?>)</option><?php endforeach;?></select></div>
                     <div class="fld t-catalog t-sharedbundle"><label class="small text-muted mb-0">Sub-categories <small>(one per line — Shared Bundle uses <code>Seddo</code>)</small></label><textarea class="form-control mb-1" rows="3" name="data[catalog_filter]" placeholder="Sakan 7 days&#10;Sakan 30 days"><?=e($edit['catalog_filter']??'')?></textarea>
                         <?php if($subCats):?><details class="mb-2"><summary class="small text-muted">Sub-categories available (with active offers)</summary><div class="small"><?php foreach($subCats as $sc2):?><span class="badge bg-light text-dark border me-1 mb-1"><?=e($sc2['sub_category'])?> · <?=(int)$sc2['act']?></span><?php endforeach;?></div></details><?php endif;?></div>

@@ -39,6 +39,34 @@ If a mistake gets through: **History** (right) keeps every change. Press **Resto
 
 **A phone screen holds about 180 characters.** The Menu check warns when a list is too long — move some items into a submenu.
 
+## Special menus: Service Flows (Admin → Infrastructure → Service Flows)
+
+For anything more than a list — asking for a number, reading something from Hera, a purchase that can succeed, run out of balance or fail, an offer of a loan — build a **service flow**, then put it in a menu with the item type **Service flow**.
+
+A flow is a set of named **steps**. Each step is one of:
+
+| Step | What the customer sees / what happens |
+|---|---|
+| **Choices** | A list of options; each option goes to another step. |
+| **Offers** | The offers of catalogue sub-category(ies); the one they pick fills `{offer.name}`, `{offer.price_d}`, `{offer.validity}`, `{offer.code}`… If there is only one offer it can be chosen for them. |
+| **Ask** | They type something: a phone number (shown back without the 220), digits, or a short text. Kept as `{name}` (`{name_local}`, `{name_raw}` too). |
+| **Look up** | Reads something from Hera and shows it, e.g. `Your balance is: {result.balance}`. |
+| **Confirm** | Your text; **1** = yes, **0 or 2** = no. |
+| **Call** | The call that **changes something**. It runs **once per customer session**. Its **outcome — success, low balance, or any other failure — decides the next step**, and the reply is available as `{reply_text}` and `{result.…}`. |
+| **Message** | Shows text and ends the session. |
+
+Every step says where to go next; `@exit` leaves the flow and returns to the menu it was opened from. **0** always goes back one step.
+
+**Example — buy an offer, with a loan offered if the balance is too low:** choices → offers → confirm → **call (buy)** → *success* → message "Your subscription is successful"; *low balance* → confirm "You don't have enough balance… take a loan and subscribe? 1/2" → **call (take loan)** → message; *other failure* → message "Subscription failed". The starter template **"Purchase, with a loan offered…"** is exactly this with the API calls left to fill in.
+
+**Getting a call right.** On the same page, **Connections** holds the address + headers of the system a call goes to (headers are encrypted and never shown again). Paste a Mobius `Sending request :{…}` log line into **"Get a request body from a Mobius log line"** and the page builds the request body for you (caller's number, IMSI, addresses become placeholders; keys are ignored). Then in the call step choose the connection, give the path (the last part of the address) and paste the body.
+
+**Safety.**
+- A flow starts in **Test**: calls are rehearsed (you choose whether they end as success, low balance or failure) and nothing is sent. Switch to **Live** only when the check says all good.
+- A call with no connection, path or body stays switched off in Live and takes the failure path.
+- **Try it** (right side of the flow page) walks the whole flow, pretending Hera says success / low balance then success / failure, so every branch can be seen before any phone is used. The **USSD Simulator** has the same choice for flows inside a menu.
+- Every call is recorded (outcome, the request we sent with the IMSI shortened, Hera's reply) under **Recent calls**, and every change is in **History**.
+
 ## Buttons on each item
 
 ↑ ↓ move · ✎ edit · **+** add an item inside (submenus) · ⧉ copy it and everything inside it, as a Draft · ⏻ turn on/off.

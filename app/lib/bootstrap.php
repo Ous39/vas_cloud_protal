@@ -230,7 +230,7 @@ function ensure_portal_runtime_schema(): void {
             short_code VARCHAR(80) NOT NULL,
             display_order INT NOT NULL DEFAULT 0,
             prompt_text VARCHAR(300) NOT NULL,
-            node_type ENUM('menu','offer','action','end','catalog','recipient','quiz','sharedbundle') NOT NULL DEFAULT 'menu',
+            node_type ENUM('menu','offer','action','end','catalog','recipient','quiz','sharedbundle','flow') NOT NULL DEFAULT 'menu',
             offer_code VARCHAR(80) NULL,
             catalog_filter TEXT NULL,
             body_text TEXT NULL,
@@ -482,7 +482,7 @@ function ensure_portal_runtime_schema(): void {
             $safeExec("ALTER TABLE ussd_menu_nodes ADD COLUMN catalog_filter TEXT NULL AFTER offer_code");
         }
         $nodeTypeDef = (string)$db->query("SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ussd_menu_nodes' AND COLUMN_NAME='node_type'")->fetchColumn();
-        if ($nodeTypeDef !== '' && stripos($nodeTypeDef, "'sharedbundle'") === false) $safeExec("ALTER TABLE ussd_menu_nodes MODIFY node_type ENUM('menu','offer','action','end','catalog','recipient','quiz','sharedbundle') NOT NULL DEFAULT 'menu'");
+        if ($nodeTypeDef !== '' && stripos($nodeTypeDef, "'flow'") === false) $safeExec("ALTER TABLE ussd_menu_nodes MODIFY node_type ENUM('menu','offer','action','end','catalog','recipient','quiz','sharedbundle','flow') NOT NULL DEFAULT 'menu'");
         if (!$columnExists('ussd_menu_nodes','body_text')) $safeExec("ALTER TABLE ussd_menu_nodes ADD COLUMN body_text TEXT NULL AFTER catalog_filter");
         if (!$columnExists('portal_projects','short_code')) $safeExec("ALTER TABLE portal_projects ADD COLUMN short_code VARCHAR(80) NULL AFTER project_name");
         if (!$columnExists('portal_projects','start_date')) $safeExec("ALTER TABLE portal_projects ADD COLUMN start_date DATE NULL AFTER status");
@@ -2325,7 +2325,7 @@ function save_menu_node(array $data, ?int $id = null, bool $snapshot = true): in
     if (mb_strlen($prompt) > 120) throw new RuntimeException('The label is at most 120 characters — it is a line in a menu. Put longer wording in "Screen text".');
     $parentId = trim((string)($data['parent_id'] ?? '')) !== '' ? (int)$data['parent_id'] : null;
     if ($id && $parentId === $id) throw new RuntimeException('An item cannot be its own parent.');
-    $type = in_array($data['node_type'] ?? '', ['menu','offer','action','end','catalog','recipient','quiz','sharedbundle'], true) ? $data['node_type'] : 'menu';
+    $type = in_array($data['node_type'] ?? '', ['menu','offer','action','end','catalog','recipient','quiz','sharedbundle','flow'], true) ? $data['node_type'] : 'menu';
     $body = in_array($type, ['menu', 'catalog', 'end'], true) ? trim((string)($data['body_text'] ?? '')) : '';
     if (mb_strlen($body) > 400) throw new RuntimeException('Screen text is at most 400 characters (a phone screen holds about 180).');
     $fields = [$parentId, $shortCode, (int)($data['display_order'] ?? 0), $prompt, $type,
@@ -2336,6 +2336,10 @@ function save_menu_node(array $data, ?int $id = null, bool $snapshot = true): in
     if ($type === 'sharedbundle' && $fields[8] === '') $fields[8] = 'Seddo';
     if ($type === 'catalog' && $fields[8] === '') throw new RuntimeException('A catalogue list needs at least one sub-category.');
     if ($type === 'offer' && trim((string)$fields[5]) === '') throw new RuntimeException('Choose the offer this item sells.');
+    if ($type === 'flow') {
+        $fields[5] = trim((string)($data['flow_key'] ?? $data['offer_code'] ?? '')); flow_tables();
+        if ($fields[5] === '' || !flow_get($fields[5])) throw new RuntimeException('Choose which service flow this item opens (create it on the Service Flows page first).');
+    }
     if ($type === 'quiz') {
         $fields[5] = trim((string)($data['quiz_key'] ?? $data['offer_code'] ?? ''));
         ussd_quiz_tables(); $ex = portal_pdo()->prepare('SELECT 1 FROM ussd_quizzes WHERE quiz_key=?'); $ex->execute([$fields[5]]);
@@ -2439,18 +2443,19 @@ function menu_duplicate_node(int $id): string {
 //   Label | quiz    | quiz key          Label | shared | Seddo          Label | other   (buy for another number)
 function menu_quick_add(string $code, ?int $parent, string $lines, string $status = 'draft'): int {
     $code = trim($code); if ($code === '') throw new RuntimeException('Pick a short code first.');
-    $map = ['menu' => 'menu', 'submenu' => 'menu', 'catalog' => 'catalog', 'list' => 'catalog', 'offer' => 'offer', 'end' => 'end', 'quiz' => 'quiz', 'shared' => 'sharedbundle', 'sharedbundle' => 'sharedbundle', 'other' => 'recipient', 'recipient' => 'recipient'];
+    $map = ['menu' => 'menu', 'submenu' => 'menu', 'catalog' => 'catalog', 'list' => 'catalog', 'offer' => 'offer', 'end' => 'end', 'quiz' => 'quiz', 'shared' => 'sharedbundle', 'sharedbundle' => 'sharedbundle', 'other' => 'recipient', 'recipient' => 'recipient', 'flow' => 'flow'];
     $rows = [];
     foreach (preg_split('/\R/', $lines) as $n => $line) {
         $line = trim($line); if ($line === '' || $line[0] === '#') continue;
         $p = array_map('trim', explode('|', $line, 3)); $type = strtolower($p[1] ?? 'menu'); if ($type === '') $type = 'menu';
-        if (!isset($map[$type])) throw new RuntimeException('Line '.($n + 1).': "'.$p[1].'" is not a type. Use menu, catalog, offer, end, quiz, shared or other.');
+        if (!isset($map[$type])) throw new RuntimeException('Line '.($n + 1).': "'.$p[1].'" is not a type. Use menu, catalog, offer, end, quiz, flow, shared or other.');
         $t = $map[$type]; $extra = $p[2] ?? '';
         $d = ['short_code' => $code, 'parent_id' => $parent, 'prompt_text' => $p[0], 'node_type' => $t, 'status' => $status];
         if ($t === 'catalog') { if ($extra === '') throw new RuntimeException('Line '.($n + 1).': a catalogue list needs its sub-categories after the second |, separated by ;'); $d['catalog_filter'] = str_replace(';', "\n", $extra); }
         if ($t === 'sharedbundle') $d['catalog_filter'] = str_replace(';', "\n", $extra !== '' ? $extra : 'Seddo');
         if ($t === 'offer') { if ($extra === '') throw new RuntimeException('Line '.($n + 1).': an offer item needs the offer code after the second |'); $d['offer_code'] = $extra; }
         if ($t === 'quiz') $d['quiz_key'] = $extra;
+        if ($t === 'flow') $d['flow_key'] = $extra;
         if ($t === 'end') $d['body_text'] = $extra;
         $rows[] = [$n + 1, $d];
     }
@@ -2511,6 +2516,17 @@ function menu_health(string $code): array {
             if (!ussd_catalog_offers($n)) $add('error', $id, $label.': no Active offer in ['.str_replace("\n", ', ', (string)$n['catalog_filter']).'] — customers cannot buy.');
             $c2 = ussd_proxy_config(); if ($c2['share_mode'] !== 'live') $add('info', $id, $label.': Shared Bundle is in '.strtoupper($c2['share_mode']).' mode — '.($c2['share_mode'] === 'test' ? 'answers are simulated, nothing is bought.' : 'it is switched off.'));
         }
+        if ($t === 'flow') {
+            $fl = flow_get(trim((string)$n['offer_code']));
+            if (!$fl) $add('error', $id, $label.' opens the service flow "'.$n['offer_code'].'", which does not exist.');
+            elseif ($fl['status'] !== 'active') $add('error', $id, $label.': the service flow "'.$n['offer_code'].'" is switched off.');
+            else {
+                $fv = flow_validate($fl['def']); $fe = array_values(array_filter($fv, fn($x) => $x['level'] === 'error')); $fw = array_filter($fv, fn($x) => $x['level'] === 'warn');
+                if ($fe) $add('error', $id, $label.': the flow has '.count($fe).' thing(s) to fix — '.$fe[0]['msg']);
+                if ($fw) $add('warn', $id, $label.': the flow has '.count($fw).' thing(s) to look at on the Service Flows page.');
+                if ($fl['mode'] !== 'live') $add('info', $id, $label.': the flow is in TEST mode — every call is simulated ('.$fl['test_outcome'].'), nothing is sent.');
+            }
+        }
         if ($t === 'recipient') {
             $actKids = []; foreach ($flat as $x) if ($x['status'] === 'active') $actKids[$x['parent_id'] === null ? 0 : (int)$x['parent_id']][] = $x;
             $top = $actKids[0] ?? []; if (count($top) === 1 && $top[0]['node_type'] === 'menu') $top = $actKids[(int)$top[0]['id']] ?? [];
@@ -2549,7 +2565,7 @@ function import_menu_json(string $shortCode, string $json): array {
             if (!is_array($n)) throw new RuntimeException('Every node must be an object.');
             if (++$count > 150) throw new RuntimeException('At most 150 nodes per import.');
             $prompt = trim((string)($n['prompt_text'] ?? '')); if ($prompt === '' || mb_strlen($prompt) > 300) throw new RuntimeException('Every node needs prompt_text (up to 300 characters).');
-            $type = (string)($n['node_type'] ?? 'menu'); if (!in_array($type, ['menu', 'offer', 'action', 'end', 'catalog', 'recipient', 'quiz', 'sharedbundle'], true)) throw new RuntimeException('"'.$type.'" is not a node type.');
+            $type = (string)($n['node_type'] ?? 'menu'); if (!in_array($type, ['menu', 'offer', 'action', 'end', 'catalog', 'recipient', 'quiz', 'sharedbundle', 'flow'], true)) throw new RuntimeException('"'.$type.'" is not a node type.');
             $status = (string)($n['status'] ?? 'draft'); if (!in_array($status, ['active', 'inactive', 'draft'], true)) throw new RuntimeException('"'.$status.'" is not a status.');
             $filter = in_array($type, ['catalog', 'sharedbundle'], true) ? menu_catalog_filter($n['catalog_filter'] ?? '') : null;
             if ($type === 'sharedbundle' && $filter === '') $filter = 'Seddo';
@@ -2586,11 +2602,12 @@ function render_menu_preview(array $tree, int $depth = 0): string {
         $indent = str_repeat('  ', $depth);
         $suffix = $node['node_type'] === 'offer' ? ' → purchase '.e($node['offer_code'])
             : ($node['node_type'] === 'action' ? ' → '.e($node['action_key'])
+            : ($node['node_type'] === 'flow' ? ' → service flow '.e($node['offer_code'])
             : ($node['node_type'] === 'sharedbundle' ? ' → Shared Bundle service (offers: '.e(str_replace("\n", ', ', (string)($node['catalog_filter'] ?? ''))).')'
             : ($node['node_type'] === 'quiz' ? ' → quiz game '.e($node['offer_code'])
             : ($node['node_type'] === 'recipient' ? ' → asks for another number, then shows the main menu'
             : ($node['node_type'] === 'end' ? ' → END'
-            : ($node['node_type'] === 'catalog' ? ' → live list: '.e(str_replace("\n", ', ', (string)($node['catalog_filter'] ?? ''))) : ''))))));
+            : ($node['node_type'] === 'catalog' ? ' → live list: '.e(str_replace("\n", ', ', (string)($node['catalog_filter'] ?? ''))) : '')))))));
         $out .= $indent.($depth===0 ? $i.'. ' : '- ').e($node['prompt_text']).$suffix."\n";
         if ($node['children']) $out .= render_menu_preview($node['children'], $depth + 1);
         $i++;
@@ -2621,6 +2638,15 @@ function ussd_allowed_for_other(array $n, array $kids, callable $offerLookup, ca
     }
     if ($key !== '') $memo[$key] = $r;
     return $r;
+}
+// What a flow gets from the menu engine: the caller, how to find outcomes already stored for this session, how to look things up.
+// $hooks['flow_sim'] = success|lowbal|fail makes every call and lookup simulated (the Simulator); $hooks['flow_hooks'] overrides (tests).
+function ussd_flow_hooks(array $fl, array $hooks, string $shortCode): array {
+    if (!empty($hooks['flow_hooks'])) return $hooks['flow_hooks'] + ['msisdn' => $hooks['msisdn'] ?? ''];
+    $h = ['msisdn' => (string)($hooks['msisdn'] ?? '')];
+    if (!empty($hooks['flow_sim'])) return $h + ['call' => flow_sim_call_hook((string)$hooks['flow_sim']), 'lookup' => 'flow_sim_lookup'];
+    $seed = (string)($hooks['seed'] ?? ''); $ctx = (array)($hooks['ctx'] ?? []);
+    return $h + ['call' => flow_stored_hook($fl['flow_key'], $seed), 'lookup' => flow_lookup_hook($fl, $ctx, $seed, $shortCode)];
 }
 // A number as a customer reads it on a phone screen: without the 220 country code.
 function ussd_local_number(string $n): string {
@@ -2696,8 +2722,8 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
         if ($recipient !== null) $opts = array_values(array_filter($opts, $allowedOther));
         return [$opts, false];
     };
-    foreach ($replies as $r) {
-        $r = trim((string)$r, " \t\r\n*#"); // people sometimes type *2 or 2# — the star and hash are not part of the choice
+    for ($ix = 0; $ix < count($replies); $ix++) {
+        $r = trim((string)$replies[$ix], " \t\r\n*#"); // people sometimes type *2 or 2# — the star and hash are not part of the choice
         if ($confirm !== null) {
             [$pick, $o, $name] = $confirm;
             if ($r === '1') return ussd_result('Processing your purchase of '.$name.'...', true, $path, 'purchase', $pick)
@@ -2781,6 +2807,15 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
         if (!ctype_digit($r) || (int)$r < 1 || (int)$r > count($options)) { $note = 'Invalid choice.'; continue; }
         $pick = $options[(int)$r - 1]; $path[] = (int)$r; $note = null;
         if (($pick['node_type'] === 'menu' && !empty($kids[(int)$pick['id']])) || in_array($pick['node_type'], ['catalog', 'recipient', 'quiz', 'sharedbundle'], true)) { $cur = $pick; $trail[] = $cur; $page = 0; if ($pick['node_type'] === 'quiz') $quiz = $quizNew($pick); if ($pick['node_type'] === 'sharedbundle') $sb = $sbNew(); continue; }
+        // a service flow: its own screens from here on (until it leaves, when the menu carries on with the remaining replies)
+        if ($pick['node_type'] === 'flow') {
+            $fk = trim((string)$pick['offer_code']); $fl = flow_get($fk);
+            if (!$fl || $fl['status'] !== 'active') return ussd_result('This service is not available right now.', true, $path, 'flow_unavailable', $pick);
+            $fr = flow_screen($fl['def'], array_slice($replies, $ix + 1), ussd_flow_hooks($fl, $hooks, $shortCode));
+            if (isset($fr['exit_at'])) { array_pop($path); $ix += $fr['exit_at']; $note = null; continue; }
+            return ussd_result(isset($fr['pending']) ? 'Processing...' : (string)$fr['text'], isset($fr['pending']) ? false : (bool)$fr['end'], $path, isset($fr['pending']) ? 'flow_call' : 'flow', $pick)
+                + ['flow_key' => $fk, 'flow_pending' => $fr['pending'] ?? null];
+        }
         // an offer: show what it is and ask for a yes before anything is bought
         if ($pick['node_type'] === 'offer') {
             $o = $offerLookup(trim((string)$pick['offer_code']));
@@ -3459,7 +3494,9 @@ function ussd_proxy_process(array $cfg, string $mode, array $flat, bool $dry = f
             if ($row !== false) { $replies = json_decode((string)$row, true) ?: []; if ($input !== '') $replies[] = $input; }
         } else $note[] = 'no session or msisdn field set — every request starts again from the first screen';
     }
-    $screen = ussd_screen($sc, array_slice($replies, -30), ['active'], null, ['seed' => $sessionId !== '' ? $sessionId : (string)$key, 'msisdn' => $msisdn]);
+    $hk = ['seed' => $sessionId !== '' ? $sessionId : (string)$key, 'msisdn' => $msisdn]; $mkScreen = fn() => ussd_screen($sc, array_slice($replies, -30), ['active'], null, $hk);
+    $screen = $mkScreen();
+    for ($fi = 0; $fi < 5 && ($screen['kind'] ?? '') === 'flow_call' && !$dry; $fi++) { flow_execute_call(flow_get($screen['flow_key']), $screen['flow_pending'], $hk['seed'], $msisdn, [], $sc); $screen = $mkScreen(); }
     if (in_array($screen['kind'] ?? '', ['share_subscribe', 'share_add'], true)) {
         if ($dry) $note[] = 'not sent (test run)';
         else { $sr = ussd_share_execute($cfg, $screen, $msisdn, $sessionId !== '' ? $sessionId : (string)$key); $screen['text'] = $sr['text']; $note[] = $sr['note']; }
@@ -3658,7 +3695,9 @@ function ussd_proxy_push_endpoint(array $cfg, array $flat, string $raw, array $g
                 $st->execute([$callId, $sc]); $row = $st->fetchColumn();
                 if ($row !== false) { $replies = json_decode((string)$row, true) ?: []; if ($typed !== '') $replies[] = $typed; } else $note = 'session not found - restarted from the first screen; ';
             }
-            $screen = ussd_screen($sc, array_slice($replies, -30), ['active'], null, ['seed' => $callId, 'msisdn' => $msisdn, 'ctx' => ussd_purchase_ctx($raw)]);
+            $hk = ['seed' => $callId, 'msisdn' => $msisdn, 'ctx' => ussd_purchase_ctx($raw)]; $mkScreen = fn() => ussd_screen($sc, array_slice($replies, -30), ['active'], null, $hk);
+            $screen = $mkScreen();
+            for ($fi = 0; $fi < 5 && ($screen['kind'] ?? '') === 'flow_call'; $fi++) { flow_execute_call(flow_get($screen['flow_key']), $screen['flow_pending'], $callId, $msisdn, $hk['ctx'], $sc); $screen = $mkScreen(); }
             ussd_quiz_record($screen, $msisdn, $callId);
             if (in_array($screen['kind'] ?? '', ['share_subscribe', 'share_add'], true)) { $sr = ussd_share_execute($cfg, $screen, $msisdn, $callId, ussd_purchase_ctx($raw)); $screen['text'] = $sr['text']; $note .= $sr['note'].'; '; }
             if ($screen['end']) $db->prepare('DELETE FROM ussd_proxy_sessions WHERE session_key=?')->execute([$callId]);
@@ -3787,4 +3826,5 @@ function monitoring_snapshot(string $schema): array {
     ];
 }
 
+require_once __DIR__.'/flows.php';
 if (!defined('LEAN_BOOT')) ensure_portal_runtime_schema();

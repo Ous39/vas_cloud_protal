@@ -42,11 +42,13 @@ $cleanup = function () use ($db, $offerDb, $savedCfg) {
     $db->exec("DELETE FROM ussd_menu_nodes WHERE short_code LIKE '*ZT%'");
     $db->exec("DELETE FROM ussd_menu_versions WHERE short_code LIKE '*ZT%'");
     $db->exec("DELETE FROM ussd_purchases WHERE call_id LIKE 'ZT-%'");
+    $db->exec("DELETE FROM ussd_flow_calls WHERE call_id LIKE 'ZT-%'"); $db->exec("DELETE FROM ussd_flow_versions WHERE flow_key LIKE 'zt_%'"); $db->exec("DELETE FROM ussd_flows WHERE flow_key LIKE 'zt_%'"); $db->exec("DELETE FROM ussd_connections WHERE conn_key LIKE 'zt_%'");
+    $db->exec("DELETE FROM ussd_flow_calls WHERE flow_key='zt_seddo'"); $db->exec("DELETE FROM ussd_flows WHERE flow_key='zt_seddo'");
     $db->exec("DELETE FROM ussd_quiz_plays WHERE quiz_key='zt_quiz'"); $db->exec("DELETE FROM ussd_quiz_questions WHERE quiz_key='zt_quiz'"); $db->exec("DELETE FROM ussd_quizzes WHERE quiz_key='zt_quiz'");
     $db->exec('DELETE FROM ussd_proxy_config');
     $ins = $db->prepare('INSERT INTO ussd_proxy_config(name,value) VALUES(?,?)'); foreach ($savedCfg as $k => $v) $ins->execute([$k, $v]);
 };
-ussd_quiz_tables(); ussd_purchase_table(); menu_versions_table(); $cleanup();
+ussd_quiz_tables(); ussd_purchase_table(); menu_versions_table(); flow_tables(); $cleanup();
 $addOffer = $offerDb->prepare('INSERT INTO vas_offers(vendor,offer_code,offer_code_for_other,sub_category,name,one_time_price,status,validity_amount) VALUES(?,?,?,?,?,?,?,?)');
 foreach ([['huawei', 'ZT001', 'ZTO01', 'ZT Cat A', 'ZT Alpha', 10, '1', 7], ['huawei', 'ZT002', '', 'ZT Cat A', 'ZT Beta', 20, '1', 30], ['huawei', 'ZT003', '', 'ZT Cat A', 'ZT Gone', 5, '0', 1],
          ['huawei', 'ZTSED', '', 'ZT Seddo', '12GB Seddo', 600, '1', 30], ['huawei', 'ZTS1', '', 'ZT Cat C', 'ZT Same', 9, '1', 1], ['huawei', 'ZTS2', '', 'ZT Cat D', 'ZT Same', 9, '1', 1]] as $o) $addOffer->execute($o);
@@ -277,6 +279,113 @@ t('older stored bodies are upgraded, edited ones kept', function () {
 echo "\nEndpoint\n";
 t('serving a dialled short code', function () {
     $cfg = ussd_proxy_config(); ok(in_array('*ZT5#', menu_shortcodes(), true), 'a code with a menu is known'); ok(!in_array('*ZT-NONE#', menu_shortcodes(), true), 'one without is not');
+});
+
+// ------------------------------------------------------------------ service flows
+echo "\nService flows\n";
+$loanDef = ['start' => 'main', 'steps' => [
+    'main' => ['type' => 'choices', 'text' => 'Welcome to menu', 'options' => [['label' => 'Purchase offer', 'next' => 'pick'], ['label' => 'Check balance', 'next' => 'bal']]],
+    'pick' => ['type' => 'offers', 'text' => 'Choose:', 'sub_categories' => ['ZT Cat A'], 'next' => 'confirm', 'auto_single' => false],
+    'confirm' => ['type' => 'confirm', 'text' => "You are purchasing {offer.name}\n1. Confirm\n2. Cancel", 'yes' => 'buy', 'no' => 'main'],
+    'buy' => ['type' => 'call', 'connection' => 'zt_low', 'path' => 'buy', 'body' => '{"callID":"{txn}","msisdn":"{msisdn}","imsi":"{imsi}","offerCode":"{offer.code}","chargesWithCurrency":"{offer.price_d}"}', 'outcomes' => ['success' => 'ok', 'lowbal' => 'loan_offer', 'fail' => 'failed']],
+    'ok' => ['type' => 'message', 'text' => 'Your subscription is successful'],
+    'loan_offer' => ['type' => 'confirm', 'text' => "You don't have enough balance for {offer.name}. You are eligible to take a loan and subscribe.\n1. Confirm\n2. Cancel", 'yes' => 'loan_do', 'no' => 'main'],
+    'loan_do' => ['type' => 'call', 'connection' => 'zt_ok', 'path' => 'loan', 'body' => '{"msisdn":"{msisdn}","offerCode":"{offer.code}"}', 'outcomes' => ['success' => 'loan_ok', 'lowbal' => 'failed', 'fail' => 'failed']],
+    'loan_ok' => ['type' => 'message', 'text' => 'The loan has been taken and your subscription is successful'],
+    'failed' => ['type' => 'message', 'text' => 'Subscription failed'],
+    'bal' => ['type' => 'lookup', 'text' => 'Your balance is: {result.balance}', 'connection' => '', 'path' => '', 'body' => ''],
+]];
+$offerRows = [['offer_code' => 'ZT001', 'name' => 'ZT Alpha', 'one_time_price' => 10]];
+$fh = fn(string $outcome) => ['call' => flow_sim_call_hook($outcome), 'lookup' => 'flow_sim_lookup', 'offers' => fn($step) => $offerRows, 'offer' => fn($c) => ['name' => 'ZT Alpha', 'one_time_price' => 10, 'validity_amount' => 7, 'vendor' => 'huawei', 'offer_code_for_other' => 'ZTO01'], 'msisdn' => '220866000001'];
+$fs = fn(array $r, string $outcome = 'success') => flow_screen($GLOBALS['loanDef'], $r, $fh($outcome));
+t('a flow is checked before it is used', function () use ($loanDef) {
+    eq(array_values(array_filter(flow_validate($loanDef), fn($x) => $x['level'] === 'error')), [], 'the loan flow has nothing to fix');
+    $bad = $loanDef; $bad['steps']['confirm']['yes'] = 'nowhere'; $bad['steps']['pick']['sub_categories'] = []; unset($bad['steps']['buy']['outcomes']['success']);
+    $m = implode(' || ', array_column(flow_validate($bad), 'msg')); has($m, 'leads to "nowhere", which does not exist', 'a step that leads nowhere is named'); has($m, 'choose the sub-category', 'an offers step needs a sub-category'); has($m, 'say what happens on success', 'a call needs a success path');
+    $orphan = $loanDef; $orphan['steps']['lost'] = ['type' => 'message', 'text' => 'x']; has(implode('|', array_column(flow_validate($orphan), 'msg')), 'cannot be reached', 'a step nobody can reach is mentioned');
+    $unk = $loanDef; $unk['steps']['ok']['text'] = 'Hello {nobody}'; has(implode('|', array_column(flow_validate($unk), 'msg')), '{nobody}', 'a placeholder that will be empty is mentioned');
+});
+t('flow screens and the branches after a call', function () use ($fs) {
+    eq($fs([])['text'], "Welcome to menu\n1. Purchase offer\n2. Check balance\n0. Back", 'first screen');
+    has($fs(['1'])['text'], '1. ZT Alpha - D10', 'the offers list'); has($fs(['1', '1'])['text'], "You are purchasing ZT Alpha\n1. Confirm\n2. Cancel", 'the offer chosen fills the text');
+    eq($fs(['1', '1', '1'], 'success')['text'], 'Your subscription is successful', 'success: the success message'); eq($fs(['1', '1', '1'], 'success')['end'], true, 'and the session closes');
+    $low = $fs(['1', '1', '1'], 'lowbal'); has($low['text'], "You don't have enough balance for ZT Alpha", 'low balance: the loan offer'); eq($low['end'], false, 'which asks for an answer');
+    eq($fs(['1', '1', '1', '1'], 'lowbal,success')['text'], 'The loan has been taken and your subscription is successful', 'accepting it takes the loan (the second call works)'); eq($fs(['1', '1', '1', '1'], 'lowbal,fail')['text'], 'Subscription failed', 'and if the loan call fails, the failure message');
+    has($fs(['1', '1', '1', '2'], 'lowbal')['text'], 'Welcome to menu', 'declining it goes back to the start'); eq($fs(['1', '1', '1'], 'fail')['text'], 'Subscription failed', 'any other failure: the failure message');
+    has($fs(['1', '1', '2'])['text'], 'Welcome to menu', 'cancel at the confirm screen'); has($fs(['1', '0'])['text'], 'Welcome to menu', '0 goes back one step'); eq($fs(['0']), ['exit_at' => 1], '0 at the very first screen leaves the flow');
+    has($fs(['9'])['text'], 'Invalid choice.', 'an invalid choice is refused'); has($fs(['2'])['text'], 'Your balance is: D 100', 'a look-up fills {result.balance}');
+    $p = $fs(['1', '1', '1'], 'success'); ok(!isset($p['pending']), 'with an outcome available there is nothing left to run');
+});
+t('a call nobody has run yet is handed back to be run once', function () use ($loanDef, $fh) {
+    $h = $fh('success'); $h['call'] = fn($a, $b, $c, $d) => null; $r = flow_screen($loanDef, ['1', '1', '1'], $h);
+    eq($r['pending']['step'], 'buy', 'the call to run is named'); eq($r['pending']['vars']['offer.code'], 'ZT001', 'with what the customer picked'); eq($r['pending']['key'], 'buy#1', 'and a key for this visit');
+});
+t('asking for a number, and the other blocks', function () {
+    $def = ['start' => 'a', 'steps' => ['a' => ['type' => 'ask', 'text' => 'Enter the number:', 'kind' => 'phone', 'var' => 'other', 'next' => 'c'], 'c' => ['type' => 'confirm', 'text' => 'Is {other_local} right? ({other_raw}) 1 yes', 'yes' => 'm', 'no' => 'a'], 'm' => ['type' => 'message', 'text' => 'Done for {other}']]];
+    $r = fn(array $x) => flow_screen($def, $x, []); has($r(['abc'])['text'], 'Invalid number.', 'phone check'); eq($r(['866520934'])['text'], 'Is 866520934 right? (866520934) 1 yes', 'local number shown, raw kept'); eq($r(['866520934', '1'])['text'], 'Done for 220866520934', 'the full number is available to calls'); has($r(['866520934', '2'])['text'], 'Enter the number:', 'no goes back to ask again');
+    $d2 = ['start' => 'a', 'steps' => ['a' => ['type' => 'ask', 'text' => 'PIN?', 'kind' => 'digits', 'var' => 'pin', 'next' => 'm'], 'm' => ['type' => 'message', 'text' => 'PIN {pin}']]]; has(flow_screen($d2, ['12x'], [])['text'], 'Invalid entry.', 'digits check'); eq(flow_screen($d2, ['1234'], [])['text'], 'PIN 1234', 'digits kept');
+    $d3 = ['start' => 'a', 'steps' => ['a' => ['type' => 'offers', 'text' => 'Pick', 'sub_categories' => ['x'], 'next' => 'm', 'auto_single' => true], 'm' => ['type' => 'message', 'text' => 'You chose {offer.name} {offer.price_d}']]];
+    $h = ['offers' => fn($s) => [['offer_code' => 'A', 'name' => 'Only one', 'one_time_price' => 5]], 'offer' => fn($c) => ['name' => 'Only one', 'one_time_price' => 5]];
+    eq(flow_screen($d3, [], $h)['text'], 'You chose Only one D5', 'a single offer is chosen for the customer'); $d3['steps']['a']['auto_single'] = false; has(flow_screen($d3, [], $h)['text'], '1. Only one - D5', 'unless the list is wanted');
+    $many = array_map(fn($i) => ['offer_code' => "O$i", 'name' => "Offer $i", 'one_time_price' => $i], range(1, 8)); $h2 = ['offers' => fn($s) => $many, 'offer' => fn($c) => ['name' => 'x', 'one_time_price' => 1]];
+    $d3['steps']['a']['auto_single'] = true; has(flow_screen($d3, [], $h2)['text'], '6. More', 'long lists are paged'); has(flow_screen($d3, ['6'], $h2)['text'], '1. Offer 6 - D6', 'to the next page');
+});
+t('a flow opened from a menu, and back out of it', function () use ($loanDef) {
+    flow_tables(); save_flow(['flow_key' => 'zt_loan', 'title' => 'ZT Loan']); flow_save_def('zt_loan', $loanDef, 'test');
+    menu_quick_add('*ZT7#', null, "Home\nLoan service | flow | zt_loan", 'active'); $sim = fn(array $r, string $o = 'success') => screen('*ZT7#', $r, ['flow_sim' => $o]);
+    has($sim(['2'])['text'], 'Welcome to menu', 'the menu item opens the flow'); eq($sim(['2'])['kind'], 'flow', 'as a flow screen'); has($sim(['2', '1', '1', '1'], 'lowbal')['text'], "enough balance", 'and follows its branches');
+    has($sim(['2', '0'])['text'], '2. Loan service', '0 at the flow\'s first screen returns to the menu'); has($sim(['2', '0', '2', '1'])['text'], 'ZT Alpha', 'and the menu carries on working after that');
+    thrown(fn() => save_menu_node(['short_code' => '*ZT7#', 'prompt_text' => 'X', 'node_type' => 'flow', 'flow_key' => 'zt_nope']), 'service flow', 'an item cannot open a flow that does not exist');
+    $h = implode(' || ', array_column(menu_health('*ZT7#'), 'msg')); has($h, 'TEST mode', 'the menu check says the flow is only rehearsing');
+    db_exec_flow_status('zt_loan', 'inactive'); eq(screen('*ZT7#', ['2'], ['flow_sim' => 'success'])['text'], 'This service is not available right now.', 'a flow that is switched off says so'); has(implode('|', array_column(menu_health('*ZT7#'), 'msg')), 'switched off', 'and the menu check flags it'); db_exec_flow_status('zt_loan', 'active');
+});
+function db_exec_flow_status(string $k, string $st): void { portal_pdo()->prepare('UPDATE ussd_flows SET status=? WHERE flow_key=?')->execute([$st, $k]); }
+t('connections keep their headers encrypted', function () use ($db, $stub) {
+    foreach (['zt_low' => 'lowbal', 'zt_ok' => 'ok'] as $k => $scn) save_flow_connection(['conn_key' => $k, 'title' => "ZT $scn", 'base_url' => "$stub/sb/$scn", 'headers' => "X-API-KEY: zt-key-777,\nX-USERNAME: USSD\nX-EMPTY:", 'ok_code' => '0', 'lowbal' => 'insufficient,low balance', 'timeout' => 5]);
+    $row = $db->query("SELECT headers_enc, base_url FROM ussd_connections WHERE conn_key='zt_low'")->fetch(); lacks((string)$row['headers_enc'], 'zt-key-777', 'the key is not stored in clear'); eq(flow_connection('zt_low')['headers'], "X-API-KEY: zt-key-777\nX-USERNAME: USSD", 'but reads back, tidied');
+    eq($row['base_url'], "$stub/sb/lowbal/", 'the address always ends with a slash'); save_flow_connection(['conn_key' => 'zt_low', 'title' => 'ZT lowbal', 'base_url' => "$stub/sb/lowbal", 'headers' => '', 'ok_code' => '0', 'timeout' => 5]); eq(flow_connection('zt_low')['headers'], "X-API-KEY: zt-key-777\nX-USERNAME: USSD", 'saving again with the headers box empty keeps them');
+    thrown(fn() => save_flow_connection(['conn_key' => 'zt_bad', 'title' => 'x', 'base_url' => 'not a url']), 'full http', 'a bad address is refused'); thrown(fn() => save_flow_connection(['conn_key' => 'zt_bad', 'title' => 'x', 'base_url' => 'http://x.y/', 'headers' => 'bare-key-value']), 'Line 1', 'a bad header line is named by number');
+});
+t('live: the call runs once, its outcome picks the next step', function () use ($db, $stub, $lastBody) {
+    $ctx = ['imsi' => '607036003160087', 'localDialogID' => 1, 'remoteDialogID' => 2, 'localAddress' => ['digits' => '220609899931'], 'remoteAddress' => ['digits' => '220609899901']];
+    $go = function (array $replies, string $call, string $mode = 'live') use ($ctx) { // what the endpoint does: build the screen, run any call that is waiting, build it again
+        $hk = ['seed' => $call, 'msisdn' => '220866000001', 'ctx' => $ctx]; $mk = fn() => screen('*ZT7#', $replies, $hk); $sc = $mk();
+        for ($i = 0; $i < 5 && $sc['kind'] === 'flow_call'; $i++) { flow_execute_call(flow_get($sc['flow_key']), $sc['flow_pending'], $call, '220866000001', $ctx, '*ZT7#'); $sc = $mk(); } return $sc;
+    };
+    portal_pdo()->prepare("UPDATE ussd_flows SET mode='live' WHERE flow_key='zt_loan'")->execute();
+    $path = '/sb/lowbal/buy'; $file = sys_get_temp_dir().'/zt_stub_last_'.md5($path).'.json'; @unlink($file);
+    $r = $go(['2', '1', '1', '1'], 'ZT-fl1'); has($r['text'], "You don't have enough balance", 'the real low-balance reply leads to the loan offer'); $b = $lastBody($path); eq($b['json']['offerCode'] ?? null, 'ZT001', 'the picked offer is in the request'); eq($b['json']['chargesWithCurrency'] ?? null, 'D10', 'with its price'); eq($b['json']['imsi'] ?? null, '607036003160087', "and the caller's IMSI"); eq($b['headers']['x-api-key'], 'zt-key-777', 'the connection headers went with it');
+    @unlink($file); $again = $go(['2', '1', '1', '1'], 'ZT-fl1'); eq($again['text'], $r['text'], 'repeating the same replies shows the same screen'); ok(!is_file($file), 'and does not call again');
+    $loan = $go(['2', '1', '1', '1', '1'], 'ZT-fl1'); eq($loan['text'], 'The loan has been taken and your subscription is successful', 'the second call (loan) succeeds'); eq((int)$db->query("SELECT COUNT(*) FROM ussd_flow_calls WHERE call_id='ZT-fl1'")->fetchColumn(), 2, 'both calls are recorded'); eq($db->query("SELECT outcome FROM ussd_flow_calls WHERE call_id='ZT-fl1' AND step_key='buy#1'")->fetchColumn(), 'lowbal', 'with their outcomes');
+    $req = (string)$db->query("SELECT request_body FROM ussd_flow_calls WHERE call_id='ZT-fl1' AND step_key='buy#1'")->fetchColumn(); has($req, '"imsi":"607***087"', 'the request is kept, IMSI shortened'); lacks($req, 'zt-key', 'never a key');
+    // an unconfigured call stays off in live mode
+    $def = flow_get('zt_loan')['def']; $def['steps']['buy']['connection'] = ''; flow_save_def('zt_loan', $def, 'test: unconfigured'); has($go(['2', '1', '1', '1'], 'ZT-fl2')['text'], 'Subscription failed', 'an unconfigured call does not call out and takes the failure path');
+    eq($db->query("SELECT outcome FROM ussd_flow_calls WHERE call_id='ZT-fl2'")->fetchColumn(), 'fail', 'recorded as a failure'); $def['steps']['buy']['connection'] = 'zt_low'; flow_save_def('zt_loan', $def, 'test: restored');
+    // test mode never calls out: it plays the chosen outcome
+    portal_pdo()->prepare("UPDATE ussd_flows SET mode='test', test_outcome='fail' WHERE flow_key='zt_loan'")->execute(); @unlink($file); eq($go(['2', '1', '1', '1'], 'ZT-fl3')['text'], 'Subscription failed', 'test mode plays the rehearsal outcome'); ok(!is_file($file), 'without calling anything');
+    portal_pdo()->prepare("UPDATE ussd_flows SET mode='test', test_outcome='success' WHERE flow_key='zt_loan'")->execute();
+});
+t('replies are classified like the real ones', function () {
+    $c = ['ok_code' => '0', 'lowbal' => 'insufficient,low balance'];
+    $cl = fn(string $raw, int $code = 200) => flow_classify($c, ['raw' => $raw, 'code' => $code, 'error' => '']);
+    eq($cl('{"resultCode":"000","resultDescription":"Success","result":{"resultCode":"0","resultDescription":"\nYour subscription is successful"}}')['outcome'], 'success', 'result code 0 is success');
+    eq($cl('{"resultCode":"000","resultDescription":"Success","result":{"resultCode":"20000005","resultDescription":"\n Low balance"}}')['outcome'], 'lowbal', 'low balance words');
+    eq($cl('{"resultCode":"000","resultDescription":"Success","result":{"resultCode":"-1","resultDescription":"\nDeduction for Subscription failed"}}')['outcome'], 'fail', 'any other refusal'); eq($cl('{"resultCode":"9990","resultDescription":"No subscription"}')['outcome'], 'fail', 'a top-level refusal');
+    eq($cl('{"x":1}', 500)['outcome'], 'fail', 'a server error'); $v = $cl('{"resultCode":"000","result":{"resultCode":"0","package1":"10GB left"}}')['vars']; eq($v['result.package1'], '10GB left', 'values are available as {result.…}');
+});
+t('the Seddo starter flow', function () {
+    save_flow(['flow_key' => 'zt_seddo', 'title' => 'ZT Seddo', 'template' => 'seddo']); ok(flow_connection('sharebundle') !== null, 'its connection is created from what the portal already knows');
+    eq(array_values(array_filter(flow_validate(flow_get('zt_seddo')['def']), fn($x) => $x['level'] === 'error')), [], 'it has nothing to fix'); $d = flow_get('zt_seddo')['def'];
+    $h = ['call' => flow_sim_call_hook('success'), 'lookup' => 'flow_sim_lookup', 'offers' => fn($s) => [['offer_code' => 'ZTSED', 'name' => '12GB Seddo', 'one_time_price' => 600]], 'offer' => fn($c) => ['name' => '12GB Seddo', 'one_time_price' => 600, 'validity_amount' => 30, 'vendor' => 'huawei', 'offer_code_for_other' => '']];
+    eq(flow_screen($d, ['1'], $h)['text'], 'Press 1 to subscribe to Seddo 12GB Seddo for D600, valid for 30 days, or press 0 to return to the menu.', 'buy: same words as the Shared Bundle item'); has(flow_screen($d, ['2', '866671144'], $h)['text'], 'Seddo number 866671144 is correct', 'add number: local digits'); eq(flow_screen($d, ['2', '866671144', '1'], $h)['text'], 'Your subscription is successful', 'and the reply text of the call');
+    portal_pdo()->exec("DELETE FROM ussd_connections WHERE conn_key='sharebundle'");
+});
+t('a Mobius log line becomes a request body', function () {
+    $line = '22:25:37.962 [Thread-3] INFO NETWORK [] - Sending request :{"callID":"6ac2d23e562b1d1f048485aa","originalRequest":"*606#","remoteURL":"https://h.example/hera/prepaid/ShareBundle/subscribe","menuID":"x","virtualNetworkID":"y","localAddress":{"digits":"220609899931"},"remoteAddress":{"digits":"220609899901"},"msisdn":"220866365728","imsi":"607036004407569","localDialogID":33640635,"remoteDialogID":13287424,"headers":[{"propertyName":"X-API-KEY","defaultValue":"SECRET-KEY"}],"mappingType":"JSON","isMobileOriginated":true,"isInitial":false,"chargesWithCurrency":"D600","offerCode":"40015","vendor":"huawei","channel":"USSD","operation":"purchaseOffer"} to application:https://h.example/hera/prepaid/ShareBundle/subscribe';
+    $r = flow_body_from_log($line); $b = $r['body']; lacks($b, 'SECRET-KEY', 'the headers (and their secrets) are left out'); lacks($b, '220866365728', "the caller's number is replaced"); lacks($b, '607036004407569', 'and the IMSI');
+    has($b, '"msisdn":"{msisdn}"', 'msisdn becomes a placeholder'); has($b, '"localAddress":{local_address_json}', 'addresses go in as JSON'); has($b, '"offerCode":"{offer.code}"', 'the offer fields become the picked offer'); has($b, '"chargesWithCurrency":"{offer.price_d}"', 'including the price'); has($b, '"operation":"purchaseOffer"', 'fixed fields are kept'); has($b, '"callID":"{txn}"', 'the call id is the session');
+    ok(json_decode(flow_render_body($b, ['msisdn' => '220866000001', 'offer.code' => 'X1', 'offer.price_d' => 'D5'], ['imsi' => '1'], 'C1', '*1#'), true) !== null, 'and the result is valid JSON once filled in'); eq($r['path'], 'subscribe', 'the path is taken from the address'); eq($r['address'], 'https://h.example/hera/prepaid/ShareBundle/', 'and the base address too');
+    thrown(fn() => flow_body_from_log('no json here'), 'No JSON', 'a line with no JSON is refused');
 });
 
 // ------------------------------------------------------------------ summary
