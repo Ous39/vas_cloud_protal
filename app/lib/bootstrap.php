@@ -2842,6 +2842,8 @@ function ussd_share_text($j, string $raw): string {
     $clip = fn(string $s) => mb_substr(trim(preg_replace('/[ \t]+/', ' ', preg_replace('/\R+/', "\n", trim($s)))), 0, 150);
     if (!is_array($j)) return $clip(strip_tags($raw));
     $desc = $j['result']['resultDescription'] ?? null;
+    // Hera also answers with the reason at the top level, e.g. {"resultCode":"9990","resultDescription":"You don't have active Seddo Subscription"}
+    if ($desc === null && isset($j['resultCode']) && (string)$j['resultCode'] !== '000' && is_string($j['resultDescription'] ?? null)) $desc = $j['resultDescription'];
     $payload = $j['result'] ?? $j; $lines = [];
     $walk = function ($v, $key = '') use (&$walk, &$lines) {
         // a list of records (e.g. the sharing numbers) becomes one line per record: "1 220111 2GB"
