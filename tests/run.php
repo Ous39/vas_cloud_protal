@@ -90,7 +90,8 @@ echo "\nScreens (engine)\n";
 $nodes = [];
 $mk = function (int $id, ?int $p, string $type, string $label, array $x = []) { return $x + ['id' => $id, 'parent_id' => $p, 'node_type' => $type, 'status' => 'active', 'prompt_text' => $label, 'offer_code' => '', 'action_key' => '', 'catalog_filter' => '', 'body_text' => '', 'display_order' => $id]; };
 $nodes = [$mk(1, null, 'menu', 'Main'), $mk(2, 1, 'menu', 'Bundles'), $mk(3, 1, 'end', 'Help', ['body_text' => 'Call 123 for help']), $mk(4, 2, 'catalog', 'Cat B', ['catalog_filter' => 'ZT Cat B']),
-          $mk(5, 2, 'offer', 'Alpha', ['offer_code' => 'ZT001']), $mk(6, 1, 'recipient', 'Buy for other'), $mk(7, 2, 'catalog', 'Same name', ['catalog_filter' => "ZT Cat C\nZT Cat D"]), $mk(8, 2, 'offer', 'Gone', ['offer_code' => 'ZT003'])];
+          $mk(5, 2, 'offer', 'Alpha', ['offer_code' => 'ZT001']), $mk(6, 1, 'recipient', 'Buy for other'), $mk(7, 2, 'catalog', 'Same name', ['catalog_filter' => "ZT Cat C\nZT Cat D"]), $mk(8, 2, 'offer', 'Gone', ['offer_code' => 'ZT003']),
+          $mk(9, 2, 'catalog', 'Cat A', ['catalog_filter' => 'ZT Cat A']), $mk(10, 2, 'offer', 'Beta', ['offer_code' => 'ZT002'])];
 $eng = fn(array $r) => ussd_screen('*ZTE#', $r, ['active'], $nodes, ['seed' => 'ZT-seed', 'msisdn' => '220866000001', 'share' => 'ussd_share_sim']);
 t('menus, back, invalid choices, * and #', function () use ($eng) {
     $s = $eng([]); eq($s['text'], "Main\n1. Bundles\n2. Help\n3. Buy for other", 'welcome screen'); eq($s['end'], false, 'welcome does not end');
@@ -115,6 +116,10 @@ t('buy for another number', function () use ($eng) {
     $m = $eng(['3', '866520934']); has($m['text'], 'Buy for 220866520934:', 'then the main menu again'); lacks($m['text'], 'Buy for other', 'without the buy-for-other item');
     $p = $eng(['3', '866520934', '1', '2', '1']); eq($p['purchase']['recipient'], '220866520934', 'the purchase carries the other number'); has($eng(['3', '866520934', '1', '2'])['text'], 'for 220866520934?', 'and the confirm screen says who for');
     has($eng(['3', '866520934', '0'])['text'], '1. Bundles', 'back leaves it again');
+    eq($p['purchase']['recipient_raw'], '866520934', 'the digits are also kept exactly as typed (Hera wants them that way)');
+    $self = $eng(['1', '5'])['text']; has($self, 'ZT Alpha', 'for yourself: every offer is listed'); has($self, 'ZT Beta', '(including one with no "other" code)');
+    $other = $eng(['3', '866520934', '1', '5'])['text']; has($other, 'ZT Alpha', 'for someone else: offers with an "other" code are listed'); lacks($other, 'ZT Beta', 'and offers without one are left out');
+    $b = $eng(['3', '866520934', '1', '6']); eq($b['kind'], 'offer_unavailable', 'picking such an offer directly is refused'); has($b['text'], 'cannot be bought for another number', 'with a clear reason'); eq($eng(['1', '6'])['kind'], 'confirm', 'while buying it for yourself is fine');
 });
 
 // ------------------------------------------------------------------ menu building tools (database)
@@ -210,6 +215,10 @@ t('live purchases: success word, low balance, errors, once per call', function (
     $again = $run($live('ok'), $p, 'ZT-p3', $ctx); ok(!is_file(sys_get_temp_dir().'/zt_stub_last_'.md5('/purchase/ok').'.json'), 'the same call and offer is never sent twice'); has($again['note'], 'repeated', 'and says so');
     $o = $p; $o['recipient'] = '220866111999'; has($run($live('ok', ['purchase_body_other' => '']), $o, 'ZT-p8', $ctx)['text'], 'not switched on', 'buying for another number is blocked until its body is saved');
     $run($live('ok', ['purchase_body_other' => '{"msisdn":"{msisdn}","otherMsisdn":"{other_msisdn}","offerCode":"{other_offer_code}"}']), $o, 'ZT-p9', $ctx); $b2 = $lastBody('/purchase/ok'); eq($b2['json']['otherMsisdn'] ?? null, '220866111999', 'for another number: the other number goes in'); eq($b2['json']['offerCode'] ?? null, 'ZTO01', 'with its own offer code');
+    // the standard body (copied from Mobius's own request) is what a never-edited setup uses
+    $o['recipient_raw'] = '866111999'; $run($live('ok', ['purchase_body_other' => USSD_PURCHASE_BODY_OTHER]), $o, 'ZT-p10', $ctx); $b3 = $lastBody('/purchase/ok')['json'];
+    eq($b3['otherMsisdn'] ?? null, '866111999', 'Mobius-style: otherMsisdn exactly as typed'); eq($b3['offerCode'] ?? null, 'ZT001', 'the base offer code stays'); eq($b3['otherOfferCode'] ?? null, 'ZTO01', 'plus the other-number code'); eq($b3['operation'] ?? null, 'purchaseOffer', 'same operation'); eq($b3['chargesWithCurrency'] ?? null, 'D10', 'and the price'); eq($b3['imsi'] ?? null, '607036003160087', 'and the caller context');
+    ussd_proxy_set(['purchase_body_other' => '', 'purchase_other_seeded' => '0']); has(ussd_proxy_config()['purchase_body_other'], 'otherMsisdn', 'a never-saved blank uses the standard body'); ussd_proxy_set(['purchase_other_seeded' => '1']); eq(ussd_proxy_config()['purchase_body_other'], '', 'once the card has been saved, blank means off again');
 });
 t('saving purchase settings: headers are forgiving', function () use ($db) {
     $base = ['purchase_mode' => 'test', 'purchase_url' => '', 'purchase_body' => USSD_PURCHASE_BODY, 'purchase_timeout' => '8'];

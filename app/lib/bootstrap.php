@@ -2621,7 +2621,7 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
     $roots = $kids[0] ?? [];
     $cur = (count($roots) === 1 && $roots[0]['node_type'] === 'menu' && !empty($kids[(int)$roots[0]['id']])) ? $roots[0] : null;
     $trail = [$cur]; $path = []; $note = null; $page = 0;
-    $recipient = null; // the other number, once typed under a "Buy for another number" item
+    $recipient = null; $recipientRaw = ''; // the other number, once typed under a "Buy for another number" item (normalised, and as typed)
     // A quiz node plays a round entirely from the replies: the questions are picked deterministically from the call id
     // (so every replica rebuilds the same game) and the score is just the answers checked against them.
     $quiz = null; $seed = (string)($hooks['seed'] ?? '');
@@ -2652,6 +2652,8 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
         }
         if ($cur && $cur['node_type'] === 'catalog') {
             $all = []; $rows = $catalogLookup($cur); $seen = [];
+            // buying for someone else only works for offers that have an "other" code
+            if ($recipient !== null) $rows = array_values(array_filter($rows, fn($o) => !array_key_exists('offer_code_for_other', $o) || trim((string)$o['offer_code_for_other']) !== ''));
             foreach ($rows as $o) { $k = strtolower(trim((string)($o['name'] ?? ''))); $seen[$k] = ($seen[$k] ?? 0) + 1; }
             foreach ($rows as $o) {
                 $name = trim((string)($o['name'] ?? '')) ?: (string)$o['offer_code'];
@@ -2670,7 +2672,7 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
             [$pick, $o, $name] = $confirm;
             if ($r === '1') return ussd_result('Processing your purchase of '.$name.'...', true, $path, 'purchase', $pick)
                 + ['purchase' => ['offer_code' => trim((string)$pick['offer_code']), 'name' => $name, 'price' => ($o['one_time_price'] !== null && $o['one_time_price'] !== '') ? (string)$o['one_time_price'] : '',
-                    'vendor' => (string)($o['vendor'] ?? ''), 'other_offer_code' => (string)($o['offer_code_for_other'] ?? ''), 'recipient' => $recipient ?? '']];
+                    'vendor' => (string)($o['vendor'] ?? ''), 'other_offer_code' => (string)($o['offer_code_for_other'] ?? ''), 'recipient' => $recipient ?? '', 'recipient_raw' => $recipient !== null ? $recipientRaw : '']];
             if ($r === '2') return ussd_result('Cancelled. You were not charged.', true, $path, 'cancel', $pick);
             if ($r === '0') { $confirm = null; array_pop($path); $note = null; continue; }
             $note = 'Invalid choice.'; continue;
@@ -2742,7 +2744,7 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
         if ($cur && $cur['node_type'] === 'recipient' && $recipient === null) { // this reply is the other number
             $num = ussd_normalize_msisdn($r);
             if ($num === null) { $note = 'Invalid number.'; continue; }
-            $recipient = $num; $note = null; continue;
+            $recipient = $num; $recipientRaw = preg_replace('/\D+/', '', $r); $note = null; continue;
         }
         [$options, $more] = $current();
         if ($more && $r === (string)(USSD_PAGE_SIZE + 1)) { $page++; $note = null; continue; }
@@ -2753,6 +2755,7 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
         if ($pick['node_type'] === 'offer') {
             $o = $offerLookup(trim((string)$pick['offer_code']));
             if (!$o) return ussd_result('Sorry, this offer is not available right now.', true, $path, 'offer_unavailable', $pick);
+            if ($recipient !== null && trim((string)($o['offer_code_for_other'] ?? '')) === '') return ussd_result('Sorry, this offer cannot be bought for another number.', true, $path, 'offer_unavailable', $pick);
             $confirm = [$pick, $o, trim((string)($pick['full_label'] ?? '')) ?: (trim((string)($o['name'] ?? '')) ?: trim((string)$pick['prompt_text']))];
             continue;
         }
@@ -2944,7 +2947,7 @@ function ussd_catalog_offers(array $node): array {
     $subs = array_values(array_filter(array_map('trim', preg_split('/\R/', (string)($node['catalog_filter'] ?? '')))));
     if (!$subs) return [];
     try {
-        $st = pdo(USSD_OFFER_SCHEMA)->prepare('SELECT offer_code, name, sub_category, one_time_price, validity_amount FROM vas_offers WHERE sub_category IN ('.implode(',', array_fill(0, count($subs), '?')).') AND '.OFFER_ACTIVE_SQL." AND (deleted_at IS NULL OR deleted_at='') AND offer_code IS NOT NULL AND offer_code<>'' ORDER BY id DESC LIMIT 200");
+        $st = pdo(USSD_OFFER_SCHEMA)->prepare('SELECT offer_code, offer_code_for_other, name, sub_category, one_time_price, validity_amount FROM vas_offers WHERE sub_category IN ('.implode(',', array_fill(0, count($subs), '?')).') AND '.OFFER_ACTIVE_SQL." AND (deleted_at IS NULL OR deleted_at='') AND offer_code IS NOT NULL AND offer_code<>'' ORDER BY id DESC LIMIT 200");
         $st->execute($subs);
         $rows = []; foreach ($st->fetchAll() as $o) if (!isset($rows[$o['offer_code']])) $rows[$o['offer_code']] = $o;
         $rows = array_values($rows);
@@ -2995,7 +2998,7 @@ function ussd_purchase_http(array $cfg, string $msisdn, array $p, string $txn, a
     $url = trim($cfg['purchase_url']);
     if (!preg_match('#^https?://#i', $url) || !filter_var($url, FILTER_VALIDATE_URL)) return ['code' => 0, 'raw' => '', 'error' => 'no valid purchase address saved'];
     $esc = fn($s) => substr((string)json_encode((string)$s, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), 1, -1);
-    $body = strtr(($p['recipient'] ?? '') !== '' ? $cfg['purchase_body_other'] : $cfg['purchase_body'], ['{other_msisdn}' => $esc($p['recipient'] ?? ''), '{msisdn}' => $esc($msisdn), '{offer_code}' => $esc($p['offer_code']), '{vendor}' => $esc($p['vendor'] ?? ''), '{other_offer_code}' => $esc($p['other_offer_code'] ?? ''),
+    $body = strtr(($p['recipient'] ?? '') !== '' ? $cfg['purchase_body_other'] : $cfg['purchase_body'], ['{other_msisdn}' => $esc($p['recipient_raw'] ?? $p['recipient'] ?? ''), '{msisdn}' => $esc($msisdn), '{offer_code}' => $esc($p['offer_code']), '{vendor}' => $esc($p['vendor'] ?? ''), '{other_offer_code}' => $esc($p['other_offer_code'] ?? ''),
         '{price}' => $esc($p['price']), '{price_d}' => $esc($p['price'] !== '' ? 'D'.$p['price'] : ''), '{txn}' => $esc($txn), '{shortcode}' => $esc($cfg['shortcode_proxy']),
         '{imsi}' => $esc($ctx['imsi'] ?? ''), '{local_dialog_id}' => isset($ctx['localDialogID']) ? (string)$ctx['localDialogID'] : 'null', '{remote_dialog_id}' => isset($ctx['remoteDialogID']) ? (string)$ctx['remoteDialogID'] : 'null',
         '{local_address_json}' => json_encode($ctx['localAddress'] ?? null, JSON_UNESCAPED_SLASHES), '{remote_address_json}' => json_encode($ctx['remoteAddress'] ?? null, JSON_UNESCAPED_SLASHES)]);
@@ -3220,7 +3223,7 @@ function save_purchase_config(array $d): void {
     $low = trim((string)($d['purchase_lowbal'] ?? '')); if (mb_strlen($low) > 200) throw new RuntimeException('The low-balance words are at most 200 characters.');
     $bodyOther = trim((string)($d['purchase_body_other'] ?? '')); if (mb_strlen($bodyOther) > 2000) throw new RuntimeException('The request body for another number is at most 2000 characters.');
     $field = trim((string)($d['purchase_reply_field'] ?? '')); if (!preg_match('/^[A-Za-z0-9_.\-]{0,40}$/', $field)) throw new RuntimeException('The reply field is just a name, e.g. message.');
-    $vals = ['purchase_mode' => $mode, 'purchase_url' => $url, 'purchase_body' => $body, 'purchase_timeout' => (string)$timeout, 'purchase_ok_match' => $match, 'purchase_lowbal' => $low, 'purchase_reply_field' => $field, 'purchase_body_other' => $bodyOther];
+    $vals = ['purchase_mode' => $mode, 'purchase_url' => $url, 'purchase_body' => $body, 'purchase_timeout' => (string)$timeout, 'purchase_ok_match' => $match, 'purchase_lowbal' => $low, 'purchase_reply_field' => $field, 'purchase_body_other' => $bodyOther, 'purchase_other_seeded' => '1'];
     $auth = trim((string)($d['purchase_auth'] ?? ''));
     if (!empty($d['purchase_auth_clear'])) $vals['purchase_auth'] = '';
     elseif ($auth !== '') {
@@ -3270,6 +3273,8 @@ const SHARE_OLD_DEFAULTS = [
     '{"callID":"{txn}","msisdn":"{msisdn}","offerCode":"{offer_code}","vendor":"{vendor}","chargesWithCurrency":"{price_d}","channel":"USSD"}',
     '{"callID":"{txn}","msisdn":"{msisdn}","otherMsisdn":"{other_msisdn}","channel":"USSD"}',
 ];
+// Buying for another number (from Mobius's own log): the same purchaseOffer, the base offerCode and its otherOfferCode, plus otherMsisdn exactly as the customer typed it.
+const USSD_PURCHASE_BODY_OTHER = '{"callID":"{txn}","originalRequest":"{shortcode}","localAddress":{local_address_json},"remoteAddress":{remote_address_json},"msisdn":"{msisdn}","imsi":"{imsi}","localDialogID":{local_dialog_id},"remoteDialogID":{remote_dialog_id},"isMobileOriginated":true,"mobileRequestIdentifier":1,"isInitial":false,"isProxy":false,"chargesWithCurrency":"{price_d}","offerCode":"{offer_code}","vendor":"{vendor}","channel":"USSD","otherMsisdn":"{other_msisdn}","otherOfferCode":"{other_offer_code}","operation":"purchaseOffer"}';
 const USSD_PURCHASE_BODY_V1 = '{"msisdn":"{msisdn}","offer_code":"{offer_code}","transaction_id":"{txn}","channel":"USSD"}';
 const USSD_PROXY_DEFAULTS = [
     'enabled' => '0', 'token' => '', 'mode' => 'capture', 'allow_ips' => '',
@@ -3282,7 +3287,7 @@ const USSD_PROXY_DEFAULTS = [
     'push_enabled' => '0', 'mobius_base' => 'http://192.168.162.20:28080/rest/', 'mobius_user' => '', 'mobius_pass' => '', 'mobius_session' => '', 'mobius_variant' => '0',
     // buying an offer from the menu (see ussd_execute_purchase): off | test | live
     'purchase_mode' => 'off', 'purchase_url' => '', 'purchase_body' => USSD_PURCHASE_BODY,
-    'purchase_auth' => '', 'purchase_ok_match' => '', 'purchase_timeout' => '8', 'purchase_lowbal' => 'insufficient,low balance,not enough', 'purchase_reply_field' => '', 'purchase_body_other' => '',
+    'purchase_auth' => '', 'purchase_ok_match' => '', 'purchase_timeout' => '8', 'purchase_lowbal' => 'insufficient,low balance,not enough', 'purchase_reply_field' => '', 'purchase_body_other' => '', 'purchase_other_seeded' => '0',
     // Shared Bundle (Seddo)
     'share_mode' => 'test', 'share_base' => 'https://vas-testing.comium.gm/hera/prepaid/ShareBundle/', 'share_ok_code' => '0',
     'share_body_subscribe' => SHARE_BODY_SUBSCRIBE, 'share_body_validate' => '', 'share_body_add' => SHARE_BODY_ADD, 'share_body_balance' => SHARE_BODY_READ, 'share_body_numbers' => SHARE_BODY_NUMBERS,
@@ -3292,6 +3297,8 @@ function ussd_proxy_config(): array {
     try { foreach (portal_pdo()->query('SELECT name,value FROM ussd_proxy_config')->fetchAll() as $r) if (array_key_exists($r['name'], $cfg)) $cfg[$r['name']] = (string)$r['value']; }
     catch (Throwable $e) {}
     if (in_array($cfg['purchase_body'], [USSD_PURCHASE_BODY_V1, USSD_PURCHASE_BODY_V2], true)) $cfg['purchase_body'] = USSD_PURCHASE_BODY; // an earlier default, never edited
+    // until the purchase card has been saved once, a blank "for another number" body means "never set": use the one copied from Mobius
+    if ($cfg['purchase_other_seeded'] !== '1' && trim((string)$cfg['purchase_body_other']) === '') $cfg['purchase_body_other'] = USSD_PURCHASE_BODY_OTHER;
     foreach (['share_body_subscribe' => SHARE_BODY_SUBSCRIBE, 'share_body_add' => SHARE_BODY_ADD, 'share_body_balance' => SHARE_BODY_READ, 'share_body_numbers' => SHARE_BODY_NUMBERS] as $k => $new) if (in_array($cfg[$k], SHARE_OLD_DEFAULTS, true) || ($k === 'share_body_numbers' && $cfg[$k] === SHARE_BODY_READ)) $cfg[$k] = $new;
     return $cfg;
 }
