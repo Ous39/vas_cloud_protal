@@ -34,14 +34,17 @@ spec:
                 name: vas-cloud-app-config
             - secretRef:
                 name: vas-cloud-app-secret
+          # /health.php answers 200 only while the portal's database is reachable (no login, no redirect)
           readinessProbe:
-            httpGet: { path: /, port: 80 }
+            httpGet: { path: /health.php, port: 80 }
             initialDelaySeconds: 10
             periodSeconds: 10
+            failureThreshold: 3
           livenessProbe:
-            httpGet: { path: /, port: 80 }
+            httpGet: { path: "/health.php?live=1", port: 80 }
             initialDelaySeconds: 30
             periodSeconds: 30
+            failureThreshold: 4
           resources:
             requests: { cpu: 100m, memory: 128Mi }
             limits: { cpu: 500m, memory: 512Mi }

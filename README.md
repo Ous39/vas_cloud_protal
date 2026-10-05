@@ -2,6 +2,13 @@
 
 A production-style VAS operations portal for managing `HeraTesting`, `HeraProduction`, and portal governance data.
 
+## Where to look
+
+- **Running, releasing, backups, rotating secrets, when something breaks:** [docs/OPERATIONS.md](docs/OPERATIONS.md)
+- **Building USSD menus (for the whole team):** [docs/ussd/HOW-TO-BUILD-A-MENU.md](docs/ussd/HOW-TO-BUILD-A-MENU.md)
+- **How the code is organised:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- **Release in one command:** `.\scripts\release.ps1` (runs `tests/run.php` first). CI runs the same tests on every push and pull request.
+
 ## What this version provides
 
 - Dockerized PHP 8.2 + Apache + MySQL 8 + phpMyAdmin

@@ -26,7 +26,7 @@ function nav_can_see(string $page): bool {
     if ($page==='ussd_proxy') return can('manage_api_keys');
     if ($page==='api_keys') return can('manage_api_keys');
     if ($page==='promotions') return can('manage_promotions');
-    if (in_array($page,['alert_settings','retention'],true)) return can('manage_api_keys');
+    if (in_array($page,['alert_settings','retention','status'],true)) return can('manage_api_keys');
     if (in_array($page,['investigate','reports','alerts','monitoring','offer_report','timeline','vendor'],true)) return can('view_reports');
     if (in_array($page,['subscriptions','offers','offer_health','esim','sales','friends_family','voting','ussd_ivr','ussd_menu','integrations','tables','projects','shortcodes'],true)) return can('view_tables');
     return true;
@@ -39,7 +39,7 @@ function layout_start(string $title): void {
         ['group','fa-layer-group','Operations',[['subscriptions','fa-user-check','Subscriptions'],['offers','fa-tags','Offer Management'],['offer_health','fa-stethoscope','Offer Health'],['esim','fa-sim-card','eSIM Profiles'],['sales','fa-file-invoice-dollar','Sales & Invoices'],['friends_family','fa-user-group','Friends & Family'],['voting','fa-square-poll-vertical','Voting Service']]],
         ['group','fa-tower-broadcast','Infrastructure',[['ussd_ivr','fa-mobile-screen-button','USSD & IVR'],['ussd_menu','fa-sitemap','USSD Menu Builder'],['ussd_sim','fa-mobile-screen','USSD Simulator'],['ussd_quiz','fa-circle-question','USSD Quiz'],['ussd_proxy','fa-plug','USSD Proxy'],['integrations','fa-plug-circle-check','Integrations']]],
         ['group','fa-chart-line','Reports',[['investigate','fa-headset','Complaint Investigation'],['timeline','fa-timeline','Customer Timeline'],['alerts','fa-triangle-exclamation','Alerts'],['offer_report','fa-bullhorn','Offer Performance'],['reports','fa-chart-line','Reports'],['sql','fa-code','SQL Console']]],
-        ['group','fa-gears','Admin',[['tables','fa-database','Database Tables'],['promotions','fa-bullhorn','Promotions'],['projects','fa-diagram-project','Projects'],['shortcodes','fa-hashtag','Short Codes'],['api_keys','fa-key','Partner API Keys'],['alert_settings','fa-bell','Alert Settings'],['retention','fa-database','Data Retention'],['audit','fa-shield-halved','Audit Trail'],['users','fa-users-gear','Users']]],
+        ['group','fa-gears','Admin',[['tables','fa-database','Database Tables'],['promotions','fa-bullhorn','Promotions'],['projects','fa-diagram-project','Projects'],['shortcodes','fa-hashtag','Short Codes'],['api_keys','fa-key','Partner API Keys'],['alert_settings','fa-bell','Alert Settings'],['retention','fa-database','Data Retention'],['status','fa-server','System Status'],['audit','fa-shield-halved','Audit Trail'],['users','fa-users-gear','Users']]],
     ];
     ?>
 <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title><?=e($title)?> - VAS Cloud</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous" rel="stylesheet"><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" integrity="sha384-t1nt8BQoYMLFN5p42tRAtuAAFQaCQODekUVeKKZrEnEyp4H2R0RHFz0KWpmj7i8g" crossorigin="anonymous"><link href="style.css?v=<?=e(asset_version())?>" rel="stylesheet"><script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js" integrity="sha384-NrKB+u6Ts6AtkIhwPixiKTzgSKNblyhlk0Sohlgar9UHUBzai/sgnNNWWd291xqt" crossorigin="anonymous"></script></head><body>
@@ -1188,6 +1188,28 @@ if ($page==='ussd_quiz') {
         </div>
     </div>
     <?php layout_end(); exit;
+}
+
+if ($page==='status') {
+    require_perm('manage_api_keys');
+    $sections=system_status();
+    $bad=0; $warn=0; foreach($sections as $sec) foreach($sec['rows'] as $r0){ if($r0['state']==='bad') $bad++; elseif($r0['state']==='warn') $warn++; }
+    layout_start('System Status');
+    ?>
+    <div class="cardx">
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2"><h3 class="mb-0"><i class="fa-solid fa-server me-2"></i>System Status</h3>
+            <span><?php if($bad):?><span class="badge bg-danger fs-6"><?=$bad?> problem<?=$bad===1?'':'s'?></span><?php elseif($warn):?><span class="badge bg-warning text-dark fs-6"><?=$warn?> to look at</span><?php else:?><span class="badge bg-success fs-6">everything is fine</span><?php endif;?>
+            <a class="btn btn-sm btn-outline-primary ms-2" href="?page=status"><i class="fa-solid fa-rotate me-1"></i>Check again</a></span></div>
+        <p class="text-muted small mb-0 mt-1">Read-only. Nothing here sends anything to a customer or changes data. For uptime monitors and Kubernetes the portal also answers <code>/health.php</code> (200 = database reachable).</p>
+    </div>
+    <?php foreach($sections as $sec):?>
+    <div class="cardx mt-3"><h3><?=e($sec['title'])?></h3>
+        <table class="table table-sm mb-0"><tbody><?php foreach($sec['rows'] as $r0):?><tr>
+            <td style="width:1%" class="text-nowrap"><span class="badge <?=['ok'=>'bg-success','warn'=>'bg-warning text-dark','bad'=>'bg-danger','info'=>'bg-secondary'][$r0['state']]?>"><?=['ok'=>'OK','warn'=>'check','bad'=>'down','info'=>'info'][$r0['state']]?></span></td>
+            <td class="fw-semibold text-nowrap"><?=e($r0['label'])?></td><td><?=e($r0['detail'])?></td>
+            <td class="text-end"><?php if($r0['link']):?><a class="small" href="<?=e($r0['link'])?>">open</a><?php endif;?></td></tr><?php endforeach;?></tbody></table>
+    </div>
+    <?php endforeach; layout_end(); exit;
 }
 
 if ($page==='ussd_menu') {

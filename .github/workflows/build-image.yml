@@ -1,10 +1,11 @@
-# Builds the app image and pushes it to GHCR on every push to master, so deploying is just
+# Tests every change, and builds + pushes the app image to GHCR on every push to master — but only when the tests pass,
+# so a broken build never becomes the image Kubernetes pulls. Deploying is then just
 # `kubectl rollout restart` — no docker build/push from a laptop.
 #
 # One-time setup: the package must let this repository write to it (GitHub -> your profile ->
 # Packages -> vas-cloud-app -> Package settings -> Manage Actions access -> add this repository
 # with the Write role). Until then the push step fails with 403 "permission_denied".
-name: Build and push image
+name: Test, build and push image
 
 on:
   push:
@@ -12,10 +13,14 @@ on:
     paths-ignore:
       - '**.md'
       - 'docs/**'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
   workflow_dispatch:
 
 concurrency:
-  group: build-image
+  group: build-image-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -27,7 +32,44 @@ env:
   IMAGE: ghcr.io/ous39/vas-cloud-app
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot --silent"
+          --health-interval=5s --health-timeout=5s --health-retries=30
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: '3306'
+      DB_USER: root
+      DB_PASSWORD: root
+      PORTAL_DB: vas_portal
+      ALLOWED_SCHEMAS: HeraTesting
+      DEFAULT_SCHEMA: HeraTesting
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, curl, pdo_mysql, mysqli
+          coverage: none
+      - name: Create the databases and the platform tables
+        # the GRANT lines are for the local Docker MySQL's app user; CI connects as root
+        run: grep -viE '^[[:space:]]*(GRANT|FLUSH)' database/init/00_platform_schema.sql | mysql -h127.0.0.1 -uroot -proot
+      - name: PHP syntax check
+        run: |
+          for f in $(find app tests -name '*.php'); do php -l "$f" > /dev/null || exit 1; done
+      - name: Run the tests
+        run: php tests/run.php
+
   build:
+    needs: test
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -41,11 +83,13 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # :latest is what the Kubernetes deployment pulls; the commit-SHA tag is there so a bad
-      # build can be rolled back to a specific known image.
+      # build can be rolled back to a specific known image. GIT_SHA is shown on the System Status page.
       - uses: docker/build-push-action@v6
         with:
           context: .
           push: true
+          build-args: |
+            GIT_SHA=${{ github.sha }}
           tags: |
             ${{ env.IMAGE }}:latest
             ${{ env.IMAGE }}:${{ github.sha }}

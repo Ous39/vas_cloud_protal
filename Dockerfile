@@ -16,5 +16,8 @@ RUN cp "$PHP_INI_DIR/php.ini-production" "$PHP_INI_DIR/php.ini" \
     && echo "ServerSignature Off" >> /etc/apache2/conf-available/zz-hardening.conf \
     && echo "ServerName localhost" >> /etc/apache2/conf-available/zz-hardening.conf \
     && a2enconf zz-hardening
+# The commit this image was built from, shown on the System Status page and by /health.php
+ARG GIT_SHA=dev
+ENV APP_VERSION=$GIT_SHA
 WORKDIR /var/www/html
 CMD ["php", "/usr/local/bin/wait-for-db-and-start.php"]
