@@ -1,0 +1,182 @@
+[
+ {
+  "prompt_text": "Comium Menu",
+  "node_type": "menu",
+  "status": "active",
+  "children": [
+   {
+    "prompt_text": "KAA Bundle",
+    "node_type": "menu",
+    "status": "active",
+    "children": [
+     {
+      "prompt_text": "Social Media",
+      "node_type": "catalog",
+      "status": "active",
+      "catalog_filter": "Social Media"
+     }
+    ]
+   },
+   {
+    "prompt_text": "Sakan Bundles",
+    "node_type": "menu",
+    "status": "active",
+    "children": [
+     {
+      "prompt_text": "Sakan 5 days",
+      "node_type": "catalog",
+      "status": "active",
+      "catalog_filter": "Sakan 5 days"
+     },
+     {
+      "prompt_text": "Sakan 7 days",
+      "node_type": "catalog",
+      "status": "active",
+      "catalog_filter": "Sakan 7 days"
+     },
+     {
+      "prompt_text": "Sakan 14 days",
+      "node_type": "catalog",
+      "status": "active",
+      "catalog_filter": "Sakan 14 days"
+     },
+     {
+      "prompt_text": "Sakan 21 days",
+      "node_type": "catalog",
+      "status": "active",
+      "catalog_filter": "Sakan 21 days"
+     },
+     {
+      "prompt_text": "Sakan 30 days",
+      "node_type": "catalog",
+      "status": "active",
+      "catalog_filter": "Sakan 30 days"
+     },
+     {
+      "prompt_text": "Mega Bundles",
+      "node_type": "catalog",
+      "status": "active",
+      "catalog_filter": "MegaBundle"
+     }
+    ]
+   },
+   {
+    "prompt_text": "Jahass Bundles",
+    "node_type": "menu",
+    "status": "active",
+    "children": [
+     {
+      "prompt_text": "Mix Bundle",
+      "node_type": "catalog",
+      "status": "active",
+      "catalog_filter": "Mix Bundle"
+     }
+    ]
+   },
+   {
+    "prompt_text": "Speed Bundles",
+    "node_type": "menu",
+    "status": "active",
+    "children": [
+     {
+      "prompt_text": "Speed Mega 15 DAYS",
+      "node_type": "catalog",
+      "status": "active",
+      "catalog_filter": "SpeedMega15"
+     },
+     {
+      "prompt_text": "Speed Mega 30 DAYS",
+      "node_type": "catalog",
+      "status": "active",
+      "catalog_filter": "SpeedMega30"
+     }
+    ]
+   },
+   {
+    "prompt_text": "Special Bundles",
+    "node_type": "menu",
+    "status": "active",
+    "children": [
+     {
+      "prompt_text": "Social Media Bundles",
+      "node_type": "catalog",
+      "status": "active",
+      "catalog_filter": "SocialMedia"
+     },
+     {
+      "prompt_text": "Night Bundle",
+      "node_type": "catalog",
+      "status": "active",
+      "catalog_filter": "Surprise"
+     },
+     {
+      "prompt_text": "Shared Bundle - coming soon",
+      "node_type": "end",
+      "status": "active"
+     }
+    ]
+   },
+   {
+    "prompt_text": "Promotions",
+    "node_type": "menu",
+    "status": "active",
+    "children": [
+     {
+      "prompt_text": "Diyaa Promo",
+      "node_type": "catalog",
+      "status": "active",
+      "catalog_filter": "DIYAA PROMO"
+     },
+     {
+      "prompt_text": "Summer Magic Promo",
+      "node_type": "catalog",
+      "status": "active",
+      "catalog_filter": "Summer Promo"
+     },
+     {
+      "prompt_text": "Unlimited 3 Days - D195",
+      "node_type": "catalog",
+      "status": "active",
+      "catalog_filter": "Mbetteh"
+     }
+    ]
+   },
+   {
+    "prompt_text": "Voice & SMS Bundles",
+    "node_type": "menu",
+    "status": "active",
+    "children": [
+     {
+      "prompt_text": "100 on-net mins & 100 sms - D25, 30days",
+      "node_type": "offer",
+      "status": "active",
+      "offer_code": "kacha-D25"
+     },
+     {
+      "prompt_text": "1500 on-net mins - D98, 30days",
+      "node_type": "offer",
+      "status": "active",
+      "offer_code": "50001"
+     },
+     {
+      "prompt_text": "250 SMS - D5, 7days",
+      "node_type": "offer",
+      "status": "active",
+      "offer_code": "40094"
+     },
+     {
+      "prompt_text": "Check Balance",
+      "node_type": "action",
+      "status": "active",
+      "action_key": "check_balance"
+     }
+    ]
+   },
+   {
+    "prompt_text": "Buy for other",
+    "node_type": "recipient",
+    "status": "active"
+   }
+  ]
+ }
+]
