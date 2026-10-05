@@ -230,7 +230,7 @@ function ensure_portal_runtime_schema(): void {
             short_code VARCHAR(80) NOT NULL,
             display_order INT NOT NULL DEFAULT 0,
             prompt_text VARCHAR(300) NOT NULL,
-            node_type ENUM('menu','offer','action','end','catalog','recipient','quiz') NOT NULL DEFAULT 'menu',
+            node_type ENUM('menu','offer','action','end','catalog','recipient','quiz','sharedbundle') NOT NULL DEFAULT 'menu',
             offer_code VARCHAR(80) NULL,
             catalog_filter TEXT NULL,
             action_key VARCHAR(80) NULL,
@@ -481,7 +481,7 @@ function ensure_portal_runtime_schema(): void {
             $safeExec("ALTER TABLE ussd_menu_nodes ADD COLUMN catalog_filter TEXT NULL AFTER offer_code");
         }
         $nodeTypeDef = (string)$db->query("SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ussd_menu_nodes' AND COLUMN_NAME='node_type'")->fetchColumn();
-        if ($nodeTypeDef !== '' && stripos($nodeTypeDef, "'quiz'") === false) $safeExec("ALTER TABLE ussd_menu_nodes MODIFY node_type ENUM('menu','offer','action','end','catalog','recipient','quiz') NOT NULL DEFAULT 'menu'");
+        if ($nodeTypeDef !== '' && stripos($nodeTypeDef, "'sharedbundle'") === false) $safeExec("ALTER TABLE ussd_menu_nodes MODIFY node_type ENUM('menu','offer','action','end','catalog','recipient','quiz','sharedbundle') NOT NULL DEFAULT 'menu'");
         if (!$columnExists('portal_projects','short_code')) $safeExec("ALTER TABLE portal_projects ADD COLUMN short_code VARCHAR(80) NULL AFTER project_name");
         if (!$columnExists('portal_projects','start_date')) $safeExec("ALTER TABLE portal_projects ADD COLUMN start_date DATE NULL AFTER status");
         if (!$columnExists('portal_projects','launch_date')) $safeExec("ALTER TABLE portal_projects ADD COLUMN launch_date DATE NULL AFTER start_date");
@@ -2251,11 +2251,12 @@ function save_menu_node(array $data, ?int $id = null): int {
     $prompt = trim((string)($data['prompt_text'] ?? ''));
     if ($shortCode === '' || $prompt === '') throw new RuntimeException('Short code and prompt text are required.');
     $parentId = trim((string)($data['parent_id'] ?? '')) !== '' ? (int)$data['parent_id'] : null;
-    $type = in_array($data['node_type'] ?? '', ['menu','offer','action','end','catalog','recipient','quiz'], true) ? $data['node_type'] : 'menu';
+    $type = in_array($data['node_type'] ?? '', ['menu','offer','action','end','catalog','recipient','quiz','sharedbundle'], true) ? $data['node_type'] : 'menu';
     $fields = [$parentId, $shortCode, (int)($data['display_order'] ?? 0), $prompt, $type,
         normalize_value($data['offer_code'] ?? ''), normalize_value($data['action_key'] ?? ''),
         in_array($data['status'] ?? '', ['active','inactive','draft'], true) ? $data['status'] : 'draft',
-        $type === 'catalog' ? menu_catalog_filter($data['catalog_filter'] ?? '') : null];
+        in_array($type, ['catalog', 'sharedbundle'], true) ? menu_catalog_filter($data['catalog_filter'] ?? '') : null];
+    if ($type === 'sharedbundle' && $fields[8] === '') $fields[8] = 'Seddo';
     if ($type === 'catalog' && $fields[8] === '') throw new RuntimeException('A catalogue list needs at least one sub-category.');
     if ($type === 'quiz') {
         $fields[5] = trim((string)($data['quiz_key'] ?? $data['offer_code'] ?? ''));
@@ -2295,9 +2296,10 @@ function import_menu_json(string $shortCode, string $json): array {
             if (!is_array($n)) throw new RuntimeException('Every node must be an object.');
             if (++$count > 150) throw new RuntimeException('At most 150 nodes per import.');
             $prompt = trim((string)($n['prompt_text'] ?? '')); if ($prompt === '' || mb_strlen($prompt) > 300) throw new RuntimeException('Every node needs prompt_text (up to 300 characters).');
-            $type = (string)($n['node_type'] ?? 'menu'); if (!in_array($type, ['menu', 'offer', 'action', 'end', 'catalog', 'recipient', 'quiz'], true)) throw new RuntimeException('"'.$type.'" is not a node type.');
+            $type = (string)($n['node_type'] ?? 'menu'); if (!in_array($type, ['menu', 'offer', 'action', 'end', 'catalog', 'recipient', 'quiz', 'sharedbundle'], true)) throw new RuntimeException('"'.$type.'" is not a node type.');
             $status = (string)($n['status'] ?? 'draft'); if (!in_array($status, ['active', 'inactive', 'draft'], true)) throw new RuntimeException('"'.$status.'" is not a status.');
-            $filter = $type === 'catalog' ? menu_catalog_filter($n['catalog_filter'] ?? '') : null;
+            $filter = in_array($type, ['catalog', 'sharedbundle'], true) ? menu_catalog_filter($n['catalog_filter'] ?? '') : null;
+            if ($type === 'sharedbundle' && $filter === '') $filter = 'Seddo';
             if ($type === 'catalog' && $filter === '') throw new RuntimeException('"'.$prompt.'": a catalogue list needs catalog_filter (its sub-categories).');
             $key = count($flat); $flat[$key] = ['parent' => $parent, 'order' => (int)($n['display_order'] ?? ($i + 1)), 'prompt' => $prompt, 'type' => $type,
                 'offer' => mb_substr(trim((string)($n['offer_code'] ?? '')), 0, 80) ?: null, 'action' => mb_substr(trim((string)($n['action_key'] ?? '')), 0, 80) ?: null, 'status' => $status, 'filter' => $filter];
@@ -2329,10 +2331,11 @@ function render_menu_preview(array $tree, int $depth = 0): string {
         $indent = str_repeat('  ', $depth);
         $suffix = $node['node_type'] === 'offer' ? ' → purchase '.e($node['offer_code'])
             : ($node['node_type'] === 'action' ? ' → '.e($node['action_key'])
+            : ($node['node_type'] === 'sharedbundle' ? ' → Shared Bundle service (offers: '.e(str_replace("\n", ', ', (string)($node['catalog_filter'] ?? ''))).')'
             : ($node['node_type'] === 'quiz' ? ' → quiz game '.e($node['offer_code'])
             : ($node['node_type'] === 'recipient' ? ' → asks for another number, then shows the main menu'
             : ($node['node_type'] === 'end' ? ' → END'
-            : ($node['node_type'] === 'catalog' ? ' → live list: '.e(str_replace("\n", ', ', (string)($node['catalog_filter'] ?? ''))) : '')))));
+            : ($node['node_type'] === 'catalog' ? ' → live list: '.e(str_replace("\n", ', ', (string)($node['catalog_filter'] ?? ''))) : ''))))));
         $out .= $indent.($depth===0 ? $i.'. ' : '- ').e($node['prompt_text']).$suffix."\n";
         if ($node['children']) $out .= render_menu_preview($node['children'], $depth + 1);
         $i++;
@@ -2374,6 +2377,11 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
     // (so every replica rebuilds the same game) and the score is just the answers checked against them.
     $quiz = null; $seed = (string)($hooks['seed'] ?? '');
     $quizInfo = $hooks['quiz_info'] ?? 'ussd_quiz_info'; $quizQs = $hooks['quiz_questions'] ?? 'ussd_quiz_questions'; $quizTop = $hooks['quiz_top'] ?? 'ussd_quiz_top';
+    // A Shared Bundle node is a small service of its own: buy the bundle, add a sharing number, look at the account.
+    // Reading things from Hera (validating a number, balance, numbers) happens here through a hook; anything that
+    // changes an account (subscribe, add number) is returned as a result kind and carried out by the endpoint, once.
+    $sb = null; $shareCall = $hooks['share'] ?? 'ussd_share_read'; $msisdnIn = (string)($hooks['msisdn'] ?? '');
+    $sbNew = fn() => ['phase' => 'main', 'offers' => [], 'page' => 0, 'offer' => null, 'number' => null, 'text' => ''];
     $quizNew = function (array $pick) use ($quizInfo): array {
         $key = trim((string)$pick['offer_code']); $info = $quizInfo($key);
         return ['key' => $key, 'info' => $info, 'qs' => [], 'i' => 0, 'score' => 0, 'round' => 0, 'phase' => $info ? 'intro' : 'unavailable', 'fb' => null];
@@ -2418,7 +2426,56 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
             if ($r === '0') { $confirm = null; array_pop($path); $note = null; continue; }
             $note = 'Invalid choice.'; continue;
         }
-        if ($r === '0' && count($trail) > 1) { array_pop($trail); $cur = end($trail) ?: null; array_pop($path); $note = null; $page = 0; if (!$hasRecipientNode()) $recipient = null; if (!$cur || $cur['node_type'] !== 'quiz') $quiz = null; continue; }
+        if ($r === '0' && $sb !== null && $cur && $cur['node_type'] === 'sharedbundle' && $sb['phase'] !== 'main') { // "0" inside the service goes back one step, not out of it
+            $sb['phase'] = in_array($sb['phase'], ['balance', 'numbers'], true) ? 'account' : 'main'; $sb['offer'] = null; $note = null; continue;
+        }
+        if ($r === '0' && count($trail) > 1) { array_pop($trail); $cur = end($trail) ?: null; array_pop($path); $note = null; $page = 0; if (!$hasRecipientNode()) $recipient = null; if (!$cur || $cur['node_type'] !== 'quiz') $quiz = null; if (!$cur || $cur['node_type'] !== 'sharedbundle') $sb = null; continue; }
+        if ($sb !== null && $cur && $cur['node_type'] === 'sharedbundle') {
+            $ph = $sb['phase']; $note = null;
+            if ($ph === 'main') {
+                if ($r === '1') {
+                    $sb['offers'] = array_values($catalogLookup($cur)); $sb['page'] = 0;
+                    if (!$sb['offers']) $note = 'No Shared Bundle offer is available right now.';
+                    elseif (count($sb['offers']) === 1) { $row = $offerLookup((string)$sb['offers'][0]['offer_code']); if ($row) { $sb['offer'] = ['code' => (string)$sb['offers'][0]['offer_code'], 'row' => $row]; $sb['phase'] = 'confirm'; } else $note = 'This offer is not available right now.'; }
+                    else $sb['phase'] = 'list';
+                } elseif ($r === '2') $sb['phase'] = 'num';
+                elseif ($r === '3') $sb['phase'] = 'account';
+                else $note = 'Invalid choice.';
+                continue;
+            }
+            if ($ph === 'list') {
+                $slice = array_slice($sb['offers'], $sb['page'] * USSD_PAGE_SIZE, USSD_PAGE_SIZE); $more = count($sb['offers']) > ($sb['page'] + 1) * USSD_PAGE_SIZE;
+                if ($more && $r === (string)(USSD_PAGE_SIZE + 1)) { $sb['page']++; $note = null; continue; }
+                if (!ctype_digit($r) || (int)$r < 1 || (int)$r > count($slice)) { $note = 'Invalid choice.'; continue; }
+                $code = (string)$slice[(int)$r - 1]['offer_code']; $row = $offerLookup($code);
+                if (!$row) { $note = 'This offer is not available right now.'; continue; }
+                $sb['offer'] = ['code' => $code, 'row' => $row]; $sb['phase'] = 'confirm'; $note = null; continue;
+            }
+            if ($ph === 'confirm') {
+                if ($r !== '1') { $note = 'Invalid choice.'; continue; }
+                $row = $sb['offer']['row'];
+                return ussd_result('Processing your subscription...', true, $path, 'share_subscribe', $cur)
+                    + ['share' => ['op' => 'subscribe', 'offer_code' => $sb['offer']['code'], 'name' => trim((string)($row['name'] ?? '')) ?: $sb['offer']['code'], 'price' => (string)($row['one_time_price'] ?? ''),
+                        'vendor' => (string)($row['vendor'] ?? ''), 'other_offer_code' => (string)($row['offer_code_for_other'] ?? '')]];
+            }
+            if ($ph === 'num') {
+                $n = ussd_normalize_msisdn($r);
+                if ($n === null) { $note = 'Invalid number.'; continue; }
+                $v = $shareCall('validate', ['msisdn' => $msisdnIn, 'other' => $n]);
+                if (empty($v['ok'])) { $note = trim((string)($v['text'] ?? '')) ?: 'This number cannot be added.'; continue; }
+                $sb['number'] = $n; $sb['phase'] = 'numconfirm'; $note = null; continue;
+            }
+            if ($ph === 'numconfirm') {
+                if ($r !== '1') { $note = 'Invalid choice.'; continue; }
+                return ussd_result('Adding the number...', true, $path, 'share_add', $cur) + ['share' => ['op' => 'add', 'other' => $sb['number']]];
+            }
+            if ($ph === 'account') {
+                if ($r === '1' || $r === '2') { $res = $shareCall($r === '1' ? 'balance' : 'numbers', ['msisdn' => $msisdnIn]); $sb['text'] = trim((string)($res['text'] ?? '')) ?: 'Not available right now.'; $sb['phase'] = $r === '1' ? 'balance' : 'numbers'; $note = null; }
+                else $note = 'Invalid choice.';
+                continue;
+            }
+            $note = 'Invalid choice.'; continue; // balance / numbers: only 0 (handled above)
+        }
         if ($quiz !== null && $cur && $cur['node_type'] === 'quiz') { // playing a quiz: '0' (handled above) leaves it
             if ($quiz['phase'] === 'intro') { if ($r === '1') $quizStart($quiz); elseif ($r === '2') $quiz['phase'] = 'top'; else $note = 'Invalid choice.'; continue; }
             if ($quiz['phase'] === 'top') { if ($r === '1') $quiz['phase'] = 'intro'; else $note = 'Invalid choice.'; continue; }
@@ -2442,7 +2499,7 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
         if ($more && $r === (string)(USSD_PAGE_SIZE + 1)) { $page++; $note = null; continue; }
         if (!ctype_digit($r) || (int)$r < 1 || (int)$r > count($options)) { $note = 'Invalid choice.'; continue; }
         $pick = $options[(int)$r - 1]; $path[] = (int)$r; $note = null;
-        if (($pick['node_type'] === 'menu' && !empty($kids[(int)$pick['id']])) || in_array($pick['node_type'], ['catalog', 'recipient', 'quiz'], true)) { $cur = $pick; $trail[] = $cur; $page = 0; if ($pick['node_type'] === 'quiz') $quiz = $quizNew($pick); continue; }
+        if (($pick['node_type'] === 'menu' && !empty($kids[(int)$pick['id']])) || in_array($pick['node_type'], ['catalog', 'recipient', 'quiz', 'sharedbundle'], true)) { $cur = $pick; $trail[] = $cur; $page = 0; if ($pick['node_type'] === 'quiz') $quiz = $quizNew($pick); if ($pick['node_type'] === 'sharedbundle') $sb = $sbNew(); continue; }
         // an offer: show what it is and ask for a yes before anything is bought
         if ($pick['node_type'] === 'offer') {
             $o = $offerLookup(trim((string)$pick['offer_code']));
@@ -2460,6 +2517,23 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
         return ussd_result(($note ? $note."\n" : '').$line."\n1. Confirm\n2. Cancel\n0. Back", false, $path, 'confirm', $pick);
     }
     if ($cur && $cur['node_type'] === 'recipient' && $recipient === null) return ussd_result(($note ? $note."\n" : '')."Enter the other phone number:\n0. Back", false, $path, 'recipient', $cur);
+    if ($sb !== null && $cur && $cur['node_type'] === 'sharedbundle') {
+        $L = []; if ($note) $L[] = $note; $ph = $sb['phase'];
+        if ($ph === 'main') return ussd_result(implode("\n", array_merge($L, ['Shared Bundle', '1. Buy Shared Bundle', '2. Add Sharing Number', '3. My Account', '0. Exit'])), false, $path, 'sharedbundle', $cur);
+        if ($ph === 'list') {
+            $slice = array_slice($sb['offers'], $sb['page'] * USSD_PAGE_SIZE, USSD_PAGE_SIZE); $more = count($sb['offers']) > ($sb['page'] + 1) * USSD_PAGE_SIZE; $L[] = 'Shared Bundle offers:';
+            foreach ($slice as $i => $o) $L[] = ($i + 1).'. '.mb_strimwidth(trim((string)$o['name']) ?: (string)$o['offer_code'], 0, 18, '…').(($o['one_time_price'] ?? '') !== '' ? ' - D'.$o['one_time_price'] : '');
+            if ($more) $L[] = (USSD_PAGE_SIZE + 1).'. More';
+            $L[] = '0. Back'; return ussd_result(implode("\n", $L), false, $path, 'sharedbundle', $cur);
+        }
+        if ($ph === 'confirm') { $row = $sb['offer']['row']; $nm = trim((string)($row['name'] ?? '')) ?: $sb['offer']['code'];
+            $L[] = 'Press 1 to subscribe to Seddo '.$nm.(($row['one_time_price'] ?? '') !== '' ? ' for D'.$row['one_time_price'] : '').(!empty($row['validity_amount']) ? ', valid for '.$row['validity_amount'].' days' : '').', or press 0 to return to the menu.';
+            return ussd_result(implode("\n", $L), false, $path, 'sharedbundle', $cur); }
+        if ($ph === 'num') return ussd_result(implode("\n", array_merge($L, ['Enter the beneficiary Seddo number:', '0. Back'])), false, $path, 'sharedbundle', $cur);
+        if ($ph === 'numconfirm') return ussd_result(implode("\n", array_merge($L, ['Please confirm that your Seddo number '.$sb['number'].' is correct. Press 1 to confirm or press 0 to return.'])), false, $path, 'sharedbundle', $cur);
+        if ($ph === 'account') return ussd_result(implode("\n", array_merge($L, ['My Account', '1. Check Balance', '2. My Seddo Numbers', '0. Back'])), false, $path, 'sharedbundle', $cur);
+        return ussd_result(implode("\n", array_merge($L, [$sb['text'], '0. Back'])), false, $path, 'sharedbundle', $cur);
+    }
     if ($quiz !== null && $cur && $cur['node_type'] === 'quiz') {
         $L = []; if ($note) $L[] = $note; $info = $quiz['info'] ?? [];
         if ($quiz['phase'] === 'intro') return ussd_result(implode("\n", array_merge($L, [$info['title'], 'Answer '.(int)$info['per_game'].' questions, 1 point each.', '1. Start', '2. Top players', '0. Exit'])), false, $path, 'quiz', $cur);
@@ -2679,8 +2753,8 @@ function ussd_purchase_http(array $cfg, string $msisdn, array $p, string $txn, a
     return ussd_hera_post($cfg, $body);
 }
 // POSTs a JSON body to the saved purchase address with the saved headers (one "Name: value" per line, kept encrypted).
-function ussd_hera_post(array $cfg, string $body): array {
-    $url = trim($cfg['purchase_url']);
+function ussd_hera_post(array $cfg, string $body, ?string $url = null): array {
+    $url = trim($url ?? $cfg['purchase_url']);
     if (!preg_match('#^https?://#i', $url) || !filter_var($url, FILTER_VALIDATE_URL)) return ['code' => 0, 'raw' => '', 'error' => 'no valid purchase address saved'];
     $hdr = ['Content-Type: application/json', 'Accept: application/json'];
     $auth = $cfg['purchase_auth'] !== '' ? decrypt_secret($cfg['purchase_auth']) : '';
@@ -2733,6 +2807,116 @@ function ussd_execute_purchase(array $cfg, array $screen, string $msisdn, string
         error_log('ussd purchase: '.$e->getMessage());
         return ['text' => 'Sorry, we could not process this request. Please try again later.', 'note' => 'purchase error: '.substr($e->getMessage(), 0, 100)];
     }
+}
+// ---- Shared Bundle (Seddo): the ShareBundle calls under .../hera/prepaid/ShareBundle/ ----
+// share_mode: off = the service says it is not switched on; test = every answer is simulated and nothing is sent;
+// live = real calls. Calls that change an account (subscribe, add number) need their request body saved first
+// (blank = blocked); validating a number with no body saved is simply skipped.
+const SHARE_PATHS = ['subscribe' => 'subscribe', 'validate' => 'addNumber', 'add' => 'addNumber', 'balance' => 'DataUsage', 'numbers' => 'listNumber'];
+function ussd_share_sim(string $op, array $p): array {
+    return match ($op) {
+        'validate' => ['ok' => true, 'text' => ''],
+        'balance' => ['ok' => true, 'text' => "Your Seddo bundle balance is:\n12GB data\n1200 mins, 1200 SMS (TEST)"],
+        'numbers' => ['ok' => true, 'text' => "My Seddo numbers:\n1. 220***111\n2. 220***222 (TEST)"],
+        default => ['ok' => true, 'text' => 'TEST'],
+    };
+}
+// One call to a ShareBundle address. Returns the HTTP outcome plus Hera's text and whether it says success.
+function ussd_share_http(array $cfg, string $op, array $p): array {
+    $tpl = (string)$cfg['share_body_'.$op];
+    $esc = fn($s) => substr((string)json_encode((string)$s, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), 1, -1);
+    $body = strtr($tpl, ['{msisdn}' => $esc($p['msisdn'] ?? ''), '{other_msisdn}' => $esc($p['other'] ?? ''), '{offer_code}' => $esc($p['offer_code'] ?? ''), '{vendor}' => $esc($p['vendor'] ?? ''),
+        '{other_offer_code}' => $esc($p['other_offer_code'] ?? ''), '{price}' => $esc($p['price'] ?? ''), '{price_d}' => $esc(($p['price'] ?? '') !== '' ? 'D'.$p['price'] : ''), '{txn}' => $esc($p['txn'] ?? '')]);
+    $r = ussd_hera_post($cfg, $body, rtrim((string)$cfg['share_base'], '/').'/'.SHARE_PATHS[$op]);
+    $j = json_decode((string)$r['raw'], true); $res = is_array($j) && is_array($j['result'] ?? null) ? $j['result'] : [];
+    $code = isset($res['resultCode']) ? (string)$res['resultCode'] : (isset($j['resultCode']) ? ($j['resultCode'] === '000' ? $cfg['share_ok_code'] : (string)$j['resultCode']) : '');
+    $r['ok'] = $r['error'] === '' && $r['code'] >= 200 && $r['code'] < 300 && $code !== '' && $code === (string)$cfg['share_ok_code'];
+    $r['text'] = ussd_share_text($j, (string)$r['raw']);
+    return $r;
+}
+// What to show a customer from Hera's reply: its own description when it has one, otherwise the reply's values laid out as lines.
+function ussd_share_text($j, string $raw): string {
+    $clip = fn(string $s) => mb_substr(trim(preg_replace('/[ \t]+/', ' ', preg_replace('/\R+/', "\n", trim($s)))), 0, 150);
+    if (!is_array($j)) return $clip(strip_tags($raw));
+    $desc = $j['result']['resultDescription'] ?? null;
+    $payload = $j['result'] ?? $j; $lines = [];
+    $walk = function ($v, $key = '') use (&$walk, &$lines) {
+        // a list of records (e.g. the sharing numbers) becomes one line per record: "1 220111 2GB"
+        if (is_array($v) && array_is_list($v) && $v && is_array($v[0])) { foreach ($v as $rec) { $vals = []; array_walk_recursive($rec, function ($x) use (&$vals) { if ($x !== null && $x !== '') $vals[] = $x; }); if ($vals) $lines[] = implode(' ', $vals); } return; }
+        if (is_array($v)) { foreach ($v as $k => $x) $walk($x, is_string($k) ? $k : $key); return; }
+        if ($v === null || $v === '' || $key === 'resultCode' || $key === 'resultDescription') return;
+        $lines[] = (is_string($key) && $key !== '' ? $key.': ' : '').$v;
+    };
+    $walk($payload);
+    $parts = []; if (is_string($desc) && trim($desc) !== '') $parts[] = trim($desc);
+    if ($lines) $parts[] = implode("\n", array_slice($lines, 0, 8));
+    return $clip(implode("\n", $parts));
+}
+// Read-only calls used while the customer browses (validating a number, balance, numbers).
+function ussd_share_read(string $op, array $p): array {
+    static $cfg = null; $cfg ??= ussd_proxy_config();
+    if ($cfg['share_mode'] === 'off') return ['ok' => false, 'text' => 'Shared Bundle is not switched on yet.'];
+    if ($cfg['share_mode'] === 'test') return ussd_share_sim($op, $p);
+    if ($op === 'validate' && trim((string)$cfg['share_body_validate']) === '') return ['ok' => true, 'text' => ''];
+    if (trim((string)$cfg['share_body_'.$op]) === '') return ['ok' => false, 'text' => 'This is not switched on yet.'];
+    $p['txn'] = 'sb-'.bin2hex(random_bytes(4));
+    $key = 'share:'.$op.':'.($p['msisdn'] ?? '').':'.($p['other'] ?? '');
+    $r = cached($key, 30, fn() => ussd_share_http($cfg, $op, $p));
+    if ($op === 'validate') return ['ok' => (bool)$r['ok'], 'text' => $r['ok'] ? '' : ($r['text'] !== '' ? $r['text'] : 'This number cannot be added.')];
+    return ['ok' => (bool)$r['ok'], 'text' => $r['text'] !== '' ? $r['text'] : ($r['error'] !== '' ? 'Not available right now.' : '')];
+}
+// subscribe / add number: carried out once per call (same ledger as purchases, so it shows in the same table).
+function ussd_share_execute(array $cfg, array $screen, string $msisdn, string $callId): array {
+    $p = $screen['share']; $op = $p['op']; $msisdn = preg_replace('/\D+/', '', $msisdn); $mode = $cfg['share_mode'];
+    $label = $op === 'subscribe' ? 'Seddo '.$p['name'] : 'the number '.($p['other'] ?? '');
+    if ($mode === 'off') return ['text' => 'Shared Bundle is not switched on yet. You were not charged.', 'note' => 'share: off'];
+    if ($msisdn === '') return ['text' => 'Sorry, we could not process this request. You were not charged.', 'note' => 'share: no number'];
+    $key = $op === 'subscribe' ? 'share:sub:'.$p['offer_code'] : 'share:add:'.$p['other']; $t0 = microtime(true);
+    try {
+        ussd_purchase_table(); $db = portal_pdo(); $callId = $callId !== '' ? substr($callId, 0, 120) : 'noid-'.bin2hex(random_bytes(6));
+        $ins = $db->prepare("INSERT IGNORE INTO ussd_purchases(call_id,offer_code,msisdn,recipient,offer_name,price,mode,status) VALUES(?,?,?,?,?,?,?,'pending')");
+        $ins->execute([$callId, substr($key, 0, 45), $msisdn, $op === 'add' ? $p['other'] : null, mb_substr($op === 'subscribe' ? $p['name'] : 'Add sharing number', 0, 80), mb_substr((string)($p['price'] ?? ''), 0, 20), 'sb-'.$mode]);
+        if ($ins->rowCount() === 0) { $st = $db->prepare('SELECT reply_text FROM ussd_purchases WHERE call_id=? AND offer_code=?'); $st->execute([$callId, substr($key, 0, 45)]); return ['text' => (string)($st->fetchColumn() ?: 'Your request is already being processed.'), 'note' => 'share: repeated request, not sent again']; }
+        $id = (int)$db->lastInsertId(); $http = null; $resp = null;
+        if ($mode === 'test') { $status = 'test'; $text = 'TEST: '.($op === 'subscribe' ? 'you would be subscribed to '.$label : $label.' would be added').'. You were not charged.'; }
+        elseif (trim((string)$cfg['share_body_'.$op]) === '') { $status = 'blocked'; $text = 'This part of Shared Bundle is not switched on yet. You were not charged.'; }
+        else {
+            $r = ussd_share_http($cfg, $op, ['msisdn' => $msisdn, 'other' => $p['other'] ?? '', 'offer_code' => $p['offer_code'] ?? '', 'vendor' => $p['vendor'] ?? '', 'other_offer_code' => $p['other_offer_code'] ?? '', 'price' => $p['price'] ?? '', 'txn' => $callId]);
+            $http = $r['code']; $resp = $r['error'] !== '' ? 'error: '.$r['error'] : mb_substr((string)$r['raw'], 0, 1000);
+            $low = false; foreach (array_filter(array_map('trim', explode(',', (string)$cfg['purchase_lowbal']))) as $term) if (stripos((string)$r['raw'], $term) !== false) { $low = true; break; }
+            $status = $r['ok'] ? 'ok' : ($low ? 'lowbal' : 'failed');
+            $text = $r['text'] !== '' ? $r['text'] : ($r['ok'] ? 'Done.' : ($low ? 'Sorry, your balance is too low. Please top up and try again.' : 'Sorry, this could not be completed. Please try again later.'));
+        }
+        $db->prepare('UPDATE ussd_purchases SET status=?, http_code=?, response=?, reply_text=?, ms=? WHERE id=?')->execute([$status, $http, $resp, mb_substr($text, 0, 255), (int)round((microtime(true) - $t0) * 1000), $id]);
+        return ['text' => $text, 'note' => 'share: '.$op.' '.$mode.' '.$status.($http ? ' HTTP '.$http : '')];
+    } catch (Throwable $e) {
+        error_log('ussd share: '.$e->getMessage());
+        return ['text' => 'Sorry, we could not process this request. Please try again later.', 'note' => 'share error: '.substr($e->getMessage(), 0, 100)];
+    }
+}
+function save_share_config(array $d): void {
+    $mode = in_array($d['share_mode'] ?? '', ['test', 'live'], true) ? $d['share_mode'] : 'off';
+    $base = trim((string)($d['share_base'] ?? ''));
+    if (!preg_match('#^https?://#i', $base) || !filter_var($base, FILTER_VALIDATE_URL) || mb_strlen($base) > 300) throw new RuntimeException('The ShareBundle address must be a full http:// or https:// URL, e.g. https://vas-testing.comium.gm/hera/prepaid/ShareBundle/');
+    $ok = trim((string)($d['share_ok_code'] ?? '')); if ($ok === '' || mb_strlen($ok) > 12) throw new RuntimeException('Enter the result code that means success (e.g. 0).');
+    $vals = ['share_mode' => $mode, 'share_base' => rtrim($base, '/').'/', 'share_ok_code' => $ok];
+    foreach (['subscribe', 'validate', 'add', 'balance', 'numbers'] as $op) {
+        $t = trim((string)($d['share_body_'.$op] ?? '')); if (mb_strlen($t) > 2000) throw new RuntimeException('A request body is at most 2000 characters.');
+        $vals['share_body_'.$op] = $t;
+    }
+    if ($mode === 'live' && $vals['share_body_subscribe'] === '' && $vals['share_body_add'] === '') throw new RuntimeException('Live needs at least the subscribe or the add-number request body. Use Test mode until you have them.');
+    ussd_proxy_set($vals);
+    audit('ussd_share_save', null, 'ussd_proxy_config', null, 'mode='.$mode.' base='.parse_url($base, PHP_URL_HOST));
+}
+// A read-only question about the account (balance / numbers), to see what Hera's reply really looks like.
+function share_ask(array $cfg, string $op, string $msisdn): array {
+    $msisdn = preg_replace('/\D+/', '', $msisdn);
+    if (!in_array($op, ['balance', 'numbers'], true)) throw new RuntimeException('Only balance and numbers can be asked from here.');
+    if ($msisdn === '') throw new RuntimeException('Enter a phone number.');
+    if (trim((string)$cfg['share_body_'.$op]) === '') throw new RuntimeException('Save a request body for "'.$op.'" first.');
+    $r = ussd_share_http($cfg, $op, ['msisdn' => $msisdn, 'txn' => 'check-'.bin2hex(random_bytes(4))]);
+    audit('share_ask', null, 'ussd_proxy_config', null, $op.' HTTP '.$r['code']);
+    return ['code' => $r['code'], 'error' => $r['error'], 'raw' => mb_substr((string)$r['raw'], 0, 3000), 'text' => $r['text'], 'ok' => $r['ok']];
 }
 // A read-only question to Hera, like the ones the phone menu asks while you browse: what it says about one offer
 // (chooseOffer) or one sub-category (listOffer). It can never buy: the operation is fixed to these two.
@@ -2794,6 +2978,7 @@ function ussd_result(string $text, bool $end, array $path, string $kind, ?array 
 // What Hera's /hera/VasOffers expects, copied from the request Mobius's own menu sends it (operation purchaseOffer).
 const USSD_PURCHASE_BODY = '{"callID":"{txn}","originalRequest":"{shortcode}","localAddress":{local_address_json},"remoteAddress":{remote_address_json},"msisdn":"{msisdn}","imsi":"{imsi}","localDialogID":{local_dialog_id},"remoteDialogID":{remote_dialog_id},"isMobileOriginated":true,"mobileRequestIdentifier":1,"isInitial":false,"isProxy":false,"chargesWithCurrency":"{price_d}","offerCode":"{offer_code}","vendor":"{vendor}","channel":"USSD","otherOfferCode":"{other_offer_code}","operation":"purchaseOffer"}';
 const USSD_PURCHASE_BODY_V2 = '{"callID":"{txn}","originalRequest":"{shortcode}","msisdn":"{msisdn}","isMobileOriginated":true,"mobileRequestIdentifier":1,"isInitial":false,"isProxy":false,"chargesWithCurrency":"{price_d}","offerCode":"{offer_code}","vendor":"{vendor}","channel":"USSD","otherOfferCode":"{other_offer_code}","operation":"purchaseOffer"}';
+const SHARE_BODY_READ = '{"callID":"{txn}","msisdn":"{msisdn}","channel":"USSD"}';
 const USSD_PURCHASE_BODY_V1 = '{"msisdn":"{msisdn}","offer_code":"{offer_code}","transaction_id":"{txn}","channel":"USSD"}';
 const USSD_PROXY_DEFAULTS = [
     'enabled' => '0', 'token' => '', 'mode' => 'capture', 'allow_ips' => '',
@@ -2807,6 +2992,9 @@ const USSD_PROXY_DEFAULTS = [
     // buying an offer from the menu (see ussd_execute_purchase): off | test | live
     'purchase_mode' => 'off', 'purchase_url' => '', 'purchase_body' => USSD_PURCHASE_BODY,
     'purchase_auth' => '', 'purchase_ok_match' => '', 'purchase_timeout' => '8', 'purchase_lowbal' => 'insufficient,low balance,not enough', 'purchase_reply_field' => '', 'purchase_body_other' => '',
+    // Shared Bundle (Seddo)
+    'share_mode' => 'test', 'share_base' => 'https://vas-testing.comium.gm/hera/prepaid/ShareBundle/', 'share_ok_code' => '0',
+    'share_body_subscribe' => '', 'share_body_validate' => '', 'share_body_add' => '', 'share_body_balance' => SHARE_BODY_READ, 'share_body_numbers' => SHARE_BODY_READ,
 ];
 function ussd_proxy_config(): array {
     $cfg = USSD_PROXY_DEFAULTS;
@@ -2932,7 +3120,11 @@ function ussd_proxy_process(array $cfg, string $mode, array $flat, bool $dry = f
             if ($row !== false) { $replies = json_decode((string)$row, true) ?: []; if ($input !== '') $replies[] = $input; }
         } else $note[] = 'no session or msisdn field set — every request starts again from the first screen';
     }
-    $screen = ussd_screen($sc, array_slice($replies, -30), ['active'], null, ['seed' => $sessionId !== '' ? $sessionId : (string)$key]);
+    $screen = ussd_screen($sc, array_slice($replies, -30), ['active'], null, ['seed' => $sessionId !== '' ? $sessionId : (string)$key, 'msisdn' => $msisdn]);
+    if (in_array($screen['kind'] ?? '', ['share_subscribe', 'share_add'], true)) {
+        if ($dry) $note[] = 'not sent (test run)';
+        else { $sr = ussd_share_execute($cfg, $screen, $msisdn, $sessionId !== '' ? $sessionId : (string)$key); $screen['text'] = $sr['text']; $note[] = $sr['note']; }
+    }
     if (!$dry) ussd_quiz_record($screen, $msisdn, $sessionId !== '' ? $sessionId : (string)$key);
     if (($screen['kind'] ?? '') === 'purchase') {
         if ($dry) $note[] = 'purchase not sent (test run)';
@@ -3127,8 +3319,9 @@ function ussd_proxy_push_endpoint(array $cfg, array $flat, string $raw, array $g
                 $st->execute([$callId, $sc]); $row = $st->fetchColumn();
                 if ($row !== false) { $replies = json_decode((string)$row, true) ?: []; if ($typed !== '') $replies[] = $typed; } else $note = 'session not found - restarted from the first screen; ';
             }
-            $screen = ussd_screen($sc, array_slice($replies, -30), ['active'], null, ['seed' => $callId]);
+            $screen = ussd_screen($sc, array_slice($replies, -30), ['active'], null, ['seed' => $callId, 'msisdn' => $msisdn]);
             ussd_quiz_record($screen, $msisdn, $callId);
+            if (in_array($screen['kind'] ?? '', ['share_subscribe', 'share_add'], true)) { $sr = ussd_share_execute($cfg, $screen, $msisdn, $callId); $screen['text'] = $sr['text']; $note .= $sr['note'].'; '; }
             if ($screen['end']) $db->prepare('DELETE FROM ussd_proxy_sessions WHERE session_key=?')->execute([$callId]);
             else $db->prepare('REPLACE INTO ussd_proxy_sessions(session_key,shortcode,replies,updated_at) VALUES(?,?,?,NOW())')->execute([$callId, $sc, json_encode($replies)]);
             if (($screen['kind'] ?? '') === 'purchase') { $pr = ussd_execute_purchase($cfg, $screen, $msisdn, $callId, ussd_purchase_ctx($raw)); $screen['text'] = $pr['text']; $note .= $pr['note'].'; '; }
