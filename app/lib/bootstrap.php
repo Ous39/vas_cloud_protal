@@ -2845,6 +2845,19 @@ function ussd_share_http(array $cfg, string $op, array $p): array {
         }
         $r['text'] = $any ? $text : 'You have no active Seddo bundle balance.';
     }
+    // My numbers: result.msisdn1 … msisdn9, each {order, msisdn, separator1, limit, usage}; unused rows are blank.
+    // One line per used row, "{order} {msisdn} {separator1} {limit}" as in the diagram; Hera puts "You don't have Seddo number" in the first row's order when there are none.
+    if ($op === 'numbers' && $r['ok'] && is_array($j['result'] ?? null)) {
+        $lines = [];
+        for ($i = 1; $i <= 9; $i++) {
+            $row = $j['result']['msisdn'.$i] ?? null; if (!is_array($row)) continue;
+            $line = trim(implode(' ', array_filter(array_map(fn($k) => trim((string)($row[$k] ?? '')), ['order', 'msisdn', 'separator1', 'limit']), fn($v) => $v !== '')));
+            if ($line === '') continue;
+            if (mb_strlen(implode("\n", array_merge($lines, [$line]))) > 150) break;
+            $lines[] = $line;
+        }
+        $r['text'] = $lines ? implode("\n", $lines) : "You don't have a Seddo number.";
+    }
     return $r;
 }
 // What to show a customer from Hera's reply: its own description when it has one, otherwise the reply's values laid out as lines.
