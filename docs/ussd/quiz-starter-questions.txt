@@ -1,0 +1,17 @@
+# Starter questions for a quiz with the key  comium_trivia
+# Paste into USSD Quiz > "Add many at once".  Format: Question | answer 1 | answer 2 | answer 3 | answer 4 | number of the right answer
+Capital of The Gambia? | Dakar | Banjul | Serrekunda | Bissau | 2
+Which river runs through The Gambia? | Niger | Nile | Gambia | Congo | 3
+What is The Gambia's currency? | Dalasi | Cedi | Naira | Franc | 1
+Which country almost surrounds The Gambia? | Mali | Senegal | Guinea | Mauritania | 2
+Largest ocean on Earth? | Atlantic | Indian | Pacific | Arctic | 3
+How many continents are there? | 5 | 6 | 7 | 8 | 3
+7 x 8 = ? | 54 | 56 | 63 | 48 | 2
+Planet closest to the Sun? | Venus | Earth | Mars | Mercury | 4
+Chemical symbol for water? | H2O | CO2 | O2 | NaCl | 1
+Fastest land animal? | Lion | Cheetah | Horse | Leopard | 2
+How many days in a leap year? | 365 | 366 | 364 | 367 | 2
+Largest continent? | Africa | Europe | Asia | Antarctica | 3
+The Gambia became independent in? | 1960 | 1965 | 1970 | 1975 | 2
+Which gas do plants take in? | Oxygen | Nitrogen | Carbon dioxide | Helium | 3
+How many minutes in 2 hours? | 100 | 120 | 90 | 150 | 2

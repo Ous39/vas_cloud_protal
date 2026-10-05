@@ -230,7 +230,7 @@ function ensure_portal_runtime_schema(): void {
             short_code VARCHAR(80) NOT NULL,
             display_order INT NOT NULL DEFAULT 0,
             prompt_text VARCHAR(300) NOT NULL,
-            node_type ENUM('menu','offer','action','end','catalog','recipient') NOT NULL DEFAULT 'menu',
+            node_type ENUM('menu','offer','action','end','catalog','recipient','quiz') NOT NULL DEFAULT 'menu',
             offer_code VARCHAR(80) NULL,
             catalog_filter TEXT NULL,
             action_key VARCHAR(80) NULL,
@@ -481,7 +481,7 @@ function ensure_portal_runtime_schema(): void {
             $safeExec("ALTER TABLE ussd_menu_nodes ADD COLUMN catalog_filter TEXT NULL AFTER offer_code");
         }
         $nodeTypeDef = (string)$db->query("SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ussd_menu_nodes' AND COLUMN_NAME='node_type'")->fetchColumn();
-        if ($nodeTypeDef !== '' && stripos($nodeTypeDef, 'recipient') === false) $safeExec("ALTER TABLE ussd_menu_nodes MODIFY node_type ENUM('menu','offer','action','end','catalog','recipient') NOT NULL DEFAULT 'menu'");
+        if ($nodeTypeDef !== '' && stripos($nodeTypeDef, "'quiz'") === false) $safeExec("ALTER TABLE ussd_menu_nodes MODIFY node_type ENUM('menu','offer','action','end','catalog','recipient','quiz') NOT NULL DEFAULT 'menu'");
         if (!$columnExists('portal_projects','short_code')) $safeExec("ALTER TABLE portal_projects ADD COLUMN short_code VARCHAR(80) NULL AFTER project_name");
         if (!$columnExists('portal_projects','start_date')) $safeExec("ALTER TABLE portal_projects ADD COLUMN start_date DATE NULL AFTER status");
         if (!$columnExists('portal_projects','launch_date')) $safeExec("ALTER TABLE portal_projects ADD COLUMN launch_date DATE NULL AFTER start_date");
@@ -2251,12 +2251,17 @@ function save_menu_node(array $data, ?int $id = null): int {
     $prompt = trim((string)($data['prompt_text'] ?? ''));
     if ($shortCode === '' || $prompt === '') throw new RuntimeException('Short code and prompt text are required.');
     $parentId = trim((string)($data['parent_id'] ?? '')) !== '' ? (int)$data['parent_id'] : null;
-    $type = in_array($data['node_type'] ?? '', ['menu','offer','action','end','catalog','recipient'], true) ? $data['node_type'] : 'menu';
+    $type = in_array($data['node_type'] ?? '', ['menu','offer','action','end','catalog','recipient','quiz'], true) ? $data['node_type'] : 'menu';
     $fields = [$parentId, $shortCode, (int)($data['display_order'] ?? 0), $prompt, $type,
         normalize_value($data['offer_code'] ?? ''), normalize_value($data['action_key'] ?? ''),
         in_array($data['status'] ?? '', ['active','inactive','draft'], true) ? $data['status'] : 'draft',
         $type === 'catalog' ? menu_catalog_filter($data['catalog_filter'] ?? '') : null];
     if ($type === 'catalog' && $fields[8] === '') throw new RuntimeException('A catalogue list needs at least one sub-category.');
+    if ($type === 'quiz') {
+        $fields[5] = trim((string)($data['quiz_key'] ?? $data['offer_code'] ?? ''));
+        ussd_quiz_tables(); $ex = portal_pdo()->prepare('SELECT 1 FROM ussd_quizzes WHERE quiz_key=?'); $ex->execute([$fields[5]]);
+        if ($fields[5] === '' || !$ex->fetchColumn()) throw new RuntimeException('Choose which quiz this item plays (create it on the USSD Quiz page first).');
+    }
     $db = portal_pdo();
     if ($id) {
         $db->prepare('UPDATE ussd_menu_nodes SET parent_id=?,short_code=?,display_order=?,prompt_text=?,node_type=?,offer_code=?,action_key=?,status=?,catalog_filter=? WHERE id=?')->execute([...$fields, $id]);
@@ -2290,7 +2295,7 @@ function import_menu_json(string $shortCode, string $json): array {
             if (!is_array($n)) throw new RuntimeException('Every node must be an object.');
             if (++$count > 150) throw new RuntimeException('At most 150 nodes per import.');
             $prompt = trim((string)($n['prompt_text'] ?? '')); if ($prompt === '' || mb_strlen($prompt) > 300) throw new RuntimeException('Every node needs prompt_text (up to 300 characters).');
-            $type = (string)($n['node_type'] ?? 'menu'); if (!in_array($type, ['menu', 'offer', 'action', 'end', 'catalog', 'recipient'], true)) throw new RuntimeException('"'.$type.'" is not a node type.');
+            $type = (string)($n['node_type'] ?? 'menu'); if (!in_array($type, ['menu', 'offer', 'action', 'end', 'catalog', 'recipient', 'quiz'], true)) throw new RuntimeException('"'.$type.'" is not a node type.');
             $status = (string)($n['status'] ?? 'draft'); if (!in_array($status, ['active', 'inactive', 'draft'], true)) throw new RuntimeException('"'.$status.'" is not a status.');
             $filter = $type === 'catalog' ? menu_catalog_filter($n['catalog_filter'] ?? '') : null;
             if ($type === 'catalog' && $filter === '') throw new RuntimeException('"'.$prompt.'": a catalogue list needs catalog_filter (its sub-categories).');
@@ -2324,9 +2329,10 @@ function render_menu_preview(array $tree, int $depth = 0): string {
         $indent = str_repeat('  ', $depth);
         $suffix = $node['node_type'] === 'offer' ? ' → purchase '.e($node['offer_code'])
             : ($node['node_type'] === 'action' ? ' → '.e($node['action_key'])
+            : ($node['node_type'] === 'quiz' ? ' → quiz game '.e($node['offer_code'])
             : ($node['node_type'] === 'recipient' ? ' → asks for another number, then shows the main menu'
             : ($node['node_type'] === 'end' ? ' → END'
-            : ($node['node_type'] === 'catalog' ? ' → live list: '.e(str_replace("\n", ', ', (string)($node['catalog_filter'] ?? ''))) : ''))));
+            : ($node['node_type'] === 'catalog' ? ' → live list: '.e(str_replace("\n", ', ', (string)($node['catalog_filter'] ?? ''))) : '')))));
         $out .= $indent.($depth===0 ? $i.'. ' : '- ').e($node['prompt_text']).$suffix."\n";
         if ($node['children']) $out .= render_menu_preview($node['children'], $depth + 1);
         $i++;
@@ -2364,6 +2370,19 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
     $cur = (count($roots) === 1 && $roots[0]['node_type'] === 'menu' && !empty($kids[(int)$roots[0]['id']])) ? $roots[0] : null;
     $trail = [$cur]; $path = []; $note = null; $page = 0;
     $recipient = null; // the other number, once typed under a "Buy for another number" item
+    // A quiz node plays a round entirely from the replies: the questions are picked deterministically from the call id
+    // (so every replica rebuilds the same game) and the score is just the answers checked against them.
+    $quiz = null; $seed = (string)($hooks['seed'] ?? '');
+    $quizInfo = $hooks['quiz_info'] ?? 'ussd_quiz_info'; $quizQs = $hooks['quiz_questions'] ?? 'ussd_quiz_questions'; $quizTop = $hooks['quiz_top'] ?? 'ussd_quiz_top';
+    $quizNew = function (array $pick) use ($quizInfo): array {
+        $key = trim((string)$pick['offer_code']); $info = $quizInfo($key);
+        return ['key' => $key, 'info' => $info, 'qs' => [], 'i' => 0, 'score' => 0, 'round' => 0, 'phase' => $info ? 'intro' : 'unavailable', 'fb' => null];
+    };
+    $quizStart = function (array &$qz) use ($quizQs, $seed): void {
+        $qs = $quizQs($qz['key'], $seed, $qz['round'], (int)$qz['info']['per_game']);
+        if (!$qs) { $qz['phase'] = 'unavailable'; return; }
+        $qz['qs'] = $qs; $qz['i'] = 0; $qz['score'] = 0; $qz['fb'] = null; $qz['phase'] = 'q';
+    };
     $confirm = null;   // [node, offer row, name] while the customer is being asked to confirm a purchase
     $hasRecipientNode = fn() => (bool)array_filter($trail, fn($t) => $t && $t['node_type'] === 'recipient');
     // The options on the current screen. A catalogue list builds them from the offer catalogue, a page at a time;
@@ -2399,7 +2418,21 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
             if ($r === '0') { $confirm = null; array_pop($path); $note = null; continue; }
             $note = 'Invalid choice.'; continue;
         }
-        if ($r === '0' && count($trail) > 1) { array_pop($trail); $cur = end($trail) ?: null; array_pop($path); $note = null; $page = 0; if (!$hasRecipientNode()) $recipient = null; continue; }
+        if ($r === '0' && count($trail) > 1) { array_pop($trail); $cur = end($trail) ?: null; array_pop($path); $note = null; $page = 0; if (!$hasRecipientNode()) $recipient = null; if (!$cur || $cur['node_type'] !== 'quiz') $quiz = null; continue; }
+        if ($quiz !== null && $cur && $cur['node_type'] === 'quiz') { // playing a quiz: '0' (handled above) leaves it
+            if ($quiz['phase'] === 'intro') { if ($r === '1') $quizStart($quiz); elseif ($r === '2') $quiz['phase'] = 'top'; else $note = 'Invalid choice.'; continue; }
+            if ($quiz['phase'] === 'top') { if ($r === '1') $quiz['phase'] = 'intro'; else $note = 'Invalid choice.'; continue; }
+            if ($quiz['phase'] === 'q') {
+                $q = $quiz['qs'][$quiz['i']];
+                if (!ctype_digit($r) || (int)$r < 1 || (int)$r > count($q['opts'])) { $note = 'Invalid choice.'; continue; }
+                $good = (int)$r === (int)$q['correct']; if ($good) $quiz['score']++;
+                $quiz['fb'] = $good ? 'Correct!' : 'Wrong. Answer was '.$q['correct'].'.';
+                if (++$quiz['i'] >= count($quiz['qs'])) $quiz['phase'] = 'done';
+                $note = null; continue;
+            }
+            if ($quiz['phase'] === 'done') { if ($r === '1') { $quiz['round']++; $quizStart($quiz); } else $note = 'Invalid choice.'; continue; }
+            $note = 'Invalid choice.'; continue;
+        }
         if ($cur && $cur['node_type'] === 'recipient' && $recipient === null) { // this reply is the other number
             $num = ussd_normalize_msisdn($r);
             if ($num === null) { $note = 'Invalid number.'; continue; }
@@ -2409,7 +2442,7 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
         if ($more && $r === (string)(USSD_PAGE_SIZE + 1)) { $page++; $note = null; continue; }
         if (!ctype_digit($r) || (int)$r < 1 || (int)$r > count($options)) { $note = 'Invalid choice.'; continue; }
         $pick = $options[(int)$r - 1]; $path[] = (int)$r; $note = null;
-        if (($pick['node_type'] === 'menu' && !empty($kids[(int)$pick['id']])) || in_array($pick['node_type'], ['catalog', 'recipient'], true)) { $cur = $pick; $trail[] = $cur; $page = 0; continue; }
+        if (($pick['node_type'] === 'menu' && !empty($kids[(int)$pick['id']])) || in_array($pick['node_type'], ['catalog', 'recipient', 'quiz'], true)) { $cur = $pick; $trail[] = $cur; $page = 0; if ($pick['node_type'] === 'quiz') $quiz = $quizNew($pick); continue; }
         // an offer: show what it is and ask for a yes before anything is bought
         if ($pick['node_type'] === 'offer') {
             $o = $offerLookup(trim((string)$pick['offer_code']));
@@ -2427,6 +2460,28 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
         return ussd_result(($note ? $note."\n" : '').$line."\n1. Confirm\n2. Cancel\n0. Back", false, $path, 'confirm', $pick);
     }
     if ($cur && $cur['node_type'] === 'recipient' && $recipient === null) return ussd_result(($note ? $note."\n" : '')."Enter the other phone number:\n0. Back", false, $path, 'recipient', $cur);
+    if ($quiz !== null && $cur && $cur['node_type'] === 'quiz') {
+        $L = []; if ($note) $L[] = $note; $info = $quiz['info'] ?? [];
+        if ($quiz['phase'] === 'intro') return ussd_result(implode("\n", array_merge($L, [$info['title'], 'Answer '.(int)$info['per_game'].' questions, 1 point each.', '1. Start', '2. Top players', '0. Exit'])), false, $path, 'quiz', $cur);
+        if ($quiz['phase'] === 'top') return ussd_result(implode("\n", array_merge($L, [$quizTop($quiz['key']), '1. Back', '0. Exit'])), false, $path, 'quiz', $cur);
+        if ($quiz['phase'] === 'q') {
+            $q = $quiz['qs'][$quiz['i']];
+            if ($quiz['fb']) $L[] = $quiz['fb'];
+            $L[] = 'Q'.($quiz['i'] + 1).'/'.count($quiz['qs']).': '.$q['q'];
+            foreach ($q['opts'] as $k => $o) $L[] = ($k + 1).'. '.$o;
+            $L[] = '0. Exit';
+            return ussd_result(implode("\n", $L), false, $path, 'quiz', $cur);
+        }
+        if ($quiz['phase'] === 'done') {
+            $total = count($quiz['qs']); $won = $quiz['score'] >= (int)$info['win_score'];
+            if ($quiz['fb']) $L[] = $quiz['fb'];
+            $L[] = 'Game over! Score '.$quiz['score'].'/'.$total;
+            if ($won && trim((string)$info['win_text']) !== '') $L[] = $info['win_text'];
+            array_push($L, '1. Play again', '0. Exit');
+            return ussd_result(implode("\n", $L), false, $path, 'quiz_done', $cur) + ['quiz' => ['key' => $quiz['key'], 'score' => $quiz['score'], 'total' => $total, 'round' => $quiz['round'], 'won' => $won]];
+        }
+        return ussd_result(implode("\n", array_merge($L, ['This game is not available right now.', '0. Back'])), false, $path, 'quiz', $cur);
+    }
     [$options, $more] = $current();
     $lines = [$cur ? (($cur['node_type'] === 'recipient') ? 'Buy for '.$recipient.':' : $cur['prompt_text']) : 'Welcome'];
     if ($note) array_unshift($lines, $note);
@@ -2435,6 +2490,131 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
     if ($more) $lines[] = (USSD_PAGE_SIZE + 1).'. More';
     if (count($trail) > 1) $lines[] = '0. Back';
     return ussd_result(implode("\n", $lines), false, $path, 'menu', $cur);
+}
+// ---- Quiz games: sets of questions managed on the USSD Quiz page, played from a "quiz" menu item ----
+const USSD_QUIZ_BLOCK_MAX = 150; // longest question + options a screen can carry once the feedback and "0. Exit" lines are added
+function ussd_quiz_tables(): void {
+    static $done = false; if ($done) return;
+    $db = portal_pdo();
+    $db->exec("CREATE TABLE IF NOT EXISTS ussd_quizzes (
+        quiz_key VARCHAR(40) NOT NULL PRIMARY KEY, title VARCHAR(80) NOT NULL, per_game TINYINT NOT NULL DEFAULT 5, win_score TINYINT NOT NULL DEFAULT 4,
+        win_text VARCHAR(120) NULL, status ENUM('active','inactive') NOT NULL DEFAULT 'active', created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+    $db->exec("CREATE TABLE IF NOT EXISTS ussd_quiz_questions (
+        id INT NOT NULL AUTO_INCREMENT PRIMARY KEY, quiz_key VARCHAR(40) NOT NULL, question VARCHAR(160) NOT NULL,
+        opt1 VARCHAR(40) NOT NULL, opt2 VARCHAR(40) NOT NULL, opt3 VARCHAR(40) NULL, opt4 VARCHAR(40) NULL, correct TINYINT NOT NULL,
+        status ENUM('active','inactive') NOT NULL DEFAULT 'active', created_by VARCHAR(80) NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_quiz_status (quiz_key, status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+    $db->exec("CREATE TABLE IF NOT EXISTS ussd_quiz_plays (
+        id INT NOT NULL AUTO_INCREMENT PRIMARY KEY, call_id VARCHAR(120) NOT NULL, round INT NOT NULL, quiz_key VARCHAR(40) NOT NULL, msisdn VARCHAR(30) NOT NULL,
+        score TINYINT NOT NULL, total TINYINT NOT NULL, won TINYINT(1) NOT NULL DEFAULT 0, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_call_round (call_id, round), INDEX idx_quiz_time (quiz_key, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+    $done = true;
+}
+function ussd_quiz_info(string $key): ?array {
+    try { ussd_quiz_tables(); $st = portal_pdo()->prepare("SELECT * FROM ussd_quizzes WHERE quiz_key=? AND status='active'"); $st->execute([$key]); return $st->fetch() ?: null; }
+    catch (Throwable $e) { error_log('ussd quiz info: '.$e->getMessage()); return null; }
+}
+// $n questions for one round, in an order that depends only on the call id and the round, so the same replies always rebuild the same game.
+function ussd_quiz_questions(string $key, string $seed, int $round, int $n): array {
+    try {
+        ussd_quiz_tables(); $st = portal_pdo()->prepare("SELECT * FROM ussd_quiz_questions WHERE quiz_key=? AND status='active'"); $st->execute([$key]); $rows = $st->fetchAll();
+    } catch (Throwable $e) { error_log('ussd quiz questions: '.$e->getMessage()); return []; }
+    usort($rows, fn($a, $b) => strcmp(md5($seed.'|'.$round.'|'.$a['id']), md5($seed.'|'.$round.'|'.$b['id'])));
+    $out = [];
+    foreach (array_slice($rows, 0, max(1, $n)) as $r) {
+        $opts = array_values(array_filter([$r['opt1'], $r['opt2'], $r['opt3'], $r['opt4']], fn($o) => $o !== null && trim((string)$o) !== ''));
+        $out[] = ['id' => (int)$r['id'], 'q' => $r['question'], 'opts' => $opts, 'correct' => (int)$r['correct']];
+    }
+    return $out;
+}
+function ussd_quiz_mask(string $msisdn): string { return strlen($msisdn) > 6 ? substr($msisdn, 0, 3).'***'.substr($msisdn, -3) : '***'; }
+function ussd_quiz_top(string $key): string {
+    try {
+        ussd_quiz_tables();
+        $st = portal_pdo()->prepare('SELECT msisdn, SUM(score) AS pts FROM ussd_quiz_plays WHERE quiz_key=? AND created_at >= NOW() - INTERVAL 7 DAY GROUP BY msisdn ORDER BY pts DESC, MIN(created_at) LIMIT 5');
+        $st->execute([$key]); $rows = $st->fetchAll();
+    } catch (Throwable $e) { return 'Top players: not available right now.'; }
+    if (!$rows) return "Top players this week:\nNo scores yet. Be the first!";
+    $lines = ['Top players this week:']; foreach ($rows as $i => $r) $lines[] = ($i + 1).'. '.ussd_quiz_mask((string)$r['msisdn']).' - '.(int)$r['pts'];
+    return implode("\n", $lines);
+}
+// Records a finished round (once per call and round, however often Mobius repeats the request).
+function ussd_quiz_record(array $screen, string $msisdn, string $callId): void {
+    if (($screen['kind'] ?? '') !== 'quiz_done' || empty($screen['quiz']) || $callId === '') return;
+    $q = $screen['quiz'];
+    try {
+        ussd_quiz_tables();
+        portal_pdo()->prepare('INSERT IGNORE INTO ussd_quiz_plays(call_id,round,quiz_key,msisdn,score,total,won) VALUES(?,?,?,?,?,?,?)')
+            ->execute([substr($callId, 0, 120), (int)$q['round'], $q['key'], preg_replace('/\D+/', '', $msisdn), (int)$q['score'], (int)$q['total'], $q['won'] ? 1 : 0]);
+    } catch (Throwable $e) { error_log('ussd quiz record: '.$e->getMessage()); }
+}
+// Checks one question's fields and returns them ready to store. Throws a message an editor can act on.
+function quiz_question_fields(string $question, array $opts, int $correct): array {
+    $question = trim($question); $opts = array_values(array_filter(array_map('trim', $opts), fn($o) => $o !== ''));
+    if (mb_strlen($question) < 5 || mb_strlen($question) > 150) throw new RuntimeException('The question must be 5 to 150 characters.');
+    if (count($opts) < 2 || count($opts) > 4) throw new RuntimeException('Give 2 to 4 answers.');
+    foreach ($opts as $o) if (mb_strlen($o) > 30) throw new RuntimeException('An answer can be at most 30 characters ("'.mb_substr($o, 0, 20).'…").');
+    if ($correct < 1 || $correct > count($opts)) throw new RuntimeException('The right answer must be a number from 1 to '.count($opts).'.');
+    $len = 6 + mb_strlen($question) + 1; foreach ($opts as $o) $len += 4 + mb_strlen($o);
+    if ($len + 7 > USSD_QUIZ_BLOCK_MAX) throw new RuntimeException('Too long for one phone screen ('.($len + 7).' characters, at most '.USSD_QUIZ_BLOCK_MAX.'): shorten the question or the answers.');
+    return [$question, $opts, $correct];
+}
+function save_quiz(array $d): string {
+    ussd_quiz_tables();
+    $key = trim((string)($d['quiz_key'] ?? '')); if (!preg_match('/^[a-z0-9_-]{2,40}$/', $key)) throw new RuntimeException('The quiz key is 2 to 40 characters: lowercase letters, digits, - and _.');
+    $title = trim((string)($d['title'] ?? '')); if ($title === '' || mb_strlen($title) > 80) throw new RuntimeException('Give the quiz a title (up to 80 characters).');
+    $per = filter_var($d['per_game'] ?? null, FILTER_VALIDATE_INT); if ($per === false || $per < 3 || $per > 10) throw new RuntimeException('Questions per game: 3 to 10.');
+    $win = filter_var($d['win_score'] ?? null, FILTER_VALIDATE_INT); if ($win === false || $win < 1 || $win > $per) throw new RuntimeException('The winning score must be between 1 and the number of questions.');
+    $text = trim((string)($d['win_text'] ?? '')); if (mb_strlen($text) > 120) throw new RuntimeException('The winner message is at most 120 characters.');
+    $status = ($d['status'] ?? '') === 'inactive' ? 'inactive' : 'active';
+    portal_pdo()->prepare('INSERT INTO ussd_quizzes(quiz_key,title,per_game,win_score,win_text,status) VALUES(?,?,?,?,?,?) ON DUPLICATE KEY UPDATE title=VALUES(title), per_game=VALUES(per_game), win_score=VALUES(win_score), win_text=VALUES(win_text), status=VALUES(status)')
+        ->execute([$key, $title, $per, $win, $text !== '' ? $text : null, $status]);
+    audit('ussd_quiz_save', null, 'ussd_quizzes', $key, json_encode(['title' => $title, 'per_game' => $per, 'win' => $win, 'status' => $status]));
+    return $key;
+}
+function quiz_must_exist(string $key): void {
+    $st = portal_pdo()->prepare('SELECT 1 FROM ussd_quizzes WHERE quiz_key=?'); $st->execute([$key]);
+    if (!$st->fetchColumn()) throw new RuntimeException('That quiz does not exist.');
+}
+function save_quiz_question(array $d): string {
+    ussd_quiz_tables(); $key = trim((string)($d['quiz_key'] ?? '')); quiz_must_exist($key);
+    [$q, $opts, $correct] = quiz_question_fields((string)($d['question'] ?? ''), [$d['opt1'] ?? '', $d['opt2'] ?? '', $d['opt3'] ?? '', $d['opt4'] ?? ''], (int)($d['correct'] ?? 0));
+    $vals = [$q, $opts[0], $opts[1], $opts[2] ?? null, $opts[3] ?? null, $correct]; $id = (int)($d['id'] ?? 0); $db = portal_pdo();
+    if ($id > 0) { $db->prepare('UPDATE ussd_quiz_questions SET question=?,opt1=?,opt2=?,opt3=?,opt4=?,correct=? WHERE id=? AND quiz_key=?')->execute([...$vals, $id, $key]); }
+    else { $db->prepare('INSERT INTO ussd_quiz_questions(question,opt1,opt2,opt3,opt4,correct,quiz_key,created_by) VALUES(?,?,?,?,?,?,?,?)')->execute([...$vals, $key, user()['username'] ?? null]); $id = (int)$db->lastInsertId(); }
+    audit('ussd_quiz_question_save', null, 'ussd_quiz_questions', (string)$id, $key);
+    return $key;
+}
+function toggle_quiz_question(int $id): string {
+    ussd_quiz_tables(); $db = portal_pdo(); $st = $db->prepare('SELECT quiz_key, status FROM ussd_quiz_questions WHERE id=?'); $st->execute([$id]); $r = $st->fetch();
+    if (!$r) throw new RuntimeException('That question is gone.');
+    $db->prepare('UPDATE ussd_quiz_questions SET status=? WHERE id=?')->execute([$r['status'] === 'active' ? 'inactive' : 'active', $id]);
+    audit('ussd_quiz_question_toggle', null, 'ussd_quiz_questions', (string)$id, $r['quiz_key']);
+    return $r['quiz_key'];
+}
+// One question per line:  Question | answer 1 | answer 2 | answer 3 | answer 4 | number of the right answer
+function import_quiz_questions(string $key, string $text): int {
+    ussd_quiz_tables(); quiz_must_exist($key); $rows = [];
+    foreach (preg_split('/\R/', $text) as $n => $line) {
+        $line = trim($line); if ($line === '' || $line[0] === '#') continue;
+        $p = array_map('trim', explode('|', $line));
+        if (count($p) < 4 || !ctype_digit(end($p))) throw new RuntimeException('Line '.($n + 1).': write  Question | answer | answer | … | number of the right answer');
+        $correct = (int)array_pop($p); $q = array_shift($p);
+        try { $rows[] = quiz_question_fields($q, $p, $correct); } catch (RuntimeException $e) { throw new RuntimeException('Line '.($n + 1).': '.$e->getMessage()); }
+    }
+    if (!$rows) throw new RuntimeException('Nothing to import.');
+    if (count($rows) > 200) throw new RuntimeException('At most 200 questions per import.');
+    $db = portal_pdo(); $db->beginTransaction();
+    try {
+        $ins = $db->prepare('INSERT INTO ussd_quiz_questions(question,opt1,opt2,opt3,opt4,correct,quiz_key,created_by) VALUES(?,?,?,?,?,?,?,?)');
+        foreach ($rows as [$q, $o, $c]) $ins->execute([$q, $o[0], $o[1], $o[2] ?? null, $o[3] ?? null, $c, $key, user()['username'] ?? null]);
+        $db->commit();
+    } catch (Throwable $e) { $db->rollBack(); throw $e; }
+    audit('ussd_quiz_import', null, 'ussd_quiz_questions', null, $key.' +'.count($rows));
+    return count($rows);
 }
 // The offers a catalogue-list node shows: active ones in its sub-categories, cheapest first, each code once.
 function ussd_catalog_offers(array $node): array {
@@ -2752,7 +2932,8 @@ function ussd_proxy_process(array $cfg, string $mode, array $flat, bool $dry = f
             if ($row !== false) { $replies = json_decode((string)$row, true) ?: []; if ($input !== '') $replies[] = $input; }
         } else $note[] = 'no session or msisdn field set — every request starts again from the first screen';
     }
-    $screen = ussd_screen($sc, array_slice($replies, -30), ['active']);
+    $screen = ussd_screen($sc, array_slice($replies, -30), ['active'], null, ['seed' => $sessionId !== '' ? $sessionId : (string)$key]);
+    if (!$dry) ussd_quiz_record($screen, $msisdn, $sessionId !== '' ? $sessionId : (string)$key);
     if (($screen['kind'] ?? '') === 'purchase') {
         if ($dry) $note[] = 'purchase not sent (test run)';
         else { $pr = ussd_execute_purchase($cfg, $screen, $msisdn, $sessionId !== '' ? $sessionId : (string)$key); $screen['text'] = $pr['text']; $note[] = $pr['note']; }
@@ -2942,7 +3123,8 @@ function ussd_proxy_push_endpoint(array $cfg, array $flat, string $raw, array $g
                 $st->execute([$callId, $sc]); $row = $st->fetchColumn();
                 if ($row !== false) { $replies = json_decode((string)$row, true) ?: []; if ($typed !== '') $replies[] = $typed; } else $note = 'session not found - restarted from the first screen; ';
             }
-            $screen = ussd_screen($sc, array_slice($replies, -30), ['active']);
+            $screen = ussd_screen($sc, array_slice($replies, -30), ['active'], null, ['seed' => $callId]);
+            ussd_quiz_record($screen, $msisdn, $callId);
             if ($screen['end']) $db->prepare('DELETE FROM ussd_proxy_sessions WHERE session_key=?')->execute([$callId]);
             else $db->prepare('REPLACE INTO ussd_proxy_sessions(session_key,shortcode,replies,updated_at) VALUES(?,?,?,NOW())')->execute([$callId, $sc, json_encode($replies)]);
             if (($screen['kind'] ?? '') === 'purchase') { $pr = ussd_execute_purchase($cfg, $screen, $msisdn, $callId, ussd_purchase_ctx($raw)); $screen['text'] = $pr['text']; $note .= $pr['note'].'; '; }

@@ -1,0 +1,11 @@
+[
+ {
+  "prompt_text": "Comium Games",
+  "node_type": "menu",
+  "status": "active",
+  "children": [
+   { "prompt_text": "Daily Quiz", "node_type": "quiz", "status": "active", "offer_code": "comium_trivia" },
+   { "prompt_text": "How to play", "node_type": "end", "status": "active" }
+  ]
+ }
+]
