@@ -2995,6 +2995,8 @@ const USSD_PURCHASE_BODY = '{"callID":"{txn}","originalRequest":"{shortcode}","l
 const USSD_PURCHASE_BODY_V2 = '{"callID":"{txn}","originalRequest":"{shortcode}","msisdn":"{msisdn}","isMobileOriginated":true,"mobileRequestIdentifier":1,"isInitial":false,"isProxy":false,"chargesWithCurrency":"{price_d}","offerCode":"{offer_code}","vendor":"{vendor}","channel":"USSD","otherOfferCode":"{other_offer_code}","operation":"purchaseOffer"}';
 const SHARE_CTX = '"callID":"{txn}","originalRequest":"{shortcode}","localAddress":{local_address_json},"remoteAddress":{remote_address_json},"msisdn":"{msisdn}","imsi":"{imsi}","localDialogID":{local_dialog_id},"remoteDialogID":{remote_dialog_id},"isMobileOriginated":true,"mobileRequestIdentifier":1,"isInitial":false,"isProxy":false';
 const SHARE_BODY_READ = '{'.SHARE_CTX.',"channel":"USSD"}';
+// listNumber (from Mobius's log) carries the vendor as well
+const SHARE_BODY_NUMBERS = '{'.SHARE_CTX.',"vendor":"huawei","channel":"USSD"}';
 // Both copied from Mobius's own Shared Bundle requests (its log): subscribe adds the price (D600), the offer code and operation purchaseOffer.
 const SHARE_BODY_SUBSCRIBE_V2 = '{'.SHARE_CTX.',"vendor":"{vendor}","channel":"USSD","chargesWithCurrency":"{price_d}","offerCode":"{offer_code}"}';
 const SHARE_BODY_SUBSCRIBE = '{'.SHARE_CTX.',"chargesWithCurrency":"{price_d}","offerCode":"{offer_code}","vendor":"huawei","channel":"USSD","operation":"purchaseOffer"}';
@@ -3021,14 +3023,14 @@ const USSD_PROXY_DEFAULTS = [
     'purchase_auth' => '', 'purchase_ok_match' => '', 'purchase_timeout' => '8', 'purchase_lowbal' => 'insufficient,low balance,not enough', 'purchase_reply_field' => '', 'purchase_body_other' => '',
     // Shared Bundle (Seddo)
     'share_mode' => 'test', 'share_base' => 'https://vas-testing.comium.gm/hera/prepaid/ShareBundle/', 'share_ok_code' => '0',
-    'share_body_subscribe' => SHARE_BODY_SUBSCRIBE, 'share_body_validate' => '', 'share_body_add' => SHARE_BODY_ADD, 'share_body_balance' => SHARE_BODY_READ, 'share_body_numbers' => SHARE_BODY_READ,
+    'share_body_subscribe' => SHARE_BODY_SUBSCRIBE, 'share_body_validate' => '', 'share_body_add' => SHARE_BODY_ADD, 'share_body_balance' => SHARE_BODY_READ, 'share_body_numbers' => SHARE_BODY_NUMBERS,
 ];
 function ussd_proxy_config(): array {
     $cfg = USSD_PROXY_DEFAULTS;
     try { foreach (portal_pdo()->query('SELECT name,value FROM ussd_proxy_config')->fetchAll() as $r) if (array_key_exists($r['name'], $cfg)) $cfg[$r['name']] = (string)$r['value']; }
     catch (Throwable $e) {}
     if (in_array($cfg['purchase_body'], [USSD_PURCHASE_BODY_V1, USSD_PURCHASE_BODY_V2], true)) $cfg['purchase_body'] = USSD_PURCHASE_BODY; // an earlier default, never edited
-    foreach (['share_body_subscribe' => SHARE_BODY_SUBSCRIBE, 'share_body_add' => SHARE_BODY_ADD, 'share_body_balance' => SHARE_BODY_READ, 'share_body_numbers' => SHARE_BODY_READ] as $k => $new) if (in_array($cfg[$k], SHARE_OLD_DEFAULTS, true)) $cfg[$k] = $new;
+    foreach (['share_body_subscribe' => SHARE_BODY_SUBSCRIBE, 'share_body_add' => SHARE_BODY_ADD, 'share_body_balance' => SHARE_BODY_READ, 'share_body_numbers' => SHARE_BODY_NUMBERS] as $k => $new) if (in_array($cfg[$k], SHARE_OLD_DEFAULTS, true) || ($k === 'share_body_numbers' && $cfg[$k] === SHARE_BODY_READ)) $cfg[$k] = $new;
     return $cfg;
 }
 function ussd_proxy_set(array $vals): void {
