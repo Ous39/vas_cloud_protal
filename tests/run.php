@@ -88,7 +88,7 @@ t('quiz questions are checked', function () {
 // ------------------------------------------------------------------ the screen engine
 echo "\nScreens (engine)\n";
 $nodes = [];
-$mk = function (int $id, ?int $p, string $type, string $label, array $x = []) { return $x + ['id' => $id, 'parent_id' => $p, 'node_type' => $type, 'status' => 'active', 'prompt_text' => $label, 'offer_code' => '', 'action_key' => '', 'catalog_filter' => '', 'body_text' => '', 'display_order' => $id]; };
+$GLOBALS['mk'] = $mk = function (int $id, ?int $p, string $type, string $label, array $x = []) { return $x + ['id' => $id, 'parent_id' => $p, 'node_type' => $type, 'status' => 'active', 'prompt_text' => $label, 'offer_code' => '', 'action_key' => '', 'catalog_filter' => '', 'body_text' => '', 'display_order' => $id]; };
 $nodes = [$mk(1, null, 'menu', 'Main'), $mk(2, 1, 'menu', 'Bundles'), $mk(3, 1, 'end', 'Help', ['body_text' => 'Call 123 for help']), $mk(4, 2, 'catalog', 'Cat B', ['catalog_filter' => 'ZT Cat B']),
           $mk(5, 2, 'offer', 'Alpha', ['offer_code' => 'ZT001']), $mk(6, 1, 'recipient', 'Buy for other'), $mk(7, 2, 'catalog', 'Same name', ['catalog_filter' => "ZT Cat C\nZT Cat D"]), $mk(8, 2, 'offer', 'Gone', ['offer_code' => 'ZT003']),
           $mk(9, 2, 'catalog', 'Cat A', ['catalog_filter' => 'ZT Cat A']), $mk(10, 2, 'offer', 'Beta', ['offer_code' => 'ZT002'])];
@@ -111,15 +111,20 @@ t('offers: confirm before buying, cancel, unavailable', function () use ($eng) {
     eq($eng(['1', '2', '2'])['kind'], 'cancel', 'cancel buys nothing'); has($eng(['1', '2', '0'])['text'], 'Bundles', 'back from confirm returns to the list');
     eq($eng(['1', '4'])['kind'], 'offer_unavailable', 'an inactive offer is not for sale');
 });
-t('buy for another number', function () use ($eng) {
+t('buy for another number', function () use ($eng, $nodes) {
     eq($eng(['3'])['kind'], 'recipient', 'asks for the number'); has($eng(['3', 'abc'])['text'], 'Invalid number.', 'refuses rubbish');
-    $m = $eng(['3', '866520934']); has($m['text'], 'Buy for 220866520934:', 'then the main menu again'); lacks($m['text'], 'Buy for other', 'without the buy-for-other item');
-    $p = $eng(['3', '866520934', '1', '2', '1']); eq($p['purchase']['recipient'], '220866520934', 'the purchase carries the other number'); has($eng(['3', '866520934', '1', '2'])['text'], 'for 220866520934?', 'and the confirm screen says who for');
-    has($eng(['3', '866520934', '0'])['text'], '1. Bundles', 'back leaves it again');
-    eq($p['purchase']['recipient_raw'], '866520934', 'the digits are also kept exactly as typed (Hera wants them that way)');
-    $self = $eng(['1', '5'])['text']; has($self, 'ZT Alpha', 'for yourself: every offer is listed'); has($self, 'ZT Beta', '(including one with no "other" code)');
-    $other = $eng(['3', '866520934', '1', '5'])['text']; has($other, 'ZT Alpha', 'for someone else: offers with an "other" code are listed'); lacks($other, 'ZT Beta', 'and offers without one are left out');
-    $b = $eng(['3', '866520934', '1', '6']); eq($b['kind'], 'offer_unavailable', 'picking such an offer directly is refused'); has($b['text'], 'cannot be bought for another number', 'with a clear reason'); eq($eng(['1', '6'])['kind'], 'confirm', 'while buying it for yourself is fine');
+    $m = $eng(['3', '866520934']); has($m['text'], 'Buy for 220866520934:', 'then the menu again'); lacks($m['text'], 'Buy for other', 'without the buy-for-other item'); lacks($m['text'], 'Help', 'and without messages, which sell nothing'); has($m['text'], '1. Bundles', 'with the part that sells');
+    // only what can really be bought for someone else is shown: offers that have an "other" code
+    $l = $eng(['3', '866520934', '1'])['text']; has($l, '1. Alpha', 'an offer with an "other" code is listed'); has($l, '2. Cat A', 'a list holding at least one such offer is listed');
+    lacks($l, 'Cat B', 'a list whose offers have no "other" code is not shown'); lacks($l, 'Same name', '(nor this one)'); lacks($l, 'Gone', 'an offer that is switched off is not shown'); lacks($l, 'Beta', 'an offer with no "other" code is not shown');
+    $a = $eng(['3', '866520934', '1', '2'])['text']; has($a, 'ZT Alpha', 'inside a list: offers with an "other" code'); lacks($a, 'ZT Beta', 'and not the ones without');
+    $p = $eng(['3', '866520934', '1', '1', '1']); eq($p['kind'], 'purchase', 'buying works'); eq($p['purchase']['recipient'], '220866520934', 'the purchase carries the other number'); eq($p['purchase']['recipient_raw'], '866520934', 'and the digits exactly as typed (Hera wants them that way)');
+    has($eng(['3', '866520934', '1', '1'])['text'], 'for 220866520934?', 'the confirm screen says who it is for'); has($eng(['3', '866520934', '0'])['text'], '1. Bundles', 'back leaves it again');
+    // for yourself nothing is hidden
+    $self = $eng(['1'])['text']; foreach (['Cat B', 'Alpha', 'Same name', 'Cat A', 'Beta'] as $x) has($self, $x, 'for yourself "'.$x.'" is listed'); eq($eng(['1', '6'])['kind'], 'confirm', 'and the offer without an "other" code can be bought for yourself');
+    // nothing sellable for others: say so instead of an empty screen
+    $only = [$GLOBALS['mk'](1, null, 'menu', 'Main'), $GLOBALS['mk'](2, 1, 'recipient', 'Buy for other'), $GLOBALS['mk'](3, 1, 'offer', 'Beta', ['offer_code' => 'ZT002'])];
+    $e = ussd_screen('*ZTX#', ['1', '866520934'], ['active'], $only, ['seed' => 's', 'msisdn' => '220866000001']); has($e['text'], 'Nothing here can be bought for another number.', 'an empty result is explained');
 });
 
 // ------------------------------------------------------------------ menu building tools (database)
@@ -171,6 +176,7 @@ t('the menu check finds real problems', function () use ($code, $db) {
     $long = '*ZT3#'; $items = ''; for ($i = 1; $i <= 12; $i++) $items .= "Item number $i with a long label here\n";
     menu_quick_add($long, null, 'Wrapper', 'active'); $w = (int)$db->query("SELECT id FROM ussd_menu_nodes WHERE short_code='*ZT3#'")->fetchColumn(); menu_quick_add($long, $w, $items, 'active');
     has($h($long), 'too long for one phone screen', 'a list that cannot fit a screen');
+    menu_quick_add('*ZT6#', null, "Buy for other | other\nBeta | offer | ZT002", 'active'); has($h('*ZT6#'), 'nothing in this menu can be bought for another number', 'a Buy-for-other item with nothing to sell is flagged');
     eq(count(menu_health('*ZT-NONE#')), 1, 'an empty code just says so');
 });
 

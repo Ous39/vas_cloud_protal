@@ -2485,7 +2485,7 @@ function menu_health(string $code): array {
     $cfg = ussd_proxy_config();
     if (!($cfg['enabled'] === '1' && $cfg['mode'] === 'live' && $cfg['push_enabled'] === '1')) $add('warn', null, 'The USSD Proxy is not fully live (endpoint on, Live mode, answering through Mobius) — phones will not get this menu yet.');
     $walked = 0; $siblingsSeen = [];
-    $walk = function (array $n) use (&$walk, &$add, $kids, $isActive, &$walked, $code) {
+    $walk = function (array $n) use (&$walk, &$add, $kids, $isActive, &$walked, $code, $flat) {
         if (++$walked > 200) return;
         $id = (int)$n['id']; $label = '"'.mb_substr($n['prompt_text'], 0, 40).'"'; $t = $n['node_type'];
         $live = array_values(array_filter($kids[$id] ?? [], $isActive));
@@ -2510,6 +2510,12 @@ function menu_health(string $code): array {
         if ($t === 'sharedbundle') {
             if (!ussd_catalog_offers($n)) $add('error', $id, $label.': no Active offer in ['.str_replace("\n", ', ', (string)$n['catalog_filter']).'] — customers cannot buy.');
             $c2 = ussd_proxy_config(); if ($c2['share_mode'] !== 'live') $add('info', $id, $label.': Shared Bundle is in '.strtoupper($c2['share_mode']).' mode — '.($c2['share_mode'] === 'test' ? 'answers are simulated, nothing is bought.' : 'it is switched off.'));
+        }
+        if ($t === 'recipient') {
+            $actKids = []; foreach ($flat as $x) if ($x['status'] === 'active') $actKids[$x['parent_id'] === null ? 0 : (int)$x['parent_id']][] = $x;
+            $top = $actKids[0] ?? []; if (count($top) === 1 && $top[0]['node_type'] === 'menu') $top = $actKids[(int)$top[0]['id']] ?? [];
+            $memo = []; $any = false; foreach ($top as $c) if (ussd_allowed_for_other($c, $actKids, 'ussd_offer_lookup', 'ussd_catalog_offers', $memo)) { $any = true; break; }
+            if (!$any) $add('error', $id, $label.': nothing in this menu can be bought for another number (offers need an "other" code in the catalogue) — customers would see an empty list.');
         }
         if ($t === 'action') $add('warn', $id, $label.' is an Action ('.$n['action_key'].') that is not connected to anything yet — customers see a placeholder.');
         if ($t === 'end' && trim((string)($n['body_text'] ?? '')) === '' && mb_strlen($n['prompt_text']) > 60) $add('info', $id, $label.' shows its whole label as its screen; use "Screen text" for a longer message.');
@@ -2601,6 +2607,21 @@ const USSD_MAX_CHARS = 182;
 // $statuses: which node states are served. Live traffic should use ['active']; the simulator also shows drafts.
 const USSD_PAGE_SIZE = 5; // offers per screen in a catalogue list; "6. More" shows the next ones
 // $hooks (for tests): 'offer' => fn(code): ?row, 'catalog' => fn(node): list of offer rows.
+// Can this menu item lead to something that may be bought for ANOTHER number? Only offers that have an "other" code qualify
+// (that is what Hera needs for it), so under "Buy for other" a menu or list that holds none of them is not shown at all.
+// $kids: the Active items grouped by parent id (0 = top). $memo caches answers for one walk.
+function ussd_allowed_for_other(array $n, array $kids, callable $offerLookup, callable $catalogLookup, array &$memo): bool {
+    $key = (string)($n['id'] ?? ''); if ($key !== '' && isset($memo[$key])) return $memo[$key];
+    $has = fn($o) => !array_key_exists('offer_code_for_other', $o) || trim((string)$o['offer_code_for_other']) !== '';
+    $r = false;
+    switch ($n['node_type'] ?? '') {
+        case 'offer': $o = $offerLookup(trim((string)$n['offer_code'])); $r = $o && $has($o); break;
+        case 'catalog': foreach ($catalogLookup($n) as $o) if ($has($o)) { $r = true; break; } break;
+        case 'menu': foreach ($kids[(int)$n['id']] ?? [] as $c) if (ussd_allowed_for_other($c, $kids, $offerLookup, $catalogLookup, $memo)) { $r = true; break; } break;
+    }
+    if ($key !== '') $memo[$key] = $r;
+    return $r;
+}
 // A number typed for "Buy for another number": 7 or 9 digits get the country code, 220… is kept; anything else is refused.
 function ussd_normalize_msisdn(string $s): ?string {
     $d = preg_replace('/\D+/', '', $s);
@@ -2644,11 +2665,13 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
     $hasRecipientNode = fn() => (bool)array_filter($trail, fn($t) => $t && $t['node_type'] === 'recipient');
     // The options on the current screen. A catalogue list builds them from the offer catalogue, a page at a time;
     // under "Buy for another number" they are the main menu again (without that item), once the number is known.
-    $current = function () use (&$cur, &$page, &$recipient, &$trail, $kids, $roots, $catalogLookup): array {
+    $otherMemo = [];
+    $allowedOther = function (array $n) use ($kids, $offerLookup, $catalogLookup, &$otherMemo): bool { return ussd_allowed_for_other($n, $kids, $offerLookup, $catalogLookup, $otherMemo); };
+    $current = function () use (&$cur, &$page, &$recipient, &$trail, $kids, $roots, $catalogLookup, $allowedOther): array {
         if ($cur && $cur['node_type'] === 'recipient') {
             if ($recipient === null) return [[], false];
             $top = $trail[0]; $rootOptions = $top ? ($kids[(int)$top['id']] ?? []) : $roots;
-            return [array_values(array_filter($rootOptions, fn($n) => $n['node_type'] !== 'recipient')), false];
+            return [array_values(array_filter($rootOptions, $allowedOther)), false]; // only what can be bought for someone else
         }
         if ($cur && $cur['node_type'] === 'catalog') {
             $all = []; $rows = $catalogLookup($cur); $seen = [];
@@ -2664,7 +2687,9 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
             }
             return [array_slice($all, $page * USSD_PAGE_SIZE, USSD_PAGE_SIZE), count($all) > ($page + 1) * USSD_PAGE_SIZE];
         }
-        return [$cur ? ($kids[(int)$cur['id']] ?? []) : $roots, false];
+        $opts = $cur ? ($kids[(int)$cur['id']] ?? []) : $roots;
+        if ($recipient !== null) $opts = array_values(array_filter($opts, $allowedOther));
+        return [$opts, false];
     };
     foreach ($replies as $r) {
         $r = trim((string)$r, " \t\r\n*#"); // people sometimes type *2 or 2# — the star and hash are not part of the choice
@@ -2813,6 +2838,7 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
     if ($note) array_unshift($lines, $note);
     foreach ($options as $i => $o) $lines[] = ($i + 1).'. '.$o['prompt_text'];
     if ($cur && $cur['node_type'] === 'catalog' && !$options) $lines[] = 'No offers are available right now.';
+    if ($cur && $recipient !== null && !$options && $cur['node_type'] !== 'catalog') $lines[] = 'Nothing here can be bought for another number.';
     if ($more) $lines[] = (USSD_PAGE_SIZE + 1).'. More';
     if (count($trail) > 1) $lines[] = '0. Back';
     return ussd_result(implode("\n", $lines), false, $path, 'menu', $cur);
