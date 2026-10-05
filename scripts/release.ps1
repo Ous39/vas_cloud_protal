@@ -7,7 +7,8 @@
   Use -SkipTests only in an emergency.
 #>
 param([switch]$SkipTests)
-$ErrorActionPreference = 'Stop'
+# native tools (git, docker) write progress to stderr; success is judged by their exit code, checked below
+$ErrorActionPreference = 'Continue'
 Set-Location (Split-Path $PSScriptRoot -Parent)
 $image = 'ghcr.io/ous39/vas-cloud-app'
 
@@ -23,7 +24,8 @@ if (-not $SkipTests) {
 
 $dirty = git status --porcelain
 if ($dirty) { Write-Host "There are uncommitted changes - commit them first (the image is built from the commit):`n$dirty" -ForegroundColor Red; exit 1 }
-git push
+git push --quiet
+if ($LASTEXITCODE -ne 0) { Write-Host "git push failed - not releasing." -ForegroundColor Red; exit 1 }
 $sha = (git rev-parse --short HEAD).Trim()
 
 Write-Host "== Build $sha ==" -ForegroundColor Cyan
@@ -31,7 +33,9 @@ docker build -q -t "${image}:latest" -t "${image}:$sha" --build-arg GIT_SHA=$sha
 if ($LASTEXITCODE -ne 0) { exit 1 }
 Write-Host "== Push ==" -ForegroundColor Cyan
 docker push "${image}:latest" | Select-Object -Last 1
+if ($LASTEXITCODE -ne 0) { exit 1 }
 docker push "${image}:$sha" | Select-Object -Last 1
+if ($LASTEXITCODE -ne 0) { exit 1 }
 
 Write-Host "`nReleased $sha. To put it live (Rancher shell):" -ForegroundColor Green
 Write-Host "  kubectl -n vas-cloud rollout restart deployment/vas-cloud-app"
