@@ -2984,11 +2984,13 @@ const USSD_PURCHASE_BODY = '{"callID":"{txn}","originalRequest":"{shortcode}","l
 const USSD_PURCHASE_BODY_V2 = '{"callID":"{txn}","originalRequest":"{shortcode}","msisdn":"{msisdn}","isMobileOriginated":true,"mobileRequestIdentifier":1,"isInitial":false,"isProxy":false,"chargesWithCurrency":"{price_d}","offerCode":"{offer_code}","vendor":"{vendor}","channel":"USSD","otherOfferCode":"{other_offer_code}","operation":"purchaseOffer"}';
 const SHARE_CTX = '"callID":"{txn}","originalRequest":"{shortcode}","localAddress":{local_address_json},"remoteAddress":{remote_address_json},"msisdn":"{msisdn}","imsi":"{imsi}","localDialogID":{local_dialog_id},"remoteDialogID":{remote_dialog_id},"isMobileOriginated":true,"mobileRequestIdentifier":1,"isInitial":false,"isProxy":false';
 const SHARE_BODY_READ = '{'.SHARE_CTX.',"channel":"USSD"}';
-// Subscribe: a guess (Mobius's subscribe request has not been seen yet) built on the same shape; add number is copied from the Mobius log.
-const SHARE_BODY_SUBSCRIBE = '{'.SHARE_CTX.',"vendor":"{vendor}","channel":"USSD","chargesWithCurrency":"{price_d}","offerCode":"{offer_code}"}';
+// Both copied from Mobius's own Shared Bundle requests (its log): subscribe adds the price (D600), the offer code and operation purchaseOffer.
+const SHARE_BODY_SUBSCRIBE_V2 = '{'.SHARE_CTX.',"vendor":"{vendor}","channel":"USSD","chargesWithCurrency":"{price_d}","offerCode":"{offer_code}"}';
+const SHARE_BODY_SUBSCRIBE = '{'.SHARE_CTX.',"chargesWithCurrency":"{price_d}","offerCode":"{offer_code}","vendor":"huawei","channel":"USSD","operation":"purchaseOffer"}';
 const SHARE_BODY_ADD = '{'.SHARE_CTX.',"vendor":"huawei","channel":"USSD","otherMsisdn":"{other_msisdn}"}';
 // earlier defaults, replaced automatically when they were never edited
 const SHARE_OLD_DEFAULTS = [
+    SHARE_BODY_SUBSCRIBE_V2,
     '{"callID":"{txn}","msisdn":"{msisdn}","channel":"USSD"}',
     '{"callID":"{txn}","msisdn":"{msisdn}","offerCode":"{offer_code}","vendor":"{vendor}","chargesWithCurrency":"{price_d}","channel":"USSD"}',
     '{"callID":"{txn}","msisdn":"{msisdn}","otherMsisdn":"{other_msisdn}","channel":"USSD"}',
