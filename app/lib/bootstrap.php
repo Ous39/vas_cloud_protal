@@ -2380,7 +2380,7 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
     // A Shared Bundle node is a small service of its own: buy the bundle, add a sharing number, look at the account.
     // Reading things from Hera (validating a number, balance, numbers) happens here through a hook; anything that
     // changes an account (subscribe, add number) is returned as a result kind and carried out by the endpoint, once.
-    $sb = null; $shareCall = $hooks['share'] ?? 'ussd_share_read'; $msisdnIn = (string)($hooks['msisdn'] ?? '');
+    $sb = null; $shareCall = $hooks['share'] ?? 'ussd_share_read'; $msisdnIn = (string)($hooks['msisdn'] ?? ''); $ctxIn = (array)($hooks['ctx'] ?? []);
     $sbNew = fn() => ['phase' => 'main', 'offers' => [], 'page' => 0, 'offer' => null, 'number' => null, 'text' => ''];
     $quizNew = function (array $pick) use ($quizInfo): array {
         $key = trim((string)$pick['offer_code']); $info = $quizInfo($key);
@@ -2461,16 +2461,16 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
             if ($ph === 'num') {
                 $n = ussd_normalize_msisdn($r);
                 if ($n === null) { $note = 'Invalid number.'; continue; }
-                $v = $shareCall('validate', ['msisdn' => $msisdnIn, 'other' => $n]);
+                $rawNum = preg_replace('/\D+/', '', $r); $v = $shareCall('validate', ['msisdn' => $msisdnIn, 'other' => $n, 'other_raw' => $rawNum, 'ctx' => $ctxIn]);
                 if (empty($v['ok'])) { $note = trim((string)($v['text'] ?? '')) ?: 'This number cannot be added.'; continue; }
-                $sb['number'] = $n; $sb['phase'] = 'numconfirm'; $note = null; continue;
+                $sb['number'] = $n; $sb['number_raw'] = $rawNum; $sb['phase'] = 'numconfirm'; $note = null; continue;
             }
             if ($ph === 'numconfirm') {
                 if ($r !== '1') { $note = 'Invalid choice.'; continue; }
-                return ussd_result('Adding the number...', true, $path, 'share_add', $cur) + ['share' => ['op' => 'add', 'other' => $sb['number']]];
+                return ussd_result('Adding the number...', true, $path, 'share_add', $cur) + ['share' => ['op' => 'add', 'other' => $sb['number'], 'other_raw' => $sb['number_raw'] ?? $sb['number']]];
             }
             if ($ph === 'account') {
-                if ($r === '1' || $r === '2') { $res = $shareCall($r === '1' ? 'balance' : 'numbers', ['msisdn' => $msisdnIn]); $sb['text'] = trim((string)($res['text'] ?? '')) ?: 'Not available right now.'; $sb['phase'] = $r === '1' ? 'balance' : 'numbers'; $note = null; }
+                if ($r === '1' || $r === '2') { $res = $shareCall($r === '1' ? 'balance' : 'numbers', ['msisdn' => $msisdnIn, 'ctx' => $ctxIn]); $sb['text'] = trim((string)($res['text'] ?? '')) ?: 'Not available right now.'; $sb['phase'] = $r === '1' ? 'balance' : 'numbers'; $note = null; }
                 else $note = 'Invalid choice.';
                 continue;
             }
@@ -2825,8 +2825,10 @@ function ussd_share_sim(string $op, array $p): array {
 function ussd_share_http(array $cfg, string $op, array $p): array {
     $tpl = (string)$cfg['share_body_'.$op];
     $esc = fn($s) => substr((string)json_encode((string)$s, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), 1, -1);
-    $body = strtr($tpl, ['{msisdn}' => $esc($p['msisdn'] ?? ''), '{other_msisdn}' => $esc($p['other'] ?? ''), '{offer_code}' => $esc($p['offer_code'] ?? ''), '{vendor}' => $esc($p['vendor'] ?? ''),
-        '{other_offer_code}' => $esc($p['other_offer_code'] ?? ''), '{price}' => $esc($p['price'] ?? ''), '{price_d}' => $esc(($p['price'] ?? '') !== '' ? 'D'.$p['price'] : ''), '{txn}' => $esc($p['txn'] ?? '')]);
+    $body = strtr($tpl, ['{msisdn}' => $esc($p['msisdn'] ?? ''), '{other_msisdn}' => $esc($p['other_raw'] ?? $p['other'] ?? ''), '{offer_code}' => $esc($p['offer_code'] ?? ''), '{vendor}' => $esc($p['vendor'] ?? ''),
+        '{other_offer_code}' => $esc($p['other_offer_code'] ?? ''), '{price}' => $esc($p['price'] ?? ''), '{price_d}' => $esc(($p['price'] ?? '') !== '' ? 'D'.$p['price'] : ''), '{txn}' => $esc($p['txn'] ?? ''),
+        '{shortcode}' => $esc($cfg['shortcode_proxy']), '{imsi}' => $esc($p['ctx']['imsi'] ?? ''), '{local_dialog_id}' => isset($p['ctx']['localDialogID']) ? (string)$p['ctx']['localDialogID'] : 'null', '{remote_dialog_id}' => isset($p['ctx']['remoteDialogID']) ? (string)$p['ctx']['remoteDialogID'] : 'null',
+        '{local_address_json}' => json_encode($p['ctx']['localAddress'] ?? null, JSON_UNESCAPED_SLASHES), '{remote_address_json}' => json_encode($p['ctx']['remoteAddress'] ?? null, JSON_UNESCAPED_SLASHES)]);
     $r = ussd_hera_post($cfg, $body, rtrim((string)$cfg['share_base'], '/').'/'.SHARE_PATHS[$op]);
     $j = json_decode((string)$r['raw'], true); $res = is_array($j) && is_array($j['result'] ?? null) ? $j['result'] : [];
     $code = isset($res['resultCode']) ? (string)$res['resultCode'] : (isset($j['resultCode']) ? ($j['resultCode'] === '000' ? $cfg['share_ok_code'] : (string)$j['resultCode']) : '');
@@ -2867,7 +2869,7 @@ function ussd_share_read(string $op, array $p): array {
     return ['ok' => (bool)$r['ok'], 'text' => $r['text'] !== '' ? $r['text'] : ($r['error'] !== '' ? 'Not available right now.' : '')];
 }
 // subscribe / add number: carried out once per call (same ledger as purchases, so it shows in the same table).
-function ussd_share_execute(array $cfg, array $screen, string $msisdn, string $callId): array {
+function ussd_share_execute(array $cfg, array $screen, string $msisdn, string $callId, array $ctx = []): array {
     $p = $screen['share']; $op = $p['op']; $msisdn = preg_replace('/\D+/', '', $msisdn); $mode = $cfg['share_mode'];
     $label = $op === 'subscribe' ? 'Seddo '.$p['name'] : 'the number '.($p['other'] ?? '');
     if ($mode === 'off') return ['text' => 'Shared Bundle is not switched on yet. You were not charged.', 'note' => 'share: off'];
@@ -2882,7 +2884,7 @@ function ussd_share_execute(array $cfg, array $screen, string $msisdn, string $c
         if ($mode === 'test') { $status = 'test'; $text = 'TEST: '.($op === 'subscribe' ? 'you would be subscribed to '.$label : $label.' would be added').'. You were not charged.'; }
         elseif (trim((string)$cfg['share_body_'.$op]) === '') { $status = 'blocked'; $text = 'This part of Shared Bundle is not switched on yet. You were not charged.'; }
         else {
-            $r = ussd_share_http($cfg, $op, ['msisdn' => $msisdn, 'other' => $p['other'] ?? '', 'offer_code' => $p['offer_code'] ?? '', 'vendor' => $p['vendor'] ?? '', 'other_offer_code' => $p['other_offer_code'] ?? '', 'price' => $p['price'] ?? '', 'txn' => $callId]);
+            $r = ussd_share_http($cfg, $op, ['ctx' => $ctx, 'msisdn' => $msisdn, 'other' => $p['other'] ?? '', 'other_raw' => $p['other_raw'] ?? '', 'offer_code' => $p['offer_code'] ?? '', 'vendor' => $p['vendor'] ?? '', 'other_offer_code' => $p['other_offer_code'] ?? '', 'price' => $p['price'] ?? '', 'txn' => $callId]);
             $http = $r['code']; $resp = $r['error'] !== '' ? 'error: '.$r['error'] : mb_substr((string)$r['raw'], 0, 1000);
             $low = false; foreach (array_filter(array_map('trim', explode(',', (string)$cfg['purchase_lowbal']))) as $term) if (stripos((string)$r['raw'], $term) !== false) { $low = true; break; }
             $status = $r['ok'] ? 'ok' : ($low ? 'lowbal' : 'failed');
@@ -2978,11 +2980,17 @@ function ussd_result(string $text, bool $end, array $path, string $kind, ?array 
 // What Hera's /hera/VasOffers expects, copied from the request Mobius's own menu sends it (operation purchaseOffer).
 const USSD_PURCHASE_BODY = '{"callID":"{txn}","originalRequest":"{shortcode}","localAddress":{local_address_json},"remoteAddress":{remote_address_json},"msisdn":"{msisdn}","imsi":"{imsi}","localDialogID":{local_dialog_id},"remoteDialogID":{remote_dialog_id},"isMobileOriginated":true,"mobileRequestIdentifier":1,"isInitial":false,"isProxy":false,"chargesWithCurrency":"{price_d}","offerCode":"{offer_code}","vendor":"{vendor}","channel":"USSD","otherOfferCode":"{other_offer_code}","operation":"purchaseOffer"}';
 const USSD_PURCHASE_BODY_V2 = '{"callID":"{txn}","originalRequest":"{shortcode}","msisdn":"{msisdn}","isMobileOriginated":true,"mobileRequestIdentifier":1,"isInitial":false,"isProxy":false,"chargesWithCurrency":"{price_d}","offerCode":"{offer_code}","vendor":"{vendor}","channel":"USSD","otherOfferCode":"{other_offer_code}","operation":"purchaseOffer"}';
-const SHARE_BODY_READ = '{"callID":"{txn}","msisdn":"{msisdn}","channel":"USSD"}';
-// First guesses for the two calls that change an account, from the variable names in the Shared Bundle diagram
-// ({otherMsisdn}, the offer, its price). Not verified against Hera yet: try one subscribe and one add on a test number and read the reply.
-const SHARE_BODY_SUBSCRIBE = '{"callID":"{txn}","msisdn":"{msisdn}","offerCode":"{offer_code}","vendor":"{vendor}","chargesWithCurrency":"{price_d}","channel":"USSD"}';
-const SHARE_BODY_ADD = '{"callID":"{txn}","msisdn":"{msisdn}","otherMsisdn":"{other_msisdn}","channel":"USSD"}';
+const SHARE_CTX = '"callID":"{txn}","originalRequest":"{shortcode}","localAddress":{local_address_json},"remoteAddress":{remote_address_json},"msisdn":"{msisdn}","imsi":"{imsi}","localDialogID":{local_dialog_id},"remoteDialogID":{remote_dialog_id},"isMobileOriginated":true,"mobileRequestIdentifier":1,"isInitial":false,"isProxy":false';
+const SHARE_BODY_READ = '{'.SHARE_CTX.',"channel":"USSD"}';
+// Subscribe: a guess (Mobius's subscribe request has not been seen yet) built on the same shape; add number is copied from the Mobius log.
+const SHARE_BODY_SUBSCRIBE = '{'.SHARE_CTX.',"vendor":"{vendor}","channel":"USSD","chargesWithCurrency":"{price_d}","offerCode":"{offer_code}"}';
+const SHARE_BODY_ADD = '{'.SHARE_CTX.',"vendor":"huawei","channel":"USSD","otherMsisdn":"{other_msisdn}"}';
+// earlier defaults, replaced automatically when they were never edited
+const SHARE_OLD_DEFAULTS = [
+    '{"callID":"{txn}","msisdn":"{msisdn}","channel":"USSD"}',
+    '{"callID":"{txn}","msisdn":"{msisdn}","offerCode":"{offer_code}","vendor":"{vendor}","chargesWithCurrency":"{price_d}","channel":"USSD"}',
+    '{"callID":"{txn}","msisdn":"{msisdn}","otherMsisdn":"{other_msisdn}","channel":"USSD"}',
+];
 const USSD_PURCHASE_BODY_V1 = '{"msisdn":"{msisdn}","offer_code":"{offer_code}","transaction_id":"{txn}","channel":"USSD"}';
 const USSD_PROXY_DEFAULTS = [
     'enabled' => '0', 'token' => '', 'mode' => 'capture', 'allow_ips' => '',
@@ -3005,6 +3013,7 @@ function ussd_proxy_config(): array {
     try { foreach (portal_pdo()->query('SELECT name,value FROM ussd_proxy_config')->fetchAll() as $r) if (array_key_exists($r['name'], $cfg)) $cfg[$r['name']] = (string)$r['value']; }
     catch (Throwable $e) {}
     if (in_array($cfg['purchase_body'], [USSD_PURCHASE_BODY_V1, USSD_PURCHASE_BODY_V2], true)) $cfg['purchase_body'] = USSD_PURCHASE_BODY; // an earlier default, never edited
+    foreach (['share_body_subscribe' => SHARE_BODY_SUBSCRIBE, 'share_body_add' => SHARE_BODY_ADD, 'share_body_balance' => SHARE_BODY_READ, 'share_body_numbers' => SHARE_BODY_READ] as $k => $new) if (in_array($cfg[$k], SHARE_OLD_DEFAULTS, true)) $cfg[$k] = $new;
     return $cfg;
 }
 function ussd_proxy_set(array $vals): void {
@@ -3323,9 +3332,9 @@ function ussd_proxy_push_endpoint(array $cfg, array $flat, string $raw, array $g
                 $st->execute([$callId, $sc]); $row = $st->fetchColumn();
                 if ($row !== false) { $replies = json_decode((string)$row, true) ?: []; if ($typed !== '') $replies[] = $typed; } else $note = 'session not found - restarted from the first screen; ';
             }
-            $screen = ussd_screen($sc, array_slice($replies, -30), ['active'], null, ['seed' => $callId, 'msisdn' => $msisdn]);
+            $screen = ussd_screen($sc, array_slice($replies, -30), ['active'], null, ['seed' => $callId, 'msisdn' => $msisdn, 'ctx' => ussd_purchase_ctx($raw)]);
             ussd_quiz_record($screen, $msisdn, $callId);
-            if (in_array($screen['kind'] ?? '', ['share_subscribe', 'share_add'], true)) { $sr = ussd_share_execute($cfg, $screen, $msisdn, $callId); $screen['text'] = $sr['text']; $note .= $sr['note'].'; '; }
+            if (in_array($screen['kind'] ?? '', ['share_subscribe', 'share_add'], true)) { $sr = ussd_share_execute($cfg, $screen, $msisdn, $callId, ussd_purchase_ctx($raw)); $screen['text'] = $sr['text']; $note .= $sr['note'].'; '; }
             if ($screen['end']) $db->prepare('DELETE FROM ussd_proxy_sessions WHERE session_key=?')->execute([$callId]);
             else $db->prepare('REPLACE INTO ussd_proxy_sessions(session_key,shortcode,replies,updated_at) VALUES(?,?,?,NOW())')->execute([$callId, $sc, json_encode($replies)]);
             if (($screen['kind'] ?? '') === 'purchase') { $pr = ussd_execute_purchase($cfg, $screen, $msisdn, $callId, ussd_purchase_ctx($raw)); $screen['text'] = $pr['text']; $note .= $pr['note'].'; '; }
