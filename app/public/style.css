@@ -221,3 +221,15 @@ footer{text-align:center;padding:16px 0;background:#232323;color:#fff}
 .ussd-meta.text-danger{color:#ff8b8b!important}
 .ussd-phone .alert{background:#2b3844;color:#e8eef3;border:0}
 
+/* Menu Builder: the form shows only the fields that fit the chosen type (no JavaScript needed) */
+.nodeform .fld{display:none}
+.nodeform:has(#node_type option[value="menu"]:checked) .fld.t-menu,
+.nodeform:has(#node_type option[value="catalog"]:checked) .fld.t-catalog,
+.nodeform:has(#node_type option[value="offer"]:checked) .fld.t-offer,
+.nodeform:has(#node_type option[value="end"]:checked) .fld.t-end,
+.nodeform:has(#node_type option[value="recipient"]:checked) .fld.t-recipient,
+.nodeform:has(#node_type option[value="sharedbundle"]:checked) .fld.t-sharedbundle,
+.nodeform:has(#node_type option[value="quiz"]:checked) .fld.t-quiz,
+.nodeform:has(#node_type option[value="action"]:checked) .fld.t-action{display:block}
+@supports not selector(:has(*)){.nodeform .fld{display:block}}
+.menu-row:hover{background:rgba(0,0,0,.035);border-radius:6px}
