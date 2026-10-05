@@ -2835,6 +2835,16 @@ function ussd_share_http(array $cfg, string $op, array $p): array {
     $r['ok'] = $r['error'] === '' && $r['code'] >= 200 && $r['code'] < 300 && $code !== '' && $code === (string)$cfg['share_ok_code'];
     // a server error page ("status 500 …") is not something to show a customer: only a successful HTTP answer has text for them
     $r['text'] = ($r['error'] === '' && $r['code'] >= 200 && $r['code'] < 300) ? ussd_share_text($j, (string)$r['raw']) : '';
+    // Balance: Hera lists the bundles as result.package1, package2 … (empty ones blank): "Your Seddo bundle balance is:" and one line each
+    if ($op === 'balance' && $r['ok'] && is_array($j['result'] ?? null)) {
+        $text = 'Your Seddo bundle balance is:'; $any = false;
+        for ($i = 1; $i <= 9; $i++) {
+            $v = $j['result']['package'.$i] ?? ''; if (!is_string($v) || trim($v) === '') continue;
+            if (mb_strlen($text."\n".trim($v)) > 150) break; // one screen: drop what does not fit
+            $text .= "\n".trim($v); $any = true;
+        }
+        $r['text'] = $any ? $text : 'You have no active Seddo bundle balance.';
+    }
     return $r;
 }
 // What to show a customer from Hera's reply: its own description when it has one, otherwise the reply's values laid out as lines.
@@ -2890,7 +2900,8 @@ function ussd_share_execute(array $cfg, array $screen, string $msisdn, string $c
             $http = $r['code']; $resp = $r['error'] !== '' ? 'error: '.$r['error'] : mb_substr((string)$r['raw'], 0, 1000);
             $low = false; foreach (array_filter(array_map('trim', explode(',', (string)$cfg['purchase_lowbal']))) as $term) if (stripos((string)$r['raw'], $term) !== false) { $low = true; break; }
             $status = $r['ok'] ? 'ok' : ($low ? 'lowbal' : 'failed');
-            $text = $r['text'] !== '' ? $r['text'] : ($r['ok'] ? 'Done.' : ($low ? 'Sorry, your balance is too low. Please top up and try again.' : 'Sorry, this could not be completed. Please try again later.'));
+            // low balance gets a plain message; any other refusal shows Hera's own reason when it gave one
+            $text = $low ? 'Sorry, your balance is too low for this bundle. Please top up and try again.' : ($r['text'] !== '' ? $r['text'] : ($r['ok'] ? 'Done.' : 'Sorry, this could not be completed. Please try again later.'));
         }
         $db->prepare('UPDATE ussd_purchases SET status=?, http_code=?, response=?, reply_text=?, ms=? WHERE id=?')->execute([$status, $http, $resp, mb_substr($text, 0, 255), (int)round((microtime(true) - $t0) * 1000), $id]);
         return ['text' => $text, 'note' => 'share: '.$op.' '.$mode.' '.$status.($http ? ' HTTP '.$http : '')];
