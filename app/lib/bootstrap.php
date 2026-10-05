@@ -2831,7 +2831,8 @@ function ussd_share_http(array $cfg, string $op, array $p): array {
     $j = json_decode((string)$r['raw'], true); $res = is_array($j) && is_array($j['result'] ?? null) ? $j['result'] : [];
     $code = isset($res['resultCode']) ? (string)$res['resultCode'] : (isset($j['resultCode']) ? ($j['resultCode'] === '000' ? $cfg['share_ok_code'] : (string)$j['resultCode']) : '');
     $r['ok'] = $r['error'] === '' && $r['code'] >= 200 && $r['code'] < 300 && $code !== '' && $code === (string)$cfg['share_ok_code'];
-    $r['text'] = ussd_share_text($j, (string)$r['raw']);
+    // a server error page ("status 500 …") is not something to show a customer: only a successful HTTP answer has text for them
+    $r['text'] = ($r['error'] === '' && $r['code'] >= 200 && $r['code'] < 300) ? ussd_share_text($j, (string)$r['raw']) : '';
     return $r;
 }
 // What to show a customer from Hera's reply: its own description when it has one, otherwise the reply's values laid out as lines.
