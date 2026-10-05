@@ -2904,7 +2904,6 @@ function save_share_config(array $d): void {
         $t = trim((string)($d['share_body_'.$op] ?? '')); if (mb_strlen($t) > 2000) throw new RuntimeException('A request body is at most 2000 characters.');
         $vals['share_body_'.$op] = $t;
     }
-    if ($mode === 'live' && $vals['share_body_subscribe'] === '' && $vals['share_body_add'] === '') throw new RuntimeException('Live needs at least the subscribe or the add-number request body. Use Test mode until you have them.');
     ussd_proxy_set($vals);
     audit('ussd_share_save', null, 'ussd_proxy_config', null, 'mode='.$mode.' base='.parse_url($base, PHP_URL_HOST));
 }
@@ -2979,6 +2978,10 @@ function ussd_result(string $text, bool $end, array $path, string $kind, ?array 
 const USSD_PURCHASE_BODY = '{"callID":"{txn}","originalRequest":"{shortcode}","localAddress":{local_address_json},"remoteAddress":{remote_address_json},"msisdn":"{msisdn}","imsi":"{imsi}","localDialogID":{local_dialog_id},"remoteDialogID":{remote_dialog_id},"isMobileOriginated":true,"mobileRequestIdentifier":1,"isInitial":false,"isProxy":false,"chargesWithCurrency":"{price_d}","offerCode":"{offer_code}","vendor":"{vendor}","channel":"USSD","otherOfferCode":"{other_offer_code}","operation":"purchaseOffer"}';
 const USSD_PURCHASE_BODY_V2 = '{"callID":"{txn}","originalRequest":"{shortcode}","msisdn":"{msisdn}","isMobileOriginated":true,"mobileRequestIdentifier":1,"isInitial":false,"isProxy":false,"chargesWithCurrency":"{price_d}","offerCode":"{offer_code}","vendor":"{vendor}","channel":"USSD","otherOfferCode":"{other_offer_code}","operation":"purchaseOffer"}';
 const SHARE_BODY_READ = '{"callID":"{txn}","msisdn":"{msisdn}","channel":"USSD"}';
+// First guesses for the two calls that change an account, from the variable names in the Shared Bundle diagram
+// ({otherMsisdn}, the offer, its price). Not verified against Hera yet: try one subscribe and one add on a test number and read the reply.
+const SHARE_BODY_SUBSCRIBE = '{"callID":"{txn}","msisdn":"{msisdn}","offerCode":"{offer_code}","vendor":"{vendor}","chargesWithCurrency":"{price_d}","channel":"USSD"}';
+const SHARE_BODY_ADD = '{"callID":"{txn}","msisdn":"{msisdn}","otherMsisdn":"{other_msisdn}","channel":"USSD"}';
 const USSD_PURCHASE_BODY_V1 = '{"msisdn":"{msisdn}","offer_code":"{offer_code}","transaction_id":"{txn}","channel":"USSD"}';
 const USSD_PROXY_DEFAULTS = [
     'enabled' => '0', 'token' => '', 'mode' => 'capture', 'allow_ips' => '',
@@ -2994,7 +2997,7 @@ const USSD_PROXY_DEFAULTS = [
     'purchase_auth' => '', 'purchase_ok_match' => '', 'purchase_timeout' => '8', 'purchase_lowbal' => 'insufficient,low balance,not enough', 'purchase_reply_field' => '', 'purchase_body_other' => '',
     // Shared Bundle (Seddo)
     'share_mode' => 'test', 'share_base' => 'https://vas-testing.comium.gm/hera/prepaid/ShareBundle/', 'share_ok_code' => '0',
-    'share_body_subscribe' => '', 'share_body_validate' => '', 'share_body_add' => '', 'share_body_balance' => SHARE_BODY_READ, 'share_body_numbers' => SHARE_BODY_READ,
+    'share_body_subscribe' => SHARE_BODY_SUBSCRIBE, 'share_body_validate' => '', 'share_body_add' => SHARE_BODY_ADD, 'share_body_balance' => SHARE_BODY_READ, 'share_body_numbers' => SHARE_BODY_READ,
 ];
 function ussd_proxy_config(): array {
     $cfg = USSD_PROXY_DEFAULTS;
