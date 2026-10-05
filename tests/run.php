@@ -111,15 +111,18 @@ t('offers: confirm before buying, cancel, unavailable', function () use ($eng) {
     eq($eng(['1', '2', '2'])['kind'], 'cancel', 'cancel buys nothing'); has($eng(['1', '2', '0'])['text'], 'Bundles', 'back from confirm returns to the list');
     eq($eng(['1', '4'])['kind'], 'offer_unavailable', 'an inactive offer is not for sale');
 });
+t('customers never see the 220 country code', function () {
+    eq(ussd_local_number('220866520934'), '866520934', 'the country code is dropped'); eq(ussd_local_number('866520934'), '866520934', 'a local number is left alone'); eq(ussd_local_number('+220 866 520 934'), '866520934', 'whatever the format'); eq(ussd_quiz_mask('220866000001'), '866***001', 'the leaderboard shows local digits');
+});
 t('buy for another number', function () use ($eng, $nodes) {
     eq($eng(['3'])['kind'], 'recipient', 'asks for the number'); has($eng(['3', 'abc'])['text'], 'Invalid number.', 'refuses rubbish');
-    $m = $eng(['3', '866520934']); has($m['text'], 'Buy for 220866520934:', 'then the menu again'); lacks($m['text'], 'Buy for other', 'without the buy-for-other item'); lacks($m['text'], 'Help', 'and without messages, which sell nothing'); has($m['text'], '1. Bundles', 'with the part that sells');
+    $m = $eng(['3', '866520934']); has($m['text'], 'Buy for 866520934:', 'then the menu again (without the 220 country code)'); lacks($m['text'], 'Buy for other', 'without the buy-for-other item'); lacks($m['text'], 'Help', 'and without messages, which sell nothing'); has($m['text'], '1. Bundles', 'with the part that sells');
     // only what can really be bought for someone else is shown: offers that have an "other" code
     $l = $eng(['3', '866520934', '1'])['text']; has($l, '1. Alpha', 'an offer with an "other" code is listed'); has($l, '2. Cat A', 'a list holding at least one such offer is listed');
     lacks($l, 'Cat B', 'a list whose offers have no "other" code is not shown'); lacks($l, 'Same name', '(nor this one)'); lacks($l, 'Gone', 'an offer that is switched off is not shown'); lacks($l, 'Beta', 'an offer with no "other" code is not shown');
     $a = $eng(['3', '866520934', '1', '2'])['text']; has($a, 'ZT Alpha', 'inside a list: offers with an "other" code'); lacks($a, 'ZT Beta', 'and not the ones without');
     $p = $eng(['3', '866520934', '1', '1', '1']); eq($p['kind'], 'purchase', 'buying works'); eq($p['purchase']['recipient'], '220866520934', 'the purchase carries the other number'); eq($p['purchase']['recipient_raw'], '866520934', 'and the digits exactly as typed (Hera wants them that way)');
-    has($eng(['3', '866520934', '1', '1'])['text'], 'for 220866520934?', 'the confirm screen says who it is for'); has($eng(['3', '866520934', '0'])['text'], '1. Bundles', 'back leaves it again');
+    has($eng(['3', '866520934', '1', '1'])['text'], 'for 866520934?', 'the confirm screen says who it is for, without the 220'); has($eng(['3', '866520934', '0'])['text'], '1. Bundles', 'back leaves it again');
     // for yourself nothing is hidden
     $self = $eng(['1'])['text']; foreach (['Cat B', 'Alpha', 'Same name', 'Cat A', 'Beta'] as $x) has($self, $x, 'for yourself "'.$x.'" is listed'); eq($eng(['1', '6'])['kind'], 'confirm', 'and the offer without an "other" code can be bought for yourself');
     // nothing sellable for others: say so instead of an empty screen
@@ -194,7 +197,7 @@ t('quiz: set-up, deterministic games, scoring, replay, record', function () use 
     $lose = screen('*ZT4#', ['2', '1', '2', '2', '2'], $hk); has($lose['text'], 'Score 0/3', 'all wrong'); lacks($lose['text'], 'You win!', 'no winner message'); has($lose['text'], 'Wrong. Answer was 1.', 'says which was right');
     has(screen('*ZT4#', ['2', '1', '1', '1', '1', '1'], $hk)['text'], 'Q1/3:', 'play again starts a new round'); has(screen('*ZT4#', ['2', '1', '9'], $hk)['text'], 'Invalid choice.', 'an invalid answer is refused');
     ussd_quiz_record($win, '220866000001', 'ZT-call-1'); ussd_quiz_record($win, '220866000001', 'ZT-call-1'); eq((int)$db->query("SELECT COUNT(*) FROM ussd_quiz_plays WHERE call_id='ZT-call-1'")->fetchColumn(), 1, 'a round is recorded once however often it is repeated');
-    has(screen('*ZT4#', ['2', '2'], $hk)['text'], 'Top players this week', 'leaderboard'); has(screen('*ZT4#', ['2', '2'], $hk)['text'], '220***001', 'with numbers masked');
+    has(screen('*ZT4#', ['2', '2'], $hk)['text'], 'Top players this week', 'leaderboard'); has(screen('*ZT4#', ['2', '2'], $hk)['text'], '866***001', 'with numbers masked and no 220');
 });
 
 // ------------------------------------------------------------------ purchases against the stand-in Hera
@@ -247,12 +250,12 @@ t('the service flow (simulated answers)', function () {
     eq($v(['2'])['text'], "Shared Bundle\n1. Buy Shared Bundle\n2. Add Sharing Number\n3. My Account\n0. Exit", 'service menu');
     has($v(['2', '1'])['text'], 'Press 1 to subscribe to Seddo 12GB Seddo for D600, valid for 30 days, or press 0 to return to the menu.', 'buy: the confirm text from the diagram');
     eq($v(['2', '1', '1'])['kind'], 'share_subscribe', 'confirming subscribes'); has($v(['2', '1', '0'])['text'], '3. My Account', '0 goes back one step'); has($v(['2', '1', '0', '0'])['text'], 'Special', 'and out of the service');
-    has($v(['2', '2'])['text'], 'Enter the beneficiary Seddo number:', 'add number: asks for it'); has($v(['2', '2', 'abc'])['text'], 'Invalid number.', 'refuses rubbish'); has($v(['2', '2', '866671144'])['text'], 'Seddo number 220866671144 is correct', 'asks to confirm'); $a = $v(['2', '2', '866671144', '1']); eq($a['kind'], 'share_add', 'confirming adds'); eq($a['share']['other_raw'], '866671144', 'keeping the digits as typed for Hera');
+    has($v(['2', '2'])['text'], 'Enter the beneficiary Seddo number:', 'add number: asks for it'); has($v(['2', '2', 'abc'])['text'], 'Invalid number.', 'refuses rubbish'); has($v(['2', '2', '866671144'])['text'], 'Seddo number 866671144 is correct', 'asks to confirm'); $a = $v(['2', '2', '866671144', '1']); eq($a['kind'], 'share_add', 'confirming adds'); eq($a['share']['other_raw'], '866671144', 'keeping the digits as typed for Hera');
     has($v(['2', '3'])['text'], '1. Check Balance', 'account menu'); has($v(['2', '3', '1'])['text'], 'Your Seddo bundle balance is:', 'balance'); has($v(['2', '3', '2'])['text'], 'My Seddo numbers:', 'numbers');
 });
 t('balance and numbers read from Hera', function () use ($cfgS, $stub) {
     $b = ussd_share_http($cfgS('ok'), 'balance', ['msisdn' => '220866000001', 'txn' => 'ZT-b']); ok($b['ok'], 'balance succeeded'); eq($b['text'], "Your Seddo bundle balance is:\nPackage Free Data remains 482.20MB expires on 19/10/26\nPackage Free Data remains 56.97MB expires on 11/10/26", 'one line per bundle, empty ones left out'); ok(mb_strlen($b['text']) < 150, 'fits a screen');
-    $n = ussd_share_http($cfgS('ok'), 'numbers', ['msisdn' => '220866000001', 'txn' => 'ZT-n']); eq($n['text'], "1. 220866111222 - 3GB\n2. 220866333444 - 2GB", 'numbers as "order number separator limit"'); eq(ussd_share_http($cfgS('empty'), 'numbers', ['msisdn' => '1', 'txn' => 't'])['text'], "You don't have Seddo number", 'no numbers says so');
+    $n = ussd_share_http($cfgS('ok'), 'numbers', ['msisdn' => '220866000001', 'txn' => 'ZT-n']); eq($n['text'], "1. 866111222 - 3GB\n2. 866333444 - 2GB", 'numbers as "order number separator limit"'); eq(ussd_share_http($cfgS('empty'), 'numbers', ['msisdn' => '1', 'txn' => 't'])['text'], "You don't have Seddo number", 'no numbers says so');
     eq(ussd_share_http($cfgS('err500'), 'balance', ['msisdn' => '1', 'txn' => 't'])['text'], '', 'a server error gives no text for the customer');
 });
 t('subscribe and add number: real shapes, honest answers, once', function () use ($cfgS, $sctx, $lastBody, $db) {

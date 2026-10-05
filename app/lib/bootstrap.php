@@ -2622,6 +2622,11 @@ function ussd_allowed_for_other(array $n, array $kids, callable $offerLookup, ca
     if ($key !== '') $memo[$key] = $r;
     return $r;
 }
+// A number as a customer reads it on a phone screen: without the 220 country code.
+function ussd_local_number(string $n): string {
+    $d = preg_replace('/\D+/', '', $n);
+    return (str_starts_with($d, '220') && strlen($d) >= 10) ? substr($d, 3) : $d;
+}
 // A number typed for "Buy for another number": 7 or 9 digits get the country code, 220… is kept; anything else is refused.
 function ussd_normalize_msisdn(string $s): ?string {
     $d = preg_replace('/\D+/', '', $s);
@@ -2790,7 +2795,7 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
     }
     if ($confirm !== null) {
         [$pick, $o, $name] = $confirm;
-        $line = 'Buy '.$name.(($o['one_time_price'] ?? '') !== '' ? ' - D'.$o['one_time_price'] : '').(!empty($o['validity_amount']) ? ' / '.$o['validity_amount'].' days' : '').($recipient ? ' for '.$recipient : '').'?';
+        $line = 'Buy '.$name.(($o['one_time_price'] ?? '') !== '' ? ' - D'.$o['one_time_price'] : '').(!empty($o['validity_amount']) ? ' / '.$o['validity_amount'].' days' : '').($recipient ? ' for '.ussd_local_number($recipient) : '').'?';
         return ussd_result(($note ? $note."\n" : '').$line."\n1. Confirm\n2. Cancel\n0. Back", false, $path, 'confirm', $pick);
     }
     if ($cur && $cur['node_type'] === 'recipient' && $recipient === null) return ussd_result(($note ? $note."\n" : '')."Enter the other phone number:\n0. Back", false, $path, 'recipient', $cur);
@@ -2807,7 +2812,7 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
             $L[] = 'Press 1 to subscribe to Seddo '.$nm.(($row['one_time_price'] ?? '') !== '' ? ' for D'.$row['one_time_price'] : '').(!empty($row['validity_amount']) ? ', valid for '.$row['validity_amount'].' days' : '').', or press 0 to return to the menu.';
             return ussd_result(implode("\n", $L), false, $path, 'sharedbundle', $cur); }
         if ($ph === 'num') return ussd_result(implode("\n", array_merge($L, ['Enter the beneficiary Seddo number:', '0. Back'])), false, $path, 'sharedbundle', $cur);
-        if ($ph === 'numconfirm') return ussd_result(implode("\n", array_merge($L, ['Please confirm that your Seddo number '.$sb['number'].' is correct. Press 1 to confirm or press 0 to return.'])), false, $path, 'sharedbundle', $cur);
+        if ($ph === 'numconfirm') return ussd_result(implode("\n", array_merge($L, ['Please confirm that your Seddo number '.ussd_local_number($sb['number']).' is correct. Press 1 to confirm or press 0 to return.'])), false, $path, 'sharedbundle', $cur);
         if ($ph === 'account') return ussd_result(implode("\n", array_merge($L, ['My Account', '1. Check Balance', '2. My Seddo Numbers', '0. Back'])), false, $path, 'sharedbundle', $cur);
         return ussd_result(implode("\n", array_merge($L, [$sb['text'], '0. Back'])), false, $path, 'sharedbundle', $cur);
     }
@@ -2834,7 +2839,7 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
         return ussd_result(implode("\n", array_merge($L, ['This game is not available right now.', '0. Back'])), false, $path, 'quiz', $cur);
     }
     [$options, $more] = $current();
-    $lines = [$cur ? (($cur['node_type'] === 'recipient') ? 'Buy for '.$recipient.':' : (trim((string)($cur['body_text'] ?? '')) !== '' ? $cur['body_text'] : $cur['prompt_text'])) : 'Welcome'];
+    $lines = [$cur ? (($cur['node_type'] === 'recipient') ? 'Buy for '.ussd_local_number($recipient).':' : (trim((string)($cur['body_text'] ?? '')) !== '' ? $cur['body_text'] : $cur['prompt_text'])) : 'Welcome'];
     if ($note) array_unshift($lines, $note);
     foreach ($options as $i => $o) $lines[] = ($i + 1).'. '.$o['prompt_text'];
     if ($cur && $cur['node_type'] === 'catalog' && !$options) $lines[] = 'No offers are available right now.';
@@ -2882,7 +2887,7 @@ function ussd_quiz_questions(string $key, string $seed, int $round, int $n): arr
     }
     return $out;
 }
-function ussd_quiz_mask(string $msisdn): string { return strlen($msisdn) > 6 ? substr($msisdn, 0, 3).'***'.substr($msisdn, -3) : '***'; }
+function ussd_quiz_mask(string $msisdn): string { $d = ussd_local_number($msisdn); return strlen($d) > 6 ? substr($d, 0, 3).'***'.substr($d, -3) : '***'; }
 function ussd_quiz_top(string $key): string {
     try {
         ussd_quiz_tables();
@@ -3065,7 +3070,7 @@ function ussd_execute_purchase(array $cfg, array $screen, string $msisdn, string
             return ['text' => ($prev && $prev['reply_text']) ? $prev['reply_text'] : 'Your request is already being processed.', 'note' => 'purchase: repeated request, not sent again'];
         }
         $id = (int)$db->lastInsertId(); $httpCode = null; $resp = null; $sent = null;
-        if ($mode === 'test') { $status = 'test'; $text = 'TEST: '.$p['name'].' would be bought for '.($recipient !== '' ? $recipient.' (from '.$msisdn.')' : $msisdn).'. You were not charged.'; }
+        if ($mode === 'test') { $status = 'test'; $text = 'TEST: '.$p['name'].' would be bought for '.($recipient !== '' ? ussd_local_number($recipient).' (from '.ussd_local_number($msisdn).')' : ussd_local_number($msisdn)).'. You were not charged.'; }
         elseif ($mode === 'test_low') { $status = 'lowbal'; $text = $lowText; }
         elseif ($recipient !== '' && trim((string)$cfg['purchase_body_other']) === '') { $status = 'blocked'; $text = 'Buying for another number is not switched on yet. You were not charged.'; }
         else {
@@ -3104,7 +3109,7 @@ function ussd_share_sim(string $op, array $p): array {
     return match ($op) {
         'validate' => ['ok' => true, 'text' => ''],
         'balance' => ['ok' => true, 'text' => "Your Seddo bundle balance is:\n12GB data\n1200 mins, 1200 SMS (TEST)"],
-        'numbers' => ['ok' => true, 'text' => "My Seddo numbers:\n1. 220***111\n2. 220***222 (TEST)"],
+        'numbers' => ['ok' => true, 'text' => "My Seddo numbers:\n1. 866***111\n2. 866***222 (TEST)"],
         default => ['ok' => true, 'text' => 'TEST'],
     };
 }
@@ -3138,7 +3143,7 @@ function ussd_share_http(array $cfg, string $op, array $p): array {
         $lines = [];
         for ($i = 1; $i <= 9; $i++) {
             $row = $j['result']['msisdn'.$i] ?? null; if (!is_array($row)) continue;
-            $line = trim(implode(' ', array_filter(array_map(fn($k) => trim((string)($row[$k] ?? '')), ['order', 'msisdn', 'separator1', 'limit']), fn($v) => $v !== '')));
+            $line = trim(implode(' ', array_filter(array_map(fn($k) => $k === 'msisdn' ? ussd_local_number((string)($row[$k] ?? '')) : trim((string)($row[$k] ?? '')), ['order', 'msisdn', 'separator1', 'limit']), fn($v) => $v !== '')));
             if ($line === '') continue;
             if (mb_strlen(implode("\n", array_merge($lines, [$line]))) > 150) break;
             $lines[] = $line;
@@ -3183,7 +3188,7 @@ function ussd_share_read(string $op, array $p): array {
 // subscribe / add number: carried out once per call (same ledger as purchases, so it shows in the same table).
 function ussd_share_execute(array $cfg, array $screen, string $msisdn, string $callId, array $ctx = []): array {
     $p = $screen['share']; $op = $p['op']; $msisdn = preg_replace('/\D+/', '', $msisdn); $mode = $cfg['share_mode'];
-    $label = $op === 'subscribe' ? 'Seddo '.$p['name'] : 'the number '.($p['other'] ?? '');
+    $label = $op === 'subscribe' ? 'Seddo '.$p['name'] : 'the number '.ussd_local_number((string)($p['other'] ?? ''));
     if ($mode === 'off') return ['text' => 'Shared Bundle is not switched on yet. You were not charged.', 'note' => 'share: off'];
     if ($msisdn === '') return ['text' => 'Sorry, we could not process this request. You were not charged.', 'note' => 'share: no number'];
     $key = $op === 'subscribe' ? 'share:sub:'.$p['offer_code'] : 'share:add:'.$p['other']; $t0 = microtime(true);
