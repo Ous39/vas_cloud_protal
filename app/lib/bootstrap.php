@@ -579,9 +579,14 @@ const LOGIN_LOCKOUT_MINUTES = 15;
 function ip_is_internal(string $ip): bool {
     return filter_var($ip, FILTER_VALIDATE_IP) !== false && filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false;
 }
-function client_ip(): string {
+// $person = true: the person behind the proxies (skips trailing private/loopback entries, which are proxies in front of the ingress);
+// false: the last entry as it is, which is what the USSD allow-list compares (Mobius itself has a private address).
+function client_ip(bool $person = true): string {
     $remote = (string)($_SERVER['REMOTE_ADDR'] ?? ''); $xff = trim((string)($_SERVER['HTTP_X_FORWARDED_FOR'] ?? ''));
-    if ($xff !== '' && ip_is_internal($remote)) { $last = trim(substr($xff, strrpos(',' . $xff, ','))); if (filter_var($last, FILTER_VALIDATE_IP) !== false) return $last; }
+    if ($xff !== '' && ip_is_internal($remote)) {
+        $parts = array_values(array_filter(array_map('trim', explode(',', $xff)), fn($x) => filter_var($x, FILTER_VALIDATE_IP) !== false));
+        if ($parts) { if ($person) foreach (array_reverse($parts) as $ip) if (!ip_is_internal($ip)) return $ip; return end($parts); }
+    }
     return substr($remote !== '' ? $remote : 'unknown', 0, 80);
 }
 
@@ -595,6 +600,9 @@ function is_login_locked_out(string $username): bool {
         $st->execute([$username]);
         if ((int)$st->fetch()['c'] >= LOGIN_MAX_ATTEMPTS) return true;
         $st = portal_pdo()->prepare('SELECT COUNT(*) c FROM login_attempts WHERE ip_address=? AND success=0 AND created_at > (NOW() - INTERVAL ' . LOGIN_LOCKOUT_MINUTES . ' MINUTE)');
+        // When every caller shows the same private/loopback address (the proxy in front hides the real one) a per-address rule would lock everybody
+        // out because of one person, so then only the per-username rule applies.
+        if (ip_is_internal(client_ip())) return false;
         $st->execute([client_ip()]);
         return (int)$st->fetch()['c'] >= (LOGIN_MAX_ATTEMPTS * 4);
     } catch (Throwable $e) { return false; }
@@ -3784,7 +3792,7 @@ function ussd_proxy_push_endpoint(array $cfg, array $flat, string $raw, array $g
 function ussd_proxy_endpoint(): never {
     $t0 = microtime(true); $cfg = ussd_proxy_config();
     $mode = ['proxy' => 'proxy', 'ms' => 'ms_initiated', 'ms_initiated' => 'ms_initiated'][(string)($_GET['m'] ?? '')] ?? null;
-    $ip = client_ip();
+    $ip = client_ip(false);
     $ok = $cfg['enabled'] === '1' && $cfg['token'] !== '' && hash_equals($cfg['token'], (string)($_GET['t'] ?? '')) && $mode !== null;
     try { $ok = $ok && ussd_proxy_ip_allowed($cfg['allow_ips'], $ip); } catch (Throwable $e) { $ok = false; }
     if (!$ok) { http_response_code(404); header('Content-Type: text/plain'); exit('Not found'); }

@@ -406,6 +406,7 @@ t('the caller address behind the ingress', function () {
     $save = [$_SERVER['REMOTE_ADDR'] ?? null, $_SERVER['HTTP_X_FORWARDED_FOR'] ?? null]; $set = function ($r, $x) { $_SERVER['REMOTE_ADDR'] = $r; if ($x === null) unset($_SERVER['HTTP_X_FORWARDED_FOR']); else $_SERVER['HTTP_X_FORWARDED_FOR'] = $x; };
     $set('10.42.0.7', '41.1.2.3'); eq(client_ip(), '41.1.2.3', 'from the ingress: the address it saw');
     $set('10.42.0.7', '6.6.6.6, 41.1.2.3'); eq(client_ip(), '41.1.2.3', 'a forged first entry is ignored: the last one is the proxy\'s');
+    $set('10.42.0.7', '41.1.2.3, 127.0.0.1'); eq(client_ip(), '41.1.2.3', 'proxies in front of the ingress are skipped'); eq(client_ip(false), '127.0.0.1', 'the allow-list view keeps the last entry'); $set('10.42.0.7', '127.0.0.1'); eq(client_ip(), '127.0.0.1', 'only a proxy address: that is all there is');
     $set('41.9.9.9', '1.1.1.1'); eq(client_ip(), '41.9.9.9', 'straight from a public address the header is ignored');
     $set('10.42.0.7', 'not-an-ip'); eq(client_ip(), '10.42.0.7', 'rubbish in the header is ignored'); $set('10.42.0.7', null); eq(client_ip(), '10.42.0.7', 'no header: the connection address');
     ok(ip_is_internal('192.168.164.150') && ip_is_internal('127.0.0.1') && !ip_is_internal('8.8.8.8') && !ip_is_internal('x'), 'private and loopback addresses count as the proxy');
