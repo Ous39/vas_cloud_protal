@@ -504,6 +504,14 @@ t('the balance flow asks Hera Balance / Status and the look-up is recorded', fun
     $db->exec("DELETE FROM ussd_connections WHERE conn_key='hera_balance'");
 });
 
+t('a code that is only one service opens it straight away', function () use ($db) {
+    save_flow(['flow_key' => 'zt_one', 'title' => 'ZT One']); flow_save_def('zt_one', ['start' => 'ask', 'steps' => ['ask' => ['type' => 'choices', 'text' => 'Pick', 'options' => [['label' => 'Say hello', 'next' => 'hi']]], 'hi' => ['type' => 'message', 'text' => 'Hello flow']]], 'test');
+    menu_quick_add('*ZT12#', null, "Pick one | flow | zt_one", 'active');
+    eq(screen('*ZT12#', [])['text'], "Pick\n1. Say hello\n0. Back", 'the flow is the first screen, not a list with one line'); eq(screen('*ZT12#', ['1'])['text'], 'Hello flow', 'and it carries on from there (no hidden "1" for the customer to type)');
+    has(screen('*ZT12#', ['0'])['text'], '1. Pick one', 'Back at the first screen of the flow leaves it, for the menu');
+    menu_quick_add('*ZT13#', null, "Pick one | flow | zt_one\nSecond | end | Second item", 'active'); has(screen('*ZT13#', [])['text'], "1. Pick one\n2. Second", 'two items stay a list');
+});
+
 // ------------------------------------------------------------------ summary
 $cleanup();
 echo "\n".($fail === 0 ? "ALL PASSED" : "FAILED")."  —  $pass tests ok".($fail ? ", $fail check(s) failed:\n  - ".implode("\n  - ", array_slice($failures, 0, 40)) : '')."\n";

@@ -2838,6 +2838,9 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
     // otherwise the root nodes themselves are the options under a plain header.
     $roots = $kids[0] ?? [];
     $cur = (count($roots) === 1 && $roots[0]['node_type'] === 'menu' && !empty($kids[(int)$roots[0]['id']])) ? $roots[0] : null;
+    // A short code that is nothing but one service (a single flow or action item, e.g. a code that only checks the balance) opens it straight away
+    // instead of showing a list with one line — the same as the customer pressing 1.
+    if (!$cur && count($roots) === 1 && in_array($roots[0]['node_type'], ['flow', 'action'], true)) array_unshift($replies, '1'); // every rebuild of the screen starts from it
     $trail = [$cur]; $path = []; $note = null; $page = 0;
     $recipient = null; $recipientRaw = ''; // the other number, once typed under a "Buy for another number" item (normalised, and as typed)
     // A quiz node plays a round entirely from the replies: the questions are picked deterministically from the call id
