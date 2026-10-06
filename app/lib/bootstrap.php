@@ -2648,6 +2648,29 @@ function ussd_flow_hooks(array $fl, array $hooks, string $shortCode): array {
     $seed = (string)($hooks['seed'] ?? ''); $ctx = (array)($hooks['ctx'] ?? []);
     return $h + ['call' => flow_stored_hook($fl['flow_key'], $seed), 'lookup' => flow_lookup_hook($fl, $ctx, $seed, $shortCode)];
 }
+// Direct codes: dialling "<short code>*2*1#" is the same as dialling the short code and then typing 2 and 1. Given the string that
+// was dialled and the short codes that have a menu, returns [short code, [the digits to type for the customer]] — or null when
+// the string is not one of our codes. An exact short code wins; otherwise the longest short code it starts with.
+function ussd_resolve_dialled(string $dialled, array $known): ?array {
+    $d = trim($dialled); if ($d === '') return null;
+    if (in_array($d, $known, true)) return [$d, []];
+    $bare = rtrim($d, '#'); $best = null;
+    foreach ($known as $k) { $kb = rtrim((string)$k, '#'); if ($kb !== '' && str_starts_with($bare, $kb.'*') && ($best === null || strlen($kb) > strlen(rtrim($best, '#')))) $best = (string)$k; }
+    if ($best === null) return null;
+    $rest = substr($bare, strlen(rtrim($best, '#')) + 1); $extras = array_values(array_filter(explode('*', $rest), fn($x) => $x !== ''));
+    foreach ($extras as $x) if (!ctype_digit($x)) return null; // only digits are shortcuts
+    return [$best, array_slice($extras, 0, 8)];
+}
+// The direct code of every fixed item of a menu, e.g. [id => "*9606*9090*2*1#"], numbered the way customers see them (Active items only).
+function menu_direct_codes(string $code): array {
+    $kids = []; foreach (menu_nodes_flat($code) as $n) if ($n['status'] === 'active') $kids[$n['parent_id'] === null ? 0 : (int)$n['parent_id']][] = $n;
+    $roots = $kids[0] ?? []; $top = (count($roots) === 1 && $roots[0]['node_type'] === 'menu' && !empty($kids[(int)$roots[0]['id']])) ? $kids[(int)$roots[0]['id']] : $roots;
+    $out = []; $base = rtrim($code, '#');
+    $walk = function (array $nodes, array $path) use (&$walk, &$out, $kids, $base) {
+        foreach (array_values($nodes) as $i => $n) { $p = array_merge($path, [$i + 1]); $out[(int)$n['id']] = $base.'*'.implode('*', $p).'#'; if ($n['node_type'] === 'menu' && !empty($kids[(int)$n['id']]) && count($p) < 6) $walk($kids[(int)$n['id']], $p); }
+    };
+    $walk($top, []); return $out;
+}
 // A number as a customer reads it on a phone screen: without the 220 country code.
 function ussd_local_number(string $n): string {
     $d = preg_replace('/\D+/', '', $n);
@@ -3682,19 +3705,21 @@ function ussd_proxy_push_endpoint(array $cfg, array $flat, string $raw, array $g
     $note = ''; $text = null; $complete = false; $sc = $cfg['shortcode_proxy'];
     // Serve whichever short code was dialled, as long as it has a menu in the Menu Builder; the code saved on the
     // USSD Proxy page is only the fallback. So several PROXY menus in Mobius can share this one address.
-    $dialled = trim((string)($flat['originalRequest'] ?? ''));
-    try { if ($dialled !== '' && $dialled !== $sc && in_array($dialled, menu_shortcodes(), true)) { $sc = $dialled; $cfg['shortcode_proxy'] = $sc; } } catch (Throwable $e) {}
+    // A direct code such as *9606*9090*2*1# is the short code followed by the choices to make: the extra digits are typed for the customer.
+    $dialled = trim((string)($flat['originalRequest'] ?? '')); $extras = [];
+    try { $res = ussd_resolve_dialled($dialled, menu_shortcodes()); if ($res) { [$dc, $extras] = $res; if ($dc !== $sc) { $sc = $dc; $cfg['shortcode_proxy'] = $sc; } } } catch (Throwable $e) {}
     try {
         $db = portal_pdo();
         if ($callId === '') $note = 'no callID in request';
         elseif ($ended && $typed === '') { $db->prepare('DELETE FROM ussd_proxy_sessions WHERE session_key=?')->execute([$callId]); $note = 'dialog finished (nothing to send)'; }
         else {
-            $replies = [];
+            $replies = []; $fresh = $initial;
             if (!$initial) {
                 $st = $db->prepare('SELECT replies FROM ussd_proxy_sessions WHERE session_key=? AND shortcode=? AND updated_at >= NOW() - INTERVAL '.(int)$cfg['session_ttl'].' SECOND');
                 $st->execute([$callId, $sc]); $row = $st->fetchColumn();
-                if ($row !== false) { $replies = json_decode((string)$row, true) ?: []; if ($typed !== '') $replies[] = $typed; } else $note = 'session not found - restarted from the first screen; ';
+                if ($row !== false) { $replies = json_decode((string)$row, true) ?: []; if ($typed !== '') $replies[] = $typed; } else { $fresh = true; $note = 'session not found - restarted from the first screen; '; }
             }
+            if ($fresh && $extras) { $replies = $extras; $note .= 'direct code: '.implode('*', $extras).'; '; }
             $hk = ['seed' => $callId, 'msisdn' => $msisdn, 'ctx' => ussd_purchase_ctx($raw)]; $mkScreen = fn() => ussd_screen($sc, array_slice($replies, -30), ['active'], null, $hk);
             $screen = $mkScreen();
             for ($fi = 0; $fi < 5 && ($screen['kind'] ?? '') === 'flow_call'; $fi++) { flow_execute_call(flow_get($screen['flow_key']), $screen['flow_pending'], $callId, $msisdn, $hk['ctx'], $sc); $screen = $mkScreen(); }

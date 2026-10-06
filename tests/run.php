@@ -281,6 +281,18 @@ t('serving a dialled short code', function () {
     $cfg = ussd_proxy_config(); ok(in_array('*ZT5#', menu_shortcodes(), true), 'a code with a menu is known'); ok(!in_array('*ZT-NONE#', menu_shortcodes(), true), 'one without is not');
 });
 
+t('direct codes jump straight into the menu', function () {
+    $known = ['*ZT5#', '*ZT5*9#'];
+    eq(ussd_resolve_dialled('*ZT5#', $known), ['*ZT5#', []], 'the short code itself is unchanged');
+    eq(ussd_resolve_dialled('*ZT5*2#', $known), ['*ZT5#', ['2']], 'one extra choice');
+    eq(ussd_resolve_dialled('*ZT5*2*1#', $known), ['*ZT5#', ['2', '1']], 'two extra choices');
+    eq(ussd_resolve_dialled('*ZT5*9#', $known), ['*ZT5*9#', []], 'a code that has its own menu wins');
+    eq(ussd_resolve_dialled('*ZT5*9*3#', $known), ['*ZT5*9#', ['3']], 'the longest known code is used');
+    eq(ussd_resolve_dialled('*ZT5*x#', $known), null, 'letters are not choices'); eq(ussd_resolve_dialled('*OTHER*1#', $known), null, 'an unknown code is not ours'); eq(ussd_resolve_dialled('', $known), null, 'nothing dialled');
+    menu_quick_add('*ZT8#', null, "Alpha
+Beta", 'active'); $d = menu_direct_codes('*ZT8#'); ok(in_array('*ZT8*1#', $d, true) && in_array('*ZT8*2#', $d, true), 'every item gets a direct code');
+    [$sc, $x] = ussd_resolve_dialled('*ZT8*2#', ['*ZT8#']); eq(screen($sc, $x)['text'], screen('*ZT8#', ['2'])['text'], 'dialling *ZT8*2# shows what typing 2 shows');
+});
 // ------------------------------------------------------------------ service flows
 echo "\nService flows\n";
 $loanDef = ['start' => 'main', 'steps' => [

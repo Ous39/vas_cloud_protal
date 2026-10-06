@@ -67,6 +67,21 @@ Every step says where to go next; `@exit` leaves the flow and returns to the men
 - **Try it** (right side of the flow page) walks the whole flow, pretending Hera says success / low balance then success / failure, so every branch can be seen before any phone is used. The **USSD Simulator** has the same choice for flows inside a menu.
 - Every call is recorded (outcome, the request we sent with the IMSI shortened, Hera's reply) under **Recent calls**, and every change is in **History**.
 
+## Direct codes
+
+Every item in the main menu can be dialled straight from the phone: put the number(s) you would have typed after the short code, each after a `*`.
+
+| Dial | Lands on |
+|---|---|
+| `*9606*9090#` | the main menu |
+| `*9606*9090*1#` | 1. KAA Bundle |
+| `*9606*9090*2#` | 2. Sakan Bundles |
+| `*9606*9090*2*3#` | Sakan Bundles → its 3rd item |
+
+It is exactly the same as dialling the short code and then typing those numbers, so it follows the menu as it is today: if you add or move an item, its direct code changes with it. The **Menu Builder** shows each item's direct code (⚡) next to it, and the **Simulator** accepts them in the short-code box. Only digits count as choices (`*9606*9090*abc#` is not served), and a short code that has its own menu always wins over this rule.
+
+**Mobius must also route these strings to the portal.** If a phone answers "connection problem or invalid MMI code", the dial string has not been registered in Mobius: register each direct code (or a wildcard for `*9606*9090*`) on the same PROXY menu.
+
 ## Buttons on each item
 
 ↑ ↓ move · ✎ edit · **+** add an item inside (submenus) · ⧉ copy it and everything inside it, as a Draft · ⏻ turn on/off.

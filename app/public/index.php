@@ -1084,6 +1084,7 @@ if ($page==='ussd_sim') {
     $prev=array_values(array_filter(explode(',',(string)($_GET['trail']??'')),fn($x)=>$x!==''));
     $reply=trim((string)($_GET['reply']??'')); $seed=trim((string)($_GET['seed']??'')); if($seed==='') $seed='sim'.mt_rand();
     $replies=$prev; if($reply!=='') $replies[]=$reply;
+    $dres=ussd_resolve_dialled($sc,$known); if($dres && $dres[1]){ $sc=$dres[0]; $replies=array_merge($dres[1],$replies); }
     if(count($replies)>30) $replies=array_slice($replies,-30);
     $fsim=(string)($_GET['fsim']??'success'); if(!in_array($fsim,['success','lowbal,success','lowbal,fail','lowbal','fail'],true)) $fsim='success';
     $scr=ussd_screen($sc,$replies,$withDraft?['active','draft']:['active'],null,['seed'=>$seed,'share'=>'ussd_share_sim','msisdn'=>'2200000000','flow_sim'=>$fsim]);
@@ -1378,6 +1379,7 @@ if ($page==='ussd_menu') {
     $subCats=[]; try { if(table_exists(USSD_OFFER_SCHEMA,'vas_offers')) $subCats=pdo(USSD_OFFER_SCHEMA)->query("SELECT sub_category, SUM(".OFFER_ACTIVE_SQL.") act FROM vas_offers WHERE sub_category IS NOT NULL AND sub_category<>'' AND (deleted_at IS NULL OR deleted_at='') GROUP BY sub_category HAVING act>0 ORDER BY sub_category")->fetchAll(); } catch(Throwable $e){}
     ussd_quiz_tables(); $quizOpts=portal_pdo()->query('SELECT quiz_key,title FROM ussd_quizzes ORDER BY title')->fetchAll(); $flowOpts=flow_list();
     $health = ($shortCode!=='' && $flatNodes) ? menu_health($shortCode) : [];
+    $direct = $shortCode!=='' ? menu_direct_codes($shortCode) : [];
     $nErr=count(array_filter($health,fn($h)=>$h['level']==='error')); $nWarn=count(array_filter($health,fn($h)=>$h['level']==='warn'));
     $versions=[]; if($shortCode!==''){ $st=portal_pdo()->prepare('SELECT id,reason,nodes,created_by,created_at FROM ussd_menu_versions WHERE short_code=? ORDER BY id DESC LIMIT 12'); $st->execute([$shortCode]); $versions=$st->fetchAll(); }
     $drafts=count(array_filter($flatNodes,fn($n)=>$n['status']==='draft'));
@@ -1418,12 +1420,12 @@ if ($page==='ussd_menu') {
                 $badgeOf=['flow'=>'bg-primary','menu'=>'bg-primary','offer'=>'bg-success','catalog'=>'bg-warning text-dark','recipient'=>'bg-dark','quiz'=>'bg-danger','sharedbundle'=>'bg-success','action'=>'bg-info text-dark','end'=>'bg-secondary'];
                 $nameOf=['flow'=>'service flow','menu'=>'submenu','offer'=>'offer','catalog'=>'catalogue list','recipient'=>'buy for other','quiz'=>'quiz','sharedbundle'=>'shared bundle','action'=>'action','end'=>'message'];
                 $btn=function(string $do,int $id,string $icon,string $title,array $extra=[]) use ($canEdit){ if(!$canEdit) return ''; $h='<form method="post" class="d-inline"><input type="hidden" name="csrf" value="'.e(csrf_token()).'"><input type="hidden" name="do" value="'.e($do).'"><input type="hidden" name="id" value="'.$id.'">'; foreach($extra as $k=>$v) $h.='<input type="hidden" name="'.e($k).'" value="'.e($v).'">'; return $h.'<button class="btn btn-sm btn-light border py-0 px-1" title="'.e($title).'"><i class="fa-solid '.$icon.'"></i></button></form>'; };
-                $renderTree = function($nodes, $depth=0) use (&$renderTree, $shortCode, $badgeOf, $nameOf, $btn, $canEdit) { $last=count($nodes)-1; foreach($nodes as $i=>$n): $id=(int)$n['id']; $on=$n['status']==='active'; ?>
+                $renderTree = function($nodes, $depth=0) use (&$renderTree, $shortCode, $badgeOf, $nameOf, $btn, $canEdit, $direct) { $last=count($nodes)-1; foreach($nodes as $i=>$n): $id=(int)$n['id']; $on=$n['status']==='active'; ?>
                     <div style="margin-left:<?=$depth*22?>px" class="menu-row d-flex align-items-center gap-2 py-1 <?=$on?'':'text-muted'?>">
                         <span class="badge <?=$badgeOf[$n['node_type']]??'bg-secondary'?>" style="min-width:5.2rem"><?=e($nameOf[$n['node_type']]??$n['node_type'])?></span>
                         <span class="flex-grow-1"><?=e($n['prompt_text'])?>
                             <?php if($n['node_type']==='offer'):?><small class="text-muted">(<?=e($n['offer_code'])?>)</small><?php elseif($n['node_type']==='catalog'||$n['node_type']==='sharedbundle'):?><small class="text-muted">[<?=e(str_replace("\n",', ',(string)($n['catalog_filter']??'')))?>]</small><?php elseif($n['node_type']==='quiz' || $n['node_type']==='flow'):?><small class="text-muted">(<?=e($n['offer_code'])?>)</small><?php endif;?>
-                            <?php if(!$on):?><span class="badge status-<?=e($n['status'])?>"><?=e($n['status'])?></span><?php endif;?></span>
+                            <?php if(!$on):?><span class="badge status-<?=e($n['status'])?>"><?=e($n['status'])?></span><?php elseif(isset($direct[$id])):?><small class="text-muted ms-1" title="Dial this to jump straight here"><i class="fa-solid fa-bolt"></i> <?=e($direct[$id])?></small><?php endif;?></span>
                         <span class="text-nowrap"><?php if($canEdit):?><?=$btn('move',$id,'fa-arrow-up','Move up',['dir'=>'up'])?><?=$btn('move',$id,'fa-arrow-down','Move down',['dir'=>'down'])?><?php endif;?>
                             <a class="btn btn-sm btn-light border py-0 px-1" title="Edit" href="?page=ussd_menu&short_code=<?=urlencode($shortCode)?>&id=<?=$id?>#nodeform"><i class="fa-solid fa-pen"></i></a>
                             <?php if($canEdit):?><?php if($n['node_type']==='menu'):?><a class="btn btn-sm btn-light border py-0 px-1" title="Add an item inside" href="?page=ussd_menu&short_code=<?=urlencode($shortCode)?>&parent=<?=$id?>#nodeform"><i class="fa-solid fa-plus"></i></a><?php endif;?><?=$btn('duplicate',$id,'fa-copy','Copy this item (and what is inside it) as a draft')?><?=$btn('set_status',$id,'fa-power-off',$on?'Turn off':'Turn on',['status'=>$on?'inactive':'active'])?><?php endif;?></span>
