@@ -361,7 +361,14 @@ function flow_lookup_hook(array $flow, array $ctx, string $callId, string $short
         $conn = flow_connection((string)($step['connection'] ?? '')); $path = trim((string)($step['path'] ?? '')); $tpl = trim((string)($step['body'] ?? ''));
         if (!$conn || $path === '' || $tpl === '') return ['vars' => ['result.resultDescription' => 'This service is not available right now.', 'reply_text' => 'This service is not available right now.']];
         $body = flow_render_body($tpl, $vars, $ctx, 'lk-'.substr(md5($callId.$path), 0, 8), $shortcode);
-        $r = cached('flowlookup:'.md5($conn['conn_key'].$path.$body), 20, fn() => flow_post($conn, rtrim((string)$conn['base_url'], '/').'/'.ltrim($path, '/'), $body)); $c = flow_classify($conn, $r);
+        $r = cached('flowlookup:'.md5($conn['conn_key'].$path.$body), 20, function () use ($conn, $path, $body, $flow, $callId, $vars) {
+            $t0 = microtime(true); $r = flow_post($conn, rtrim((string)$conn['base_url'], '/').'/'.ltrim($path, '/'), $body);
+            try { $cl = flow_classify($conn, $r); $resp = $r['error'] !== '' ? 'error: '.$r['error'] : mb_substr($r['raw'], 0, 1000);
+                portal_pdo()->prepare('INSERT IGNORE INTO ussd_flow_calls(call_id,flow_key,step_key,outcome,vars,mode,http_code,response,request_body,msisdn,ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
+                    ->execute([substr($callId, 0, 120), $flow['flow_key'], substr('look:'.$path, 0, 70), $cl['outcome'], json_encode($cl['vars'], JSON_UNESCAPED_UNICODE), 'live', $r['code'], $resp, ussd_request_for_log($body), preg_replace('/\D+/', '', (string)($vars['msisdn'] ?? '')), (int)round((microtime(true) - $t0) * 1000)]);
+            } catch (Throwable $e) {}
+            return $r;
+        }); $c = flow_classify($conn, $r);
         return ['vars' => $c['vars'] + ['lookup_ok' => $c['outcome'] === 'success' ? '1' : '']];
     };
 }
@@ -461,15 +468,17 @@ function flow_templates(): array {
         'failed' => ['type' => 'message', 'text' => 'Subscription failed'],
         'balance' => ['type' => 'lookup', 'text' => 'Your balance is: {result.balance}', 'connection' => '', 'path' => '', 'body' => ''],
     ]];
-    $bal = ['start' => 'bal', 'steps' => ['bal' => ['type' => 'lookup', 'text' => "Your balance is: D{result.balance}", 'connection' => '', 'path' => '', 'body' => '']]];
+    $bal = ['start' => 'bal', 'steps' => ['bal' => ['type' => 'lookup', 'text' => "Your balance is:\n{reply_text}", 'connection' => 'hera_balance', 'path' => 'Balance', 'body' => '{"msisdn":"{msisdn_local}","operation":"Status"}']]];
     return [
-        'check_balance' => ['title' => 'Check balance — one look-up; fill in the balance API call (menu items called Check Balance use a flow with the key check_balance by themselves)', 'def' => $bal],
+        'check_balance' => ['title' => 'Check balance — Hera Balance / Status (give the flow the key check_balance; menu items called Check Balance then use it by themselves)', 'def' => $bal],
         'seddo' => ['title' => 'Shared Bundle (Seddo) — buy, add a number, account', 'def' => $seddo],
         'purchase_with_loan' => ['title' => 'Purchase, with a loan offered when the balance is too low (fill in the API calls later)', 'def' => $loan],
     ];
 }
 // The connection a starter flow talks to, created from what the portal already knows (so the Seddo template works at once).
 function flow_template_connections(string $tpl): void {
+    if ($tpl === 'check_balance' && !flow_connection('hera_balance')) // headers are added by hand on this page (they are secret): X-API-KEY, X-USERNAME and X-HASHED-PASSWORD as for purchases
+        portal_pdo()->prepare('INSERT IGNORE INTO ussd_connections(conn_key,title,base_url,headers_enc,ok_code,lowbal,timeout) VALUES(?,?,?,?,?,?,?)')->execute(['hera_balance', 'Hera Balance', 'https://vas-prod.comium.gm/hera/', null, '0', 'insufficient,low balance,not enough', 8]);
     if ($tpl !== 'seddo' || flow_connection('sharebundle')) return; $c = ussd_proxy_config();
     portal_pdo()->prepare('INSERT IGNORE INTO ussd_connections(conn_key,title,base_url,headers_enc,ok_code,lowbal,timeout) VALUES(?,?,?,?,?,?,?)')
         ->execute(['sharebundle', 'Hera ShareBundle', $c['share_base'], $c['purchase_auth'] !== '' ? $c['purchase_auth'] : null, $c['share_ok_code'], $c['purchase_lowbal'] ?: 'insufficient,low balance,not enough', 8]);
