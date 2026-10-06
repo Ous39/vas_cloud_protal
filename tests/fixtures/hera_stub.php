@@ -34,6 +34,6 @@ if ($parts[0] === 'sb') {
     if ($scn === 'lowbal') { $j(['expiry' => '', 'resultCode' => '20000005', 'resultDescription' => 'Service information verification error: The account balance is insufficient.', 'transactionId' => 'x', 'purchaseSequence' => '0', 'result' => 'Subscription has failed']); exit; }
     $j(['resultCode' => '000', 'resultDescription' => 'Success', 'result' => ['resultCode' => '0', 'resultDescription' => "\nYour request is successful"]]); exit;
 }
-// /bal/<scenario>/Balance   (Hera Balance / Status). The reply below is INVENTED to exercise the plumbing; the real one has not been seen yet.
-if ($parts[0] === 'bal') { if (($parts[1] ?? 'ok') === 'err500') { http_response_code(500); $j(['status' => 500, 'error' => 'Internal Server Error']); exit; } $j(['resultCode' => '000', 'resultDescription' => 'Success', 'result' => ['balance' => '17.50']]); exit; }
+// /bal/<scenario>/Balance   (Hera prepaid/Balance: body {"msisdn":"<local number>"}; the reply is as Hera gave it: result is the balance)
+if ($parts[0] === 'bal') { if (($parts[1] ?? 'ok') === 'err500') { http_response_code(500); $j(['status' => 500, 'error' => 'Internal Server Error']); exit; } $j(['resultCode' => '000', 'resultDescription' => 'Success', 'result' => '1']); exit; }
 http_response_code(404); $j(['error' => 'unknown']);

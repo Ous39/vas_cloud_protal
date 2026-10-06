@@ -491,16 +491,16 @@ t('a Check Balance action runs the flow of that name', function () use ($db) {
     ok(isset(flow_templates()['check_balance']), 'there is a starter flow for it');
 });
 
-t('the balance flow asks Hera Balance / Status and the look-up is recorded', function () use ($db, $stub, $lastBody) {
+t('the balance flow asks Hera prepaid/Balance and the look-up is recorded', function () use ($db, $stub, $lastBody) {
     $db->exec("DELETE FROM ussd_connections WHERE conn_key='hera_balance'");
     save_flow(['flow_key' => 'zt_bal', 'title' => 'ZT Bal', 'template' => 'check_balance']); $cn = flow_connection('hera_balance');
-    eq($cn['base_url'] ?? null, 'https://vas-prod.comium.gm/hera/', 'the connection is made with the address Hera uses'); eq($cn['headers'] ?? null, '', 'and no headers: they are secret and added by hand');
+    eq($cn['base_url'] ?? null, 'https://vas-testing.comium.gm/hera/prepaid/', 'the connection is made with the address Hera uses (the test environment)'); eq($cn['headers'] ?? null, '', 'and no headers: they are secret and added by hand');
     $db->prepare("UPDATE ussd_connections SET base_url=?, headers_enc=? WHERE conn_key='hera_balance'")->execute(["$stub/bal/ok/", encrypt_secret("X-API-KEY: k-1\nX-USERNAME: USSD\nX-HASHED-PASSWORD: h-1")]);
     $db->exec("UPDATE ussd_flows SET mode='live' WHERE flow_key='zt_bal'"); $fl = flow_get('zt_bal');
     $r = flow_screen($fl['def'], [], ussd_flow_hooks($fl, ['msisdn' => '2206600770', 'seed' => 'ZT-bal1'], '*ZT5#'));
-    $sent = $lastBody('/bal/ok/Balance'); eq($sent['json'], ['msisdn' => '6600770', 'operation' => 'Status'], 'the request is the local number and operation Status'); eq($sent['headers']['x-username'] ?? null, 'USSD', 'with the saved headers');
-    has((string)$r['text'], 'Your balance is:', 'the customer sees the wording'); ok($r['end'] === false || $r['end'] === true, 'a screen comes back');
-    $row = $db->query("SELECT step_key, outcome, http_code, response, request_body FROM ussd_flow_calls WHERE call_id='ZT-bal1' AND flow_key='zt_bal'")->fetch(); eq($row['step_key'] ?? null, 'look:Balance', 'the look-up is on record'); eq($row['http_code'] ?? null, 200, 'with its status'); has((string)($row['response'] ?? ''), '17.50', 'and Hera\'s own reply');
+    $sent = $lastBody('/bal/ok/Balance'); eq($sent['json'], ['msisdn' => '6600770'], 'the request is just the local number'); eq($sent['headers']['x-username'] ?? null, 'USSD', 'with the saved headers');
+    eq(explode("\n", (string)$r['text'])[0], 'Your balance is: D1', 'the customer sees Hera\'s balance in the wording');
+    $row = $db->query("SELECT step_key, outcome, http_code, response, request_body FROM ussd_flow_calls WHERE call_id='ZT-bal1' AND flow_key='zt_bal'")->fetch(); eq($row['step_key'] ?? null, 'look:Balance', 'the look-up is on record'); eq($row['http_code'] ?? null, 200, 'with its status'); has((string)($row['response'] ?? ''), '"result":"1"', 'and Hera\'s own reply');
     $db->exec("DELETE FROM ussd_connections WHERE conn_key='hera_balance'");
 });
 

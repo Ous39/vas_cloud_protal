@@ -372,7 +372,7 @@ function flow_lookup_hook(array $flow, array $ctx, string $callId, string $short
         return ['vars' => $c['vars'] + ['lookup_ok' => $c['outcome'] === 'success' ? '1' : '']];
     };
 }
-function flow_sim_lookup(array $step, array $vars): array { return ['vars' => ['result.resultDescription' => 'Sample reply (simulated)', 'result.package1' => 'Sample bundle 1', 'result.package2' => 'Sample bundle 2', 'result.balance' => 'D 100', 'reply_text' => 'Sample reply (simulated)']]; }
+function flow_sim_lookup(array $step, array $vars): array { return ['vars' => ['result.resultDescription' => 'Sample reply (simulated)', 'result.package1' => 'Sample bundle 1', 'result.package2' => 'Sample bundle 2', 'result.balance' => 'D 100', 'result' => '12.50', 'reply_text' => 'Sample reply (simulated)']]; }
 // $outcomes: one outcome for every call ("success"), or a list used call by call ("lowbal,success" = the first call finds the
 // balance too low, the next one — e.g. taking a loan — works).
 function flow_sim_call_hook(string $outcomes): callable {
@@ -468,9 +468,9 @@ function flow_templates(): array {
         'failed' => ['type' => 'message', 'text' => 'Subscription failed'],
         'balance' => ['type' => 'lookup', 'text' => 'Your balance is: {result.balance}', 'connection' => '', 'path' => '', 'body' => ''],
     ]];
-    $bal = ['start' => 'bal', 'steps' => ['bal' => ['type' => 'lookup', 'text' => "Your balance is:\n{reply_text}", 'connection' => 'hera_balance', 'path' => 'Balance', 'body' => '{"msisdn":"{msisdn_local}","operation":"Status"}']]];
+    $bal = ['start' => 'bal', 'steps' => ['bal' => ['type' => 'lookup', 'text' => 'Your balance is: D{result}', 'connection' => 'hera_balance', 'path' => 'Balance', 'body' => '{"msisdn":"{msisdn_local}"}']]];
     return [
-        'check_balance' => ['title' => 'Check balance — Hera Balance / Status (give the flow the key check_balance; menu items called Check Balance then use it by themselves)', 'def' => $bal],
+        'check_balance' => ['title' => 'Check balance — Hera prepaid/Balance (give the flow the key check_balance; menu items called Check Balance then use it by themselves)', 'def' => $bal],
         'seddo' => ['title' => 'Shared Bundle (Seddo) — buy, add a number, account', 'def' => $seddo],
         'purchase_with_loan' => ['title' => 'Purchase, with a loan offered when the balance is too low (fill in the API calls later)', 'def' => $loan],
     ];
@@ -478,7 +478,7 @@ function flow_templates(): array {
 // The connection a starter flow talks to, created from what the portal already knows (so the Seddo template works at once).
 function flow_template_connections(string $tpl): void {
     if ($tpl === 'check_balance' && !flow_connection('hera_balance')) // headers are added by hand on this page (they are secret): X-API-KEY, X-USERNAME and X-HASHED-PASSWORD as for purchases
-        portal_pdo()->prepare('INSERT IGNORE INTO ussd_connections(conn_key,title,base_url,headers_enc,ok_code,lowbal,timeout) VALUES(?,?,?,?,?,?,?)')->execute(['hera_balance', 'Hera Balance', 'https://vas-prod.comium.gm/hera/', null, '0', 'insufficient,low balance,not enough', 8]);
+        portal_pdo()->prepare('INSERT IGNORE INTO ussd_connections(conn_key,title,base_url,headers_enc,ok_code,lowbal,timeout) VALUES(?,?,?,?,?,?,?)')->execute(['hera_balance', 'Hera Balance', 'https://vas-testing.comium.gm/hera/prepaid/', null, '0', 'insufficient,low balance,not enough', 8]);
     if ($tpl !== 'seddo' || flow_connection('sharebundle')) return; $c = ussd_proxy_config();
     portal_pdo()->prepare('INSERT IGNORE INTO ussd_connections(conn_key,title,base_url,headers_enc,ok_code,lowbal,timeout) VALUES(?,?,?,?,?,?,?)')
         ->execute(['sharebundle', 'Hera ShareBundle', $c['share_base'], $c['purchase_auth'] !== '' ? $c['purchase_auth'] : null, $c['share_ok_code'], $c['purchase_lowbal'] ?: 'insufficient,low balance,not enough', 8]);
