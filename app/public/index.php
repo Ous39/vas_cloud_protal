@@ -34,12 +34,12 @@ function nav_can_see(string $page): bool {
     if (in_array($page,['investigate','reports','alerts','monitoring','offer_report','timeline','vendor'],true)) return can('view_reports');
     if ($page==='shortcodes') return can('manage_shortcodes');
     if ($page==='projects') return can('manage_projects');
-    if (in_array($page,['subscriptions','offers','offer_health','esim','sales','friends_family','voting','ussd_ivr','ussd_menu','integrations','tables'],true)) return can('view_tables');
+    if (in_array($page,['subscriptions','offers','offer_health','esim','sales','friends_family','voting','ussd_ivr','ussd_menu','ussd_menus','integrations','tables'],true)) return can('view_tables');
     return true;
 }
 // The tab bar every USSD page shows under its title, so Menus, Flows, Simulator, Proxy, Short Codes and Routing read as one platform.
 function ussd_subnav(string $current): void {
-    $tabs = [['ussd_menu','fa-sitemap','Menus'],['ussd_flows','fa-diagram-project','Service Flows'],['ussd_quiz','fa-circle-question','Quiz'],['ussd_sim','fa-mobile-screen','Simulator'],['ussd_proxy','fa-plug','Proxy'],['shortcodes','fa-hashtag','Short Codes'],['ussd_ivr','fa-route','Routing & IVR']];
+    $tabs = [['ussd_menus','fa-list','Menus'],['ussd_menu','fa-sitemap','Builder'],['ussd_flows','fa-diagram-project','Service Flows'],['ussd_quiz','fa-circle-question','Quiz'],['ussd_sim','fa-mobile-screen','Simulator'],['ussd_proxy','fa-plug','Proxy'],['shortcodes','fa-hashtag','Short Codes'],['ussd_ivr','fa-route','Routing & IVR']];
     echo '<ul class="nav nav-pills ussd-subnav mb-3">';
     foreach ($tabs as [$p,$ic,$lb]) { if (!nav_can_see($p)) continue; echo '<li class="nav-item"><a class="nav-link'.($p===$current?' active':'').'" href="?page='.$p.'"><i class="fa-solid '.$ic.' me-1"></i>'.e($lb).'</a></li>'; }
     echo '</ul>';
@@ -50,7 +50,7 @@ function layout_start(string $title): void {
         ['dashboard','fa-gauge','Dashboard'],
         ['monitoring','fa-heart-pulse','Monitoring'],
         ['group','fa-layer-group','Operations',[['subscriptions','fa-user-check','Subscriptions'],['offers','fa-tags','Offer Management'],['offer_health','fa-stethoscope','Offer Health'],['esim','fa-sim-card','eSIM Profiles'],['sales','fa-file-invoice-dollar','Sales & Invoices'],['friends_family','fa-user-group','Friends & Family'],['voting','fa-square-poll-vertical','Voting Service']]],
-        ['group','fa-tower-broadcast','Infrastructure',[['ussd_ivr','fa-mobile-screen-button','USSD & IVR'],['ussd_menu','fa-sitemap','USSD Menu Builder'],['ussd_sim','fa-mobile-screen','USSD Simulator'],['ussd_quiz','fa-circle-question','USSD Quiz'],['ussd_flows','fa-diagram-project','Service Flows'],['ussd_proxy','fa-plug','USSD Proxy'],['integrations','fa-plug-circle-check','Integrations']]],
+        ['group','fa-tower-broadcast','Infrastructure',[['ussd_ivr','fa-mobile-screen-button','USSD & IVR'],['ussd_menus','fa-list','USSD Menus'],['ussd_menu','fa-sitemap','USSD Menu Builder'],['ussd_sim','fa-mobile-screen','USSD Simulator'],['ussd_quiz','fa-circle-question','USSD Quiz'],['ussd_flows','fa-diagram-project','Service Flows'],['ussd_proxy','fa-plug','USSD Proxy'],['integrations','fa-plug-circle-check','Integrations']]],
         ['group','fa-chart-line','Reports',[['investigate','fa-headset','Complaint Investigation'],['timeline','fa-timeline','Customer Timeline'],['alerts','fa-triangle-exclamation','Alerts'],['offer_report','fa-bullhorn','Offer Performance'],['reports','fa-chart-line','Reports'],['sql','fa-code','SQL Console']]],
         ['group','fa-gears','Admin',[['tables','fa-database','Database Tables'],['promotions','fa-bullhorn','Promotions'],['projects','fa-diagram-project','Projects'],['shortcodes','fa-hashtag','Short Codes'],['api_keys','fa-key','Partner API Keys'],['alert_settings','fa-bell','Alert Settings'],['retention','fa-database','Data Retention'],['status','fa-server','System Status'],['audit','fa-shield-halved','Audit Trail'],['users','fa-users-gear','Users']]],
     ];
@@ -1443,6 +1443,88 @@ if ($page==='ussd_flows') {
         <?php if($fromLogErr):?><div class="alert alert-warning py-2 mt-2 small mb-0"><?=e($fromLogErr)?></div><?php endif;?>
         <?php if($fromLog):?><div class="mt-2 small"><div><b>Address</b>: <code><?=e($fromLog['address'])?></code> · <b>path</b>: <code><?=e($fromLog['path'])?></code> (the address is pre-filled in the form above)</div><div class="mt-1"><b>Request body</b> — copy into a call or look-up step:</div><pre class="mb-1" style="white-space:pre-wrap"><?=e($fromLog['body'])?></pre><?php foreach($fromLog['notes'] as $n0):?><div class="text-muted">• <?=e($n0)?></div><?php endforeach;?></div><?php endif;?>
     </div>
+    <?php layout_end(); exit;
+}
+
+if ($page==='ussd_menus') {
+    require_perm('view_tables'); $canEdit=can('manage_ussd_menus'); $canUrl=can('manage_api_keys'); $db=portal_pdo(); $cfg=ussd_proxy_config();
+    $form=['short_code'=>'','name'=>'','items'=>'','copy_from'=>'']; $formOpen=isset($_GET['add']);
+    if ($_SERVER['REQUEST_METHOD']==='POST') {
+        require_perm('manage_ussd_menus');
+        $form=['short_code'=>trim((string)($_POST['short_code']??'')),'name'=>trim((string)($_POST['name']??'')),'items'=>(string)($_POST['items']??''),'copy_from'=>trim((string)($_POST['copy_from']??''))];
+        try {
+            $r=menu_create($form['short_code'],$form['name'],$form['copy_from']===''?$form['items']:'');
+            if($form['copy_from']!=='' && in_array($form['copy_from'],menu_shortcodes(),true)) { $r['items']=menu_copy_to($form['copy_from'],$r['code'],true); }
+            flash('success','Menu '.$r['code'].' created'.($r['items']?' with '.$r['items'].' draft item'.($r['items']===1?'':'s'):'').'. Next: create it in Mobius with the values below, then build and switch it on.');
+            redirect('?page=ussd_menus&setup='.urlencode($r['code']));
+        } catch (RuntimeException $e) { flash('danger',$e->getMessage()); $formOpen=true; }
+    }
+    $reg=[]; foreach($db->query("SELECT * FROM portal_short_codes WHERE channel_type='USSD'")->fetchAll() as $r0) $reg[$r0['short_code']]=$r0;
+    $ov=menu_overview(); $codes=array_values(array_unique(array_merge(array_keys($ov),array_keys($reg)))); sort($codes);
+    $setup=trim((string)($_GET['setup']??'')); $setupOk=$setup!=='' && (isset($ov[$setup])||isset($reg[$setup]));
+    $url=($canUrl && $cfg['token']!=='') ? 'ussd.php?t='.$cfg['token'].'&m=proxy' : '';
+    layout_start('USSD Menus'); ussd_subnav('ussd_menus');
+    ?>
+    <div class="cardx">
+        <div class="d-flex flex-wrap gap-2 align-items-center">
+            <div><h3 class="mb-0">Menus</h3><div class="small text-muted">Every USSD short code: what it is, what is built, and whether it answers customers.</div></div>
+            <input class="form-control w-auto ms-auto" id="mnFilter" placeholder="Search name or short code…" style="min-width:16rem">
+            <?php if($canEdit):?><button class="btn btn-primary" type="button" data-bs-toggle="collapse" data-bs-target="#addMenu"><i class="fa-solid fa-plus me-1"></i>Add new menu</button><?php endif;?>
+        </div>
+        <?php if($canEdit):?>
+        <div class="collapse <?=$formOpen?'show':''?> mt-3" id="addMenu">
+            <form method="post" class="border rounded p-3 bg-light"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>">
+                <h5 class="mb-1">New menu</h5><p class="small text-muted mb-2">Fill this in and the portal creates the menu, puts it in the Short Code register and adds your items as <b>Drafts</b> (only you can see them until you switch them on). You then create the same short code in Mobius — the next screen shows exactly what to type there.</p>
+                <div class="row g-2">
+                    <div class="col-md-4"><label class="small text-muted mb-0">Name</label><input class="form-control" name="name" value="<?=e($form['name'])?>" placeholder="e.g. Data bundles" maxlength="150" required></div>
+                    <div class="col-md-4"><label class="small text-muted mb-0">Short code</label><input class="form-control" name="short_code" value="<?=e($form['short_code'])?>" placeholder="*9606*7070#" maxlength="40" required></div>
+                    <div class="col-md-4"><label class="small text-muted mb-0">Start from a copy of (optional)</label><select class="form-select" name="copy_from"><option value="">— nothing, I will type the items —</option><?php foreach(array_keys($ov) as $oc):?><option value="<?=e($oc)?>" <?=$form['copy_from']===$oc?'selected':''?>><?=e($oc)?> (<?=e($reg[$oc]['service_name']??'no name')?>)</option><?php endforeach;?></select></div>
+                    <div class="col-12"><label class="small text-muted mb-0">Items — one per line: <code>Name</code> or <code>Name | type | extra</code> (leave empty to add them later in the Builder)</label>
+                        <textarea class="form-control font-monospace" name="items" rows="8" placeholder="KAA Bundle&#10;Sakan 7 days   | catalog | Sakan 7 days&#10;Daily 1GB      | offer   | 40154&#10;How to play    | end     | Answer 5 questions, score 4+ to win&#10;Shared Bundle  | shared  | Seddo&#10;Buy for other  | other"><?=e($form['items'])?></textarea>
+                        <div class="small text-muted mt-1">Types: a line with only a name is a <b>submenu</b>; <code>catalog</code> = every offer of a catalogue sub-category (separate several with ;); <code>offer</code> = one offer code; <code>end</code> = a message; <code>shared</code> = Shared Bundle; <code>other</code> = buy for another number; <code>quiz</code>; <code>flow</code> = a Service Flow.</div></div>
+                </div>
+                <div class="mt-3"><button class="btn btn-primary"><i class="fa-solid fa-check me-1"></i>Create menu</button> <button type="button" class="btn btn-link" data-bs-toggle="collapse" data-bs-target="#addMenu">Cancel</button></div>
+            </form>
+        </div>
+        <?php endif;?>
+    </div>
+
+    <?php if($setupOk): $o=$ov[$setup]??['items'=>0,'active'=>0,'draft'=>0,'errors'=>0,'warns'=>0]; $stt=shortcode_state($setup,$cfg,$reg); $builder='?page=ussd_menu&short_code='.urlencode($setup);
+        $mname=$reg[$setup]['service_name']??$setup; $flat=menu_nodes_flat($setup); $labels=[]; foreach($flat as $fn) $labels[(int)$fn['id']]=$fn['prompt_text']; $dc=menu_direct_codes($setup); $lvl=substr_count(rtrim($setup,'#'),'*')+1;
+        $first=array_filter($dc,fn($c)=>substr_count(rtrim($c,'#'),'*')===$lvl);
+        $steps=[[$o['items']>0,'Items are built',$o['items'].' item'.($o['items']===1?'':'s'),$builder,'Open the Builder'],
+            [$o['items']>0&&!$o['errors'],'Menu check is clean',$o['errors'].' to fix, '.$o['warns'].' to look at',$builder,'See the check'],
+            [$o['active']>0&&!$o['draft'],'Items are switched on',$o['active'].' on, '.$o['draft'].' still draft',$builder,'Activate'],
+            [isset($reg[$setup]),'In the Short Code register',isset($reg[$setup])?'as “'.$reg[$setup]['service_name'].'”':'not yet','?page=shortcodes&new='.urlencode($setup),'Register it'],
+            [null,'Created in Mobius','By hand, in Mobius → Menus → Add new row, with the values on the right. The portal cannot see Mobius menus yet.',null,null],
+            [$stt['live'],'Answering on phones',$stt['live']?'The USSD endpoint is live.':'Not yet: '.$stt['why'].'.','?page=ussd_proxy','Open Proxy']];?>
+    <div class="cardx mt-3 border-primary"><div class="d-flex justify-content-between"><h3 class="mb-2">Set up <?=e($setup)?> <small class="text-muted">— <?=e($mname)?></small></h3><a class="btn-close" href="?page=ussd_menus" aria-label="Close"></a></div>
+        <div class="row g-3"><div class="col-lg-7"><ul class="list-unstyled mb-0">
+            <?php foreach($steps as [$ok,$tt,$dd,$lk,$lt]):?><li class="py-1 d-flex gap-2"><span class="badge <?=$ok===null?'bg-secondary':($ok?'bg-success':'bg-warning text-dark')?> mt-1" style="min-width:4.2rem"><?=$ok===null?'by hand':($ok?'done':'to do')?></span><span><b><?=e($tt)?></b> <span class="text-muted"><?=e($dd)?></span><?php if($lk&&!$ok):?> <a href="<?=e($lk)?>"><?=e($lt)?></a><?php endif;?></span></li><?php endforeach;?></ul>
+            <?php if($first):?><div class="small mt-3"><b>Direct codes</b> — dial these to jump straight to an item (add them in Mobius too, or ask for a wildcard on <code><?=e(rtrim($setup,'#'))?>*</code>):<br><?php foreach($first as $nid=>$c):?><code><?=e($c)?></code> <span class="text-muted"><?=e($labels[$nid]??'')?></span><br><?php endforeach;?></div><?php endif;?></div>
+        <div class="col-lg-5"><div class="border rounded p-2 bg-light"><div class="fw-semibold mb-1">Type this in Mobius → Menus → Add new row</div>
+            <table class="table table-sm mb-0"><tbody><tr><th class="text-muted fw-normal">Name</th><td><?=e($mname)?></td></tr><tr><th class="text-muted fw-normal">Shortcode</th><td><code><?=e($setup)?></code></td></tr><tr><th class="text-muted fw-normal">Extendable</th><td>false</td></tr><tr><th class="text-muted fw-normal">Type</th><td>PROXY</td></tr>
+            <tr><th class="text-muted fw-normal">URL</th><td><?php if($url):?><button class="btn btn-sm btn-outline-primary" type="button" data-copy-url="<?=e($url)?>"><i class="fa-regular fa-copy me-1"></i>Copy the URL</button> <small class="text-muted">secret — do not share</small><?php else:?><span class="text-muted">an admin can copy it from Proxy → Connection</span><?php endif;?></td></tr></tbody></table></div></div></div>
+    </div>
+    <?php endif;?>
+
+    <div class="cardx table-card mt-3"><div class="table-scroll"><table class="table table-hover align-middle mb-0" id="mnTable"><thead><tr><th>Name</th><th>Short code</th><th>Type</th><th>Menu</th><th>On phones</th><th>Register</th><th class="text-end">Actions</th></tr></thead><tbody>
+    <?php foreach($codes as $c): $m=$ov[$c]??null; $rg=$reg[$c]??null; $stt=shortcode_state($c,$cfg,$reg);?>
+        <tr><td><?php if($rg):?><strong><?=e($rg['service_name'])?></strong><?php else:?><span class="text-muted">(no name yet)</span> <a class="small" href="?page=shortcodes&new=<?=urlencode($c)?>">name it</a><?php endif;?></td>
+            <td><code><?=e($c)?></code></td><td>PROXY</td>
+            <td><?php if(!$m):?><span class="badge bg-secondary">empty</span> <a class="small" href="?page=ussd_menu&short_code=<?=urlencode($c)?>">build</a><?php else:?><?=$m['active']?> on<?=$m['draft']?' · '.$m['draft'].' draft':''?> <?php if($m['errors']):?><span class="badge bg-danger"><?=$m['errors']?> to fix</span><?php elseif($m['warns']):?><span class="badge bg-warning text-dark"><?=$m['warns']?> to check</span><?php else:?><span class="badge bg-success">ok</span><?php endif;?><?php endif;?></td>
+            <td><?php if(!$m):?><span class="text-muted">—</span><?php elseif($stt['live']):?><span class="badge bg-success">answering</span><?php else:?><span class="badge bg-secondary" title="<?=e($stt['why'])?>">not live</span><?php endif;?></td>
+            <td><?php if($rg):?><span class="badge status-<?=e(strtolower($rg['status']))?>"><?=e($rg['status'])?></span><?php else:?><span class="text-muted">—</span><?php endif;?></td>
+            <td class="text-end text-nowrap"><a class="btn btn-sm btn-primary" href="?page=ussd_menu&short_code=<?=urlencode($c)?>" title="Open in the Builder"><i class="fa-solid fa-sitemap"></i> Build</a>
+                <?php if($m):?><a class="btn btn-sm btn-outline-secondary" href="?page=ussd_sim&sc=<?=urlencode($c)?>" title="Try it like a phone"><i class="fa-solid fa-mobile-screen"></i></a><?php endif;?>
+                <a class="btn btn-sm btn-outline-secondary" href="?page=ussd_menus&setup=<?=urlencode($c)?>" title="Mobius values and setup checklist"><i class="fa-solid fa-list-check"></i></a>
+                <?php if($url):?><button class="btn btn-sm btn-outline-secondary" type="button" data-copy-url="<?=e($url)?>" title="Copy the URL Mobius calls"><i class="fa-regular fa-copy"></i></button><?php endif;?></td></tr>
+    <?php endforeach;?><?php if(!$codes):?><tr><td colspan="7" class="text-muted p-3">No menus yet. Press <b>Add new menu</b>.</td></tr><?php endif;?>
+    </tbody></table></div><div class="small text-muted px-3 py-2"><?=count($codes)?> menu<?=count($codes)===1?'':'s'?>.</div></div>
+    <script nonce="<?=e(csp_nonce())?>">
+    document.getElementById('mnFilter')?.addEventListener('input',function(e){var q=e.target.value.toLowerCase();document.querySelectorAll('#mnTable tbody tr').forEach(function(r){r.hidden=q!==''&&r.textContent.toLowerCase().indexOf(q)<0;});});
+    document.querySelectorAll('[data-copy-url]').forEach(function(b){b.addEventListener('click',function(){var u=new URL(b.dataset.copyUrl,location.href).href,done=function(){var t=b.innerHTML;b.innerHTML='<i class="fa-solid fa-check"></i> Copied';setTimeout(function(){b.innerHTML=t;},1500);};if(navigator.clipboard){navigator.clipboard.writeText(u).then(done);}else{var x=document.createElement('textarea');x.value=u;document.body.appendChild(x);x.select();document.execCommand('copy');x.remove();done();}});});
+    </script>
     <?php layout_end(); exit;
 }
 

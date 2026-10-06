@@ -2,7 +2,17 @@
 
 Everything is on **Infrastructure → USSD Menu Builder**. You never need to restart anything: customers see an item the moment it is **Active**.
 
-## The 5-minute way
+## Start here: the Menus page (Infrastructure → USSD Menus)
+
+The Menus page lists every short code — its name, how many items are on or still draft, whether the Menu check is clean and whether it is answering on phones — like the Menus list in Mobius.
+
+**To create a new menu:** press **Add new menu**, type a **name** and a **short code** (e.g. `*9606*7070#`) and, if you like, the whole list of items (one per line, same format as Quick add below) or pick an existing menu to start from a copy. Press **Create menu**. The portal creates it, puts it in the Short Code register and adds the items as Drafts.
+
+The next screen is a **setup checklist** with the exact values to type in **Mobius → Menus → Add new row** (Name, Shortcode, Extendable = false, Type = PROXY, and a **Copy the URL** button). Do that, then press **Build** to finish the items, check them, activate them, and dial the code on a phone. Each row also has **Try it** (simulator), the setup checklist and **Copy URL**.
+
+The portal cannot yet create the menu inside Mobius for you, or see which menus exist there — that step is by hand.
+
+## The 5-minute way (in the Builder)
 
 1. **Pick the short code** at the top (or type a new one, e.g. `*123#`, and press *Switch / Start*).
 2. **Quick add** (right side): type your list, one item per line.

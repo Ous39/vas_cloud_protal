@@ -2413,6 +2413,22 @@ function ussd_setup_checklist(array $cfg): array {
     $add($sm === 'live' ? ($cfg['purchase_auth'] === '' ? 'warn' : 'ok') : ($sm === 'test' ? 'warn' : 'off'), 'Shared Bundle (Seddo)', $sm === 'live' ? ($cfg['purchase_auth'] === '' ? 'Live, but the headers saved under Buying are missing.' : 'Live.') : ($sm === 'test' ? 'In test mode: every answer is simulated.' : 'Off.'), 'share');
     return $o;
 }
+// ---- Creating a whole menu in one step (the Menus page) ----
+function menu_normalize_shortcode(string $c): string { $c = preg_replace('/\s+/', '', trim($c)); if ($c !== '' && !str_ends_with($c, '#')) $c .= '#'; return $c; }
+function menu_valid_shortcode(string $c): bool { return (bool)preg_match('/^\*\d{1,6}(\*\d{1,6}){0,4}#$/', $c); }
+// Validates the short code and the name, adds the typed items as Drafts and writes the menu into the Short Code register (status Pending until it is
+// live). Nothing is created unless everything is valid. Returns ['code' => …, 'items' => number of items added].
+function menu_create(string $code, string $name, string $items = ''): array {
+    $code = menu_normalize_shortcode($code); $name = trim($name);
+    if (!menu_valid_shortcode($code)) throw new RuntimeException('A short code looks like *9606*7070# — a *, then numbers (more *numbers if you like), ending with #.');
+    if ($name === '' || mb_strlen($name) > 150) throw new RuntimeException('Give the menu a name (up to 150 letters), for example "Data bundles".');
+    $r = portal_pdo()->prepare("SELECT id FROM portal_short_codes WHERE channel_type='USSD' AND short_code=?"); $r->execute([$code]);
+    if (in_array($code, menu_shortcodes(), true) || $r->fetch()) throw new RuntimeException($code.' already exists — open it from the list, or pick another short code.');
+    $n = trim($items) === '' ? 0 : menu_quick_add($code, null, $items, 'draft');
+    save_shortcode(['channel_type' => 'USSD', 'short_code' => $code, 'service_name' => $name, 'provider' => 'Comium', 'status' => 'Pending', 'description' => 'Created from the Menus page']);
+    audit('create_menu', null, 'ussd_menu_nodes', $code, json_encode(['name' => $name, 'items' => $n]));
+    return ['code' => $code, 'items' => $n];
+}
 function menu_node(int $id): ?array {
     $st = portal_pdo()->prepare('SELECT * FROM ussd_menu_nodes WHERE id=?'); $st->execute([$id]);
     return $st->fetch() ?: null;

@@ -465,6 +465,18 @@ t('a flow knows which menus open it', function () {
     menu_quick_add('*ZT9#', null, "Seddo | flow | zt_seddo", 'active'); $u = flow_usage('zt_seddo'); ok(in_array('*ZT9#', array_column($u, 'short_code'), true), 'the menu is listed'); eq(flow_usage('zt_nobody'), [], 'an unused flow has none');
 });
 
+t('a whole menu is created in one step', function () use ($db) {
+    eq(menu_normalize_shortcode(' *9606 *7070 '), '*9606*7070#', 'the # is added and spaces dropped'); ok(menu_valid_shortcode('*123#') && menu_valid_shortcode('*9606*9090*5#') && !menu_valid_shortcode('123') && !menu_valid_shortcode('*12a#') && !menu_valid_shortcode('*#'), 'what a short code looks like');
+    $db->exec("DELETE FROM ussd_menu_nodes WHERE short_code='*8801#'"); $db->exec("DELETE FROM ussd_menu_versions WHERE short_code='*8801#'"); $db->exec("DELETE FROM portal_short_codes WHERE short_code IN ('*8801#','*8802#')");
+    try {
+        $r = menu_create('*8801', 'ZT Data', "Bundles\nDaily | offer | ZT001"); eq($r, ['code' => '*8801#', 'items' => 2], 'the code is normalised and the items counted');
+        eq(count(menu_nodes_flat('*8801#')), 2, 'the items exist'); ok(count(array_filter(menu_nodes_flat('*8801#'), fn($n) => $n['status'] === 'draft')) === 2, 'as drafts'); $st = shortcode_state('*8801#'); eq($st['registered']['service_name'] ?? null, 'ZT Data', 'it is in the register under that name'); eq($st['registered']['status'] ?? null, 'Pending', 'as Pending');
+        thrown(fn() => menu_create('*8801#', 'Again'), 'already exists', 'the same code twice is refused'); thrown(fn() => menu_create('*8802#', ''), 'name', 'a name is needed'); thrown(fn() => menu_create('8802', 'x'), 'looks like', 'a bad code is refused');
+        thrown(fn() => menu_create('*8802#', 'Bad', "Daily | nonsense"), 'not a type', 'a bad item line is refused'); eq($db->query("SELECT COUNT(*) FROM portal_short_codes WHERE short_code='*8802#'")->fetchColumn(), 0, 'and nothing is left behind');
+        $r2 = menu_create('*8802#', 'Empty one'); eq($r2['items'], 0, 'a menu can start with no items'); ok(shortcode_state('*8802#')['registered'] !== null, 'and is still registered');
+    } finally { $db->exec("DELETE FROM ussd_menu_nodes WHERE short_code IN ('*8801#','*8802#')"); $db->exec("DELETE FROM ussd_menu_versions WHERE short_code IN ('*8801#','*8802#')"); $db->exec("DELETE FROM portal_short_codes WHERE short_code IN ('*8801#','*8802#')"); }
+});
+
 // ------------------------------------------------------------------ summary
 $cleanup();
 echo "\n".($fail === 0 ? "ALL PASSED" : "FAILED")."  —  $pass tests ok".($fail ? ", $fail check(s) failed:\n  - ".implode("\n  - ", array_slice($failures, 0, 40)) : '')."\n";
