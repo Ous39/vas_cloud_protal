@@ -493,6 +493,7 @@ t('a Check Balance action runs the flow of that name', function () use ($db) {
 
 t('the balance flow asks Hera prepaid/Balance and the look-up is recorded', function () use ($db, $stub, $lastBody) {
     $db->exec("DELETE FROM ussd_connections WHERE conn_key='hera_balance'");
+    cache_clear(); // look-ups are cached for 20 s: start clean so a run straight after another still reaches the stub
     save_flow(['flow_key' => 'zt_bal', 'title' => 'ZT Bal', 'template' => 'check_balance']); $cn = flow_connection('hera_balance');
     eq($cn['base_url'] ?? null, 'https://vas-testing.comium.gm/hera/prepaid/', 'the connection is made with the address Hera uses (the test environment)'); eq($cn['headers'] ?? null, '', 'and no headers: they are secret and added by hand');
     $db->prepare("UPDATE ussd_connections SET base_url=?, headers_enc=? WHERE conn_key='hera_balance'")->execute(["$stub/bal/ok/", encrypt_secret("X-API-KEY: k-1\nX-USERNAME: USSD\nX-HASHED-PASSWORD: h-1")]);
