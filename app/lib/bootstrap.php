@@ -1855,7 +1855,8 @@ function system_status(): array {
     $age = function (?string $ts): string { if (!$ts) return 'never'; $d = time() - strtotime($ts); return $d < 90 ? $d.' s ago' : ($d < 5400 ? round($d / 60).' min ago' : ($d < 172800 ? round($d / 3600).' h ago' : round($d / 86400).' days ago')); };
     $cfg = ussd_proxy_config(); $out = [];
 
-    $sys = [$row('Version', 'info', substr((string)(getenv('APP_VERSION') ?: 'dev'), 0, 12)), $row('PHP', 'info', PHP_VERSION)];
+    $sys = [$row('Version', 'info', substr((string)(getenv('APP_VERSION') ?: 'dev'), 0, 12)), $row('PHP', 'info', PHP_VERSION),
+        $row('Your address', 'info', client_ip().' (connection '.(string)($_SERVER['REMOTE_ADDR'] ?? '?').', forwarded '.((string)($_SERVER['HTTP_X_FORWARDED_FOR'] ?? '') ?: 'none').') — what login lock-out and the audit trail record for you')];
     try { $t0 = microtime(true); portal_pdo()->query('SELECT 1'); $sys[] = $row('Portal database', 'ok', 'answers in '.$ms($t0)); } catch (Throwable $e) { $sys[] = $row('Portal database', 'bad', 'not reachable'); }
     foreach ((array)app_config('allowed_schemas') as $s) {
         try { $t0 = microtime(true); pdo($s)->query('SELECT 1'); $sys[] = $row('Database '.$s, 'ok', 'answers in '.$ms($t0).(is_protected_schema($s) ? ' · live data, read-only here' : '')); }
