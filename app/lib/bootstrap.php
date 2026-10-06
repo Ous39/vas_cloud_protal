@@ -2598,6 +2598,7 @@ function menu_quick_add(string $code, ?int $parent, string $lines, string $statu
     }
     if (!$rows) throw new RuntimeException('Nothing to add — write one item per line.');
     if (count($rows) > 60) throw new RuntimeException('At most 60 items at a time.');
+    flow_tables(); menu_versions_table(); // creating a table inside a transaction would end it (MySQL commits on any CREATE TABLE)
     $db = portal_pdo(); $db->beginTransaction();
     try { foreach ($rows as [$ln, $d]) { try { save_menu_node($d, null, false); } catch (RuntimeException $e) { throw new RuntimeException('Line '.$ln.': '.$e->getMessage()); } } $db->commit(); }
     catch (Throwable $e) { $db->rollBack(); throw $e; }
@@ -2720,6 +2721,7 @@ function import_menu_json(string $shortCode, string $json): array {
         }
     };
     $walk($tree, null, 1);
+    flow_tables(); menu_versions_table();
     $db = portal_pdo(); $db->beginTransaction();
     try {
         $archived = $db->prepare("UPDATE ussd_menu_nodes SET short_code=CONCAT(short_code,' [archived ',DATE_FORMAT(NOW(),'%m-%d %H:%i'),']'), status='inactive' WHERE short_code=?");

@@ -512,6 +512,14 @@ t('a code that is only one service opens it straight away', function () use ($db
     menu_quick_add('*ZT13#', null, "Pick one | flow | zt_one\nSecond | end | Second item", 'active'); has(screen('*ZT13#', [])['text'], "1. Pick one\n2. Second", 'two items stay a list');
 });
 
+t('adding a flow item works in a fresh request (no table is created inside the transaction)', function () use ($db, $root) {
+    save_flow(['flow_key' => 'zt_one', 'title' => 'ZT One']); $boot = is_file($root.'/app/lib/bootstrap.php') ? $root.'/app/lib/bootstrap.php' : '/var/www/lib/bootstrap.php';
+    $script = sys_get_temp_dir().'/zt_fresh_'.getmypid().'.php';
+    file_put_contents($script, "<?php define('LEAN_BOOT', true); require ".var_export($boot, true)."; try { echo 'ADDED '.menu_quick_add('*ZT14#', null, 'Bal | flow | zt_one', 'draft'); } catch (Throwable \$e) { echo 'FAILED '.\$e->getMessage(); }");
+    $out = (string)shell_exec(escapeshellarg(PHP_BINARY).' '.escapeshellarg($script).' 2>&1'); @unlink($script);
+    eq(trim($out), 'ADDED 1', 'a flow item is added by a request that has not touched the flow tables yet');
+});
+
 // ------------------------------------------------------------------ summary
 $cleanup();
 echo "\n".($fail === 0 ? "ALL PASSED" : "FAILED")."  —  $pass tests ok".($fail ? ", $fail check(s) failed:\n  - ".implode("\n  - ", array_slice($failures, 0, 40)) : '')."\n";
