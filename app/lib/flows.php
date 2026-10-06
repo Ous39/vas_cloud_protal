@@ -402,7 +402,7 @@ function flow_validate(array $def): array {
         if (mb_strlen($txt) > 170) $add('warn', '"'.$k.'": the text is '.mb_strlen($txt).' characters — a phone screen holds about '.USSD_MAX_CHARS.'.');
         foreach (['text' => $txt, 'body' => (string)($s['body'] ?? '')] as $what => $str) if (preg_match_all('/\{([A-Za-z0-9_.]+)\}/', $str, $m)) foreach (array_unique($m[1]) as $p) {
             if ($what === 'body' && in_array($p, ['imsi', 'local_address_json', 'remote_address_json', 'local_dialog_id', 'remote_dialog_id'], true)) continue;
-            if (in_array($p, $known, true) || in_array($p, $offerVars, true) || in_array($p, $varsAsked, true) || str_starts_with($p, 'result.')) continue;
+            if (in_array($p, $known, true) || in_array($p, $offerVars, true) || in_array($p, $varsAsked, true) || $p === 'result' || str_starts_with($p, 'result.')) continue; // {result} alone is a plain reply, e.g. Hera's balance
             $add('warn', '"'.$k.'": {'.$p.'} is not something this flow collects, so it will be empty.');
         }
         if ($t === 'choices') { foreach ($s['options'] ?? [] as $o) $target((string)$k, 'option "'.($o['label'] ?? '').'"', $o['next'] ?? ''); if (empty($s['options'])) $add('error', '"'.$k.'" has no options.'); }

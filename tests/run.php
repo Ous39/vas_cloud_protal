@@ -501,6 +501,7 @@ t('the balance flow asks Hera prepaid/Balance and the look-up is recorded', func
     $sent = $lastBody('/bal/ok/Balance'); eq($sent['json'], ['msisdn' => '6600770'], 'the request is just the local number'); eq($sent['headers']['x-username'] ?? null, 'USSD', 'with the saved headers');
     eq(explode("\n", (string)$r['text'])[0], 'Your balance is: D1', 'the customer sees Hera\'s balance in the wording');
     $row = $db->query("SELECT step_key, outcome, http_code, response, request_body FROM ussd_flow_calls WHERE call_id='ZT-bal1' AND flow_key='zt_bal'")->fetch(); eq($row['step_key'] ?? null, 'look:Balance', 'the look-up is on record'); eq($row['http_code'] ?? null, 200, 'with its status'); has((string)($row['response'] ?? ''), '"result":"1"', 'and Hera\'s own reply');
+    ok(!array_filter(flow_validate($fl['def']), fn($x) => str_contains($x['msg'], '{result}')), 'the check accepts {result} for a plain reply');
     $db->exec("DELETE FROM ussd_connections WHERE conn_key='hera_balance'");
 });
 
