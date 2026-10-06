@@ -19,8 +19,8 @@ A production-style VAS operations portal for managing `HeraTesting`, `HeraProduc
 - Multi-field search: select column, condition, and value
 - Add, edit, duplicate, copy and sync records
 - Duplicate opens a full form first so you can adjust values before saving
-- Two-way copy: Testing → Production and Production → Testing
-- Full-table sync in both directions with confirmation
+- Copy a record between Testing and Production (either way), with confirmation
+- Merge a whole table into Production (upsert by primary key, never deletes); full-table sync (truncate + reload) only ever targets Testing
 - Confirmation workflow before insert, update, duplicate, copy, sync and write-SQL
 - Delete disabled in the portal and destructive SQL blocked
 - SQL Console for SELECT/SHOW/DESCRIBE/EXPLAIN and controlled write SQL
@@ -43,7 +43,7 @@ Open the portal:
 http://localhost:8090
 ```
 
-Login:
+Login (local development only — the portal forces a new password on first sign-in with this one):
 
 ```text
 Username: admin

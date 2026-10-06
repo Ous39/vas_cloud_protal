@@ -557,12 +557,33 @@ function require_login(): void {
     } catch (Throwable $e) { return; }
     if (!$fresh || $fresh['status'] !== 'active') { unset($_SESSION['user'], $_SESSION['last_seen']); flash('danger', 'Your account is no longer active.'); redirect('?page=login'); }
     $_SESSION['user'] = array_merge($u, $fresh);
+    if (!empty($_SESSION['must_change_pw']) && !in_array($_GET['page'] ?? '', ['account', 'logout'], true)) { flash('warning', 'You are using the default password. Choose a new one to continue.'); redirect('?page=account'); }
+    if (random_int(1, 300) === 1) portal_housekeeping();
+}
+// Old rows nothing reads any more. Runs from the 5-minute alert cron and now and then from a page view, so these log tables cannot grow for ever.
+function portal_housekeeping(): void {
+    static $ran = false; if ($ran) return; $ran = true;
+    foreach ([['login_attempts', 'created_at', 30], ['api_request_log', 'created_at', 30], ['integration_checks', 'checked_at', 30], ['operation_confirmations', 'created_at', 7], ['ussd_flow_calls', 'created_at', 60]] as [$t, $c, $d]) {
+        try { portal_pdo()->exec("DELETE FROM `$t` WHERE `$c` < NOW() - INTERVAL $d DAY LIMIT 5000"); } catch (Throwable $e) {}
+    }
 }
 
+// The password the install script gives the first admin. Whoever signs in with it is sent to My Account until it is changed.
+const KNOWN_DEFAULT_PASSWORDS = ['admin123'];
 const LOGIN_MAX_ATTEMPTS = 5;
 const LOGIN_LOCKOUT_MINUTES = 15;
 
-function client_ip(): string { return substr((string)($_SERVER['REMOTE_ADDR'] ?? 'unknown'), 0, 80); }
+// The caller's address. Behind the ingress every request arrives from the proxy's own (private) address, and the real caller is the
+// last entry the proxy added to X-Forwarded-For. A request that comes straight from a public address has that header ignored, so it
+// cannot be forged to dodge the login lock-out or the USSD allow-list.
+function ip_is_internal(string $ip): bool {
+    return filter_var($ip, FILTER_VALIDATE_IP) !== false && filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false;
+}
+function client_ip(): string {
+    $remote = (string)($_SERVER['REMOTE_ADDR'] ?? ''); $xff = trim((string)($_SERVER['HTTP_X_FORWARDED_FOR'] ?? ''));
+    if ($xff !== '' && ip_is_internal($remote)) { $last = trim(substr($xff, strrpos(',' . $xff, ','))); if (filter_var($last, FILTER_VALIDATE_IP) !== false) return $last; }
+    return substr($remote !== '' ? $remote : 'unknown', 0, 80);
+}
 
 function record_login_attempt(string $username, bool $success): void {
     try { portal_pdo()->prepare('INSERT INTO login_attempts(username,ip_address,success) VALUES(?,?,?)')->execute([$username, client_ip(), $success ? 1 : 0]); } catch (Throwable $e) {}
@@ -582,7 +603,8 @@ function is_login_locked_out(string $username): bool {
 function login_attempt(string $username,string $password): bool {
     if ($username === '' || is_login_locked_out($username)) { record_login_attempt($username, false); return false; }
     $st=portal_pdo()->prepare('SELECT * FROM portal_users WHERE username=? AND status="active" LIMIT 1'); $st->execute([$username]); $u=$st->fetch();
-    if ($u && password_verify($password,$u['password_hash'])) { record_login_attempt($username, true); session_regenerate_id(true); $_SESSION['user']=array_diff_key($u,['password_hash'=>1]); $_SESSION['last_seen']=time(); set_current_schema($u['default_schema_name'] ?? app_config('default_schema')); portal_pdo()->prepare('UPDATE portal_users SET last_login=NOW() WHERE id=?')->execute([$u['id']]); audit('login',null,null,null,'User logged in'); return true; }
+    if (!$u) password_verify($password, '$2y$12$36THbWOafxnZWHeHkqOj8OTvvx8VoKfXq4IAbTOSlP9iVgnIdjH92'); // same time taken for an unknown name, so names cannot be guessed from the response time
+    if ($u && password_verify($password,$u['password_hash'])) { record_login_attempt($username, true); session_regenerate_id(true); if (in_array($password, KNOWN_DEFAULT_PASSWORDS, true)) $_SESSION['must_change_pw'] = true; else unset($_SESSION['must_change_pw']); $_SESSION['user']=array_diff_key($u,['password_hash'=>1]); $_SESSION['last_seen']=time(); set_current_schema($u['default_schema_name'] ?? app_config('default_schema')); portal_pdo()->prepare('UPDATE portal_users SET last_login=NOW() WHERE id=?')->execute([$u['id']]); audit('login',null,null,null,'User logged in'); return true; }
     record_login_attempt($username, false);
     return false;
 }
@@ -594,7 +616,7 @@ function role_badge(string $role): string { return ['admin'=>'danger','manager'=
 
 function audit(string $action, ?string $schema=null, ?string $table=null, ?string $key=null, ?string $details=null): void {
     try { $u=user(); portal_pdo()->prepare('INSERT INTO portal_audit_trail(request_id,user_id,username,action,schema_name,target_table,target_key,ip_address,user_agent,details) VALUES(?,?,?,?,?,?,?,?,?,?)')
-        ->execute([request_id(),$u['id']??null,$u['username']??null,$action,$schema,$table,$key,$_SERVER['REMOTE_ADDR']??null,substr($_SERVER['HTTP_USER_AGENT']??'',0,255),$details]); } catch(Throwable $e) {}
+        ->execute([request_id(),$u['id']??null,$u['username']??null,$action,$schema,$table,$key,client_ip(),substr($_SERVER['HTTP_USER_AGENT']??'',0,255),$details]); } catch(Throwable $e) {}
 }
 
 function table_names(string $schema): array { $st=pdo($schema)->query("SELECT TABLE_NAME AS table_name FROM information_schema.TABLES WHERE TABLE_SCHEMA=".pdo($schema)->quote($schema)." ORDER BY TABLE_NAME"); return array_column($st->fetchAll(),'table_name'); }
@@ -733,11 +755,12 @@ function sync_table(string $from,string $to,string $table): int {
     // Destructive TRUNCATE+reload is only ever allowed when the destination is HeraTesting.
     // HeraProduction can only be updated via merge_table(), which never deletes existing rows.
     if (is_protected_schema($to)) throw new RuntimeException('Full-table sync cannot target '.$to.' (would truncate live data). Use Merge instead.');
-    pdo($to)->exec('SET FOREIGN_KEY_CHECKS=0');
-    pdo($to)->exec('TRUNCATE TABLE '.ident($table));
     $cols=array_column(columns($from,$table),'name'); $colsql=implode(',',array_map('ident',$cols));
-    $affected=pdo($to)->exec('INSERT INTO '.ident($table).'('.$colsql.') SELECT '.$colsql.' FROM '.ident($from).'.'.ident($table));
-    pdo($to)->exec('SET FOREIGN_KEY_CHECKS=1');
+    pdo($to)->exec('SET FOREIGN_KEY_CHECKS=0');
+    try {
+        pdo($to)->exec('TRUNCATE TABLE '.ident($table));
+        $affected=pdo($to)->exec('INSERT INTO '.ident($table).'('.$colsql.') SELECT '.$colsql.' FROM '.ident($from).'.'.ident($table));
+    } finally { pdo($to)->exec('SET FOREIGN_KEY_CHECKS=1'); } // this connection is reused: never leave the checks off
     audit('sync_table',$to,$table,null,"from=$from rows=$affected");
     return (int)$affected;
 }
@@ -765,6 +788,11 @@ function save_shortcode(array $data, ?int $id=null): void { $payload=[normalize_
 function save_project(array $data, array $channelIds=[], ?int $id=null): void { $payload=[normalize_value($data['project_name']??''), normalize_value($data['short_code']??''), normalize_value($data['status']??'Planning'), normalize_value($data['start_date']??''), normalize_value($data['launch_date']??''), normalize_value($data['description']??'')]; if(!$payload[0]) throw new RuntimeException('Project Name is required.'); $db=portal_pdo(); if($id){ $payload[]=$id; $db->prepare('UPDATE portal_projects SET project_name=?, short_code=?, status=?, start_date=?, launch_date=?, description=?, updated_at=NOW() WHERE id=?')->execute($payload); } else { $db->prepare('INSERT INTO portal_projects(project_name,short_code,status,start_date,launch_date,description) VALUES(?,?,?,?,?,?)')->execute($payload); $id=(int)$db->lastInsertId(); } $db->prepare('DELETE FROM portal_project_channels WHERE project_id=?')->execute([$id]); foreach($channelIds as $cid){ $cid=(int)$cid; if($cid<=0) continue; $st=$db->prepare('SELECT short_code FROM portal_short_codes WHERE id=?'); $st->execute([$cid]); $row=$st->fetch(); if($row) $db->prepare('INSERT IGNORE INTO portal_project_channels(project_id,channel_id,short_code) VALUES(?,?,?)')->execute([$id,$cid,$row['short_code']]); } audit('save_project','vas_portal','portal_projects',(string)$id,json_encode(['data'=>$data,'channels'=>$channelIds])); }
 
 function make_confirmation(string $action,array $payload): string { $token=bin2hex(random_bytes(24)); portal_pdo()->prepare('INSERT INTO operation_confirmations(token,username,action,payload) VALUES(?,?,?,?)')->execute([$token,user()['username']??'guest',$action,json_encode($payload)]); return $token; }
+// The permission needed to carry out a confirmed action, checked again at the moment it runs (a role may have changed since the preview).
+function confirmation_permission(string $action): string {
+    return ['insert' => 'create_records', 'update' => 'edit_records', 'duplicate' => 'duplicate_records', 'copy_record' => 'copy_records', 'sync_table' => 'copy_records', 'merge_table' => 'copy_records',
+        'sql' => 'run_sql', 'save_project' => 'manage_projects', 'save_shortcode' => 'manage_shortcodes'][$action] ?? throw new RuntimeException('Unknown action');
+}
 function get_confirmation(string $token): ?array { $st=portal_pdo()->prepare('SELECT * FROM operation_confirmations WHERE token=? AND status="pending" AND created_at > (NOW() - INTERVAL 30 MINUTE) LIMIT 1'); $st->execute([$token]); return $st->fetch() ?: null; }
 function mark_confirmation(string $token,string $status): void { portal_pdo()->prepare('UPDATE operation_confirmations SET status=?, confirmed_at=NOW() WHERE token=?')->execute([$status,$token]); }
 
@@ -788,12 +816,22 @@ function sql_after_cte_header(string $sql): string {
     }
     return ltrim(substr($s, $i));
 }
+// The console works in the database chosen at the top. It must not read the portal's own database (password hashes, the encryption key),
+// the server's account tables, or write into a live database by naming it from another one; and it must not create accounts or stored code.
+function sql_assert_in_scope(string $sql, bool $isRead): void {
+    $bare = preg_replace(['~/\*.*?\*/~s', '~(--|#)[^\r\n]*~'], ' ', $sql);
+    $portal = preg_quote((string)app_config('portal_db'), '/');
+    if (preg_match('/`?\b(?:'.$portal.'|mysql)\b`?\s*\.\s*[`\w]/i', $bare)) throw new RuntimeException("The SQL Console cannot read the portal's own database or the server's account tables.");
+    if (!$isRead && preg_match('/`?\b(?:'.implode('|', array_map(fn($s) => preg_quote($s, '/'), PROTECTED_SCHEMAS)).')\b`?\s*\.\s*[`\w]/i', $bare)) throw new RuntimeException('Writes cannot name a live database. Switch to that database and use the record forms.');
+    if (!$isRead && preg_match('/\b(CREATE|ALTER)\s+(DEFINER\s*=\s*\S+\s+)?(USER|ROLE|SERVER|EVENT|TRIGGER|PROCEDURE|FUNCTION)\b/i', $bare)) throw new RuntimeException('Accounts, events, triggers and stored code cannot be created from the SQL Console.');
+}
 function safe_sql_kind(string $sql): string {
     $trim=ltrim($sql);
     if (substr_count(rtrim(trim($sql), ';'), ';') > 0) throw new RuntimeException('Only a single statement is allowed per run.');
     $effective = preg_match('/^WITH\s+/i', $trim) ? sql_after_cte_header($trim) : $trim;
     if(!preg_match('/^(SELECT|SHOW|DESCRIBE|EXPLAIN|INSERT|UPDATE|REPLACE|CREATE|ALTER)\b/i',$effective,$m)) throw new RuntimeException('Only SELECT, SHOW, DESCRIBE, EXPLAIN, INSERT, UPDATE, REPLACE, CREATE and ALTER (optionally preceded by a WITH common table expression) are allowed. DELETE, DROP and TRUNCATE are disabled.');
     if(preg_match('/\b(DELETE|DROP|TRUNCATE|GRANT|REVOKE|LOAD_FILE|INTO\s+OUTFILE|INTO\s+DUMPFILE)\b/i',$sql)) throw new RuntimeException('Dangerous SQL command blocked. Delete/drop/truncate are disabled in this portal.');
+    sql_assert_in_scope($sql, in_array(strtoupper($m[1]), SQL_READONLY_KINDS, true));
     return strtoupper($m[1]);
 }
 const SQL_CONSOLE_MAX_ROWS = 1000;
@@ -1425,7 +1463,7 @@ function send_slack_alert(string $schema, string $message): void {
     foreach ($st->fetchAll() as $row) {
         $ch = curl_init($row['base_url']);
         curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 5, CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 5, CURLOPT_CONNECTTIMEOUT => 5, CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
             CURLOPT_POST => true, CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
             CURLOPT_POSTFIELDS => json_encode(['text' => $message]),
         ]);
@@ -2254,7 +2292,7 @@ function test_integration(int $id): array {
                 elseif ($row['auth_type'] === 'basic') $headers[] = 'Authorization: Basic '.base64_encode($cred);
             }
             $ch = curl_init($url);
-            curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 5, CURLOPT_CONNECTTIMEOUT => 5, CURLOPT_HTTPHEADER => $headers]);
+            curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 5, CURLOPT_CONNECTTIMEOUT => 5, CURLOPT_HTTPHEADER => $headers, CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS]);
             curl_exec($ch);
             $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
             $err = curl_error($ch);
@@ -3105,7 +3143,7 @@ function ussd_hera_post(array $cfg, string $body, ?string $url = null): array {
     $auth = $cfg['purchase_auth'] !== '' ? decrypt_secret($cfg['purchase_auth']) : '';
     foreach (preg_split('/\r\n|\n/', $auth) as $line) if (preg_match('/^[A-Za-z0-9\-]{1,40}:\s*\S.*$/', trim($line))) $hdr[] = trim($line);
     $ch = curl_init($url);
-    curl_setopt_array($ch, [CURLOPT_POST => true, CURLOPT_POSTFIELDS => $body, CURLOPT_HTTPHEADER => $hdr, CURLOPT_RETURNTRANSFER => true, CURLOPT_FOLLOWLOCATION => false,
+    curl_setopt_array($ch, [CURLOPT_POST => true, CURLOPT_POSTFIELDS => $body, CURLOPT_HTTPHEADER => $hdr, CURLOPT_RETURNTRANSFER => true, CURLOPT_FOLLOWLOCATION => false, CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
         CURLOPT_CONNECTTIMEOUT => 3, CURLOPT_TIMEOUT => max(2, min(15, (int)$cfg['purchase_timeout']))]);
     $raw = curl_exec($ch); $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE); $err = curl_error($ch); curl_close($ch);
     return ['code' => $code, 'raw' => is_string($raw) ? $raw : '', 'error' => $err];
@@ -3560,7 +3598,7 @@ function mobius_bases(array $cfg): array {
 }
 function mobius_handle(): CurlHandle {
     $ch = curl_init();
-    curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_POST => true, CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Accept: application/json'], CURLOPT_TIMEOUT => 5, CURLOPT_CONNECTTIMEOUT => 3, CURLOPT_COOKIEFILE => '']);
+    curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_POST => true, CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Accept: application/json'], CURLOPT_TIMEOUT => 5, CURLOPT_CONNECTTIMEOUT => 3, CURLOPT_COOKIEFILE => '', CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS]);
     return $ch;
 }
 function mobius_http(string $url, array $body, int $timeout = 5, ?CurlHandle $ch = null, string $method = 'POST'): array {
@@ -3745,7 +3783,7 @@ function ussd_proxy_push_endpoint(array $cfg, array $flat, string $raw, array $g
 function ussd_proxy_endpoint(): never {
     $t0 = microtime(true); $cfg = ussd_proxy_config();
     $mode = ['proxy' => 'proxy', 'ms' => 'ms_initiated', 'ms_initiated' => 'ms_initiated'][(string)($_GET['m'] ?? '')] ?? null;
-    $xff = trim((string)($_SERVER['HTTP_X_FORWARDED_FOR'] ?? '')); $ip = $xff !== '' ? trim(substr($xff, strrpos(',' . $xff, ',') )) : (string)($_SERVER['REMOTE_ADDR'] ?? '');
+    $ip = client_ip();
     $ok = $cfg['enabled'] === '1' && $cfg['token'] !== '' && hash_equals($cfg['token'], (string)($_GET['t'] ?? '')) && $mode !== null;
     try { $ok = $ok && ussd_proxy_ip_allowed($cfg['allow_ips'], $ip); } catch (Throwable $e) { $ok = false; }
     if (!$ok) { http_response_code(404); header('Content-Type: text/plain'); exit('Not found'); }

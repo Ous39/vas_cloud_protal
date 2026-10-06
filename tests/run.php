@@ -400,6 +400,36 @@ t('a Mobius log line becomes a request body', function () {
     thrown(fn() => flow_body_from_log('no json here'), 'No JSON', 'a line with no JSON is refused');
 });
 
+// ------------------------------------------------------------------ security basics
+echo "\nSecurity basics\n";
+t('the caller address behind the ingress', function () {
+    $save = [$_SERVER['REMOTE_ADDR'] ?? null, $_SERVER['HTTP_X_FORWARDED_FOR'] ?? null]; $set = function ($r, $x) { $_SERVER['REMOTE_ADDR'] = $r; if ($x === null) unset($_SERVER['HTTP_X_FORWARDED_FOR']); else $_SERVER['HTTP_X_FORWARDED_FOR'] = $x; };
+    $set('10.42.0.7', '41.1.2.3'); eq(client_ip(), '41.1.2.3', 'from the ingress: the address it saw');
+    $set('10.42.0.7', '6.6.6.6, 41.1.2.3'); eq(client_ip(), '41.1.2.3', 'a forged first entry is ignored: the last one is the proxy\'s');
+    $set('41.9.9.9', '1.1.1.1'); eq(client_ip(), '41.9.9.9', 'straight from a public address the header is ignored');
+    $set('10.42.0.7', 'not-an-ip'); eq(client_ip(), '10.42.0.7', 'rubbish in the header is ignored'); $set('10.42.0.7', null); eq(client_ip(), '10.42.0.7', 'no header: the connection address');
+    ok(ip_is_internal('192.168.164.150') && ip_is_internal('127.0.0.1') && !ip_is_internal('8.8.8.8') && !ip_is_internal('x'), 'private and loopback addresses count as the proxy');
+    foreach ([0 => 'REMOTE_ADDR', 1 => 'HTTP_X_FORWARDED_FOR'] as $i => $k) { if ($save[$i] === null) unset($_SERVER[$k]); else $_SERVER[$k] = $save[$i]; }
+});
+t('the SQL console stays in its own database', function () {
+    $portal = app_config('portal_db');
+    foreach (["SELECT * FROM $portal.portal_users", "SELECT * FROM `$portal`.`app_secrets`", "SELECT * FROM $portal /* x */ . portal_users", "SELECT * FROM mysql.user", "SELECT 1 FROM vas_offers WHERE 1=0 UNION SELECT username FROM $portal.portal_users"] as $q)
+        thrown(fn() => safe_sql_kind($q), 'cannot read the portal', 'blocked: '.$q);
+    foreach (['SELECT * FROM vas_offers', "SELECT '$portal' AS name", 'SELECT * FROM information_schema.tables', "UPDATE vas_offers SET vendor='Hera' WHERE id=1", 'SHOW TABLES'] as $q) { safe_sql_kind($q); ok(true, 'allowed'); }
+    thrown(fn() => safe_sql_kind("UPDATE HeraProduction.vas_offers SET status='0'"), 'live database', 'a write cannot name a live database'); thrown(fn() => safe_sql_kind('UPDATE `Hera`.vas_offers SET status=0'), 'live database', 'not even quoted');
+    safe_sql_kind('SELECT * FROM HeraProduction.vas_offers LIMIT 1'); ok(true, 'but reading across is fine');
+    foreach (['CREATE USER x IDENTIFIED BY \'y\'', 'ALTER USER root IDENTIFIED BY \'y\'', 'CREATE TRIGGER t BEFORE INSERT ON a FOR EACH ROW SET @a=1', 'CREATE EVENT e ON SCHEDULE EVERY 1 DAY DO SELECT 1', 'CREATE DEFINER=root@localhost PROCEDURE p() SELECT 1'] as $q) thrown(fn() => safe_sql_kind($q), 'cannot be created', 'blocked: '.$q);
+});
+t('a confirmed action is checked against the role again', function () {
+    eq(confirmation_permission('sql'), 'run_sql', 'sql needs the SQL permission'); eq(confirmation_permission('sync_table'), 'copy_records', 'a table copy needs the copy permission'); eq(confirmation_permission('update'), 'edit_records', 'an edit needs the edit permission');
+    thrown(fn() => confirmation_permission('format_disk'), 'Unknown action', 'an unknown action is refused');
+});
+t('old log rows are cleared out, recent ones kept', function () use ($db) {
+    $db->exec("INSERT INTO login_attempts(username,ip_address,success,created_at) VALUES ('zt_old','1.1.1.1',0,NOW() - INTERVAL 40 DAY),('zt_new','1.1.1.1',0,NOW())");
+    portal_housekeeping(); $n = fn($u) => (int)$db->query("SELECT COUNT(*) FROM login_attempts WHERE username='$u'")->fetchColumn();
+    eq($n('zt_old'), 0, 'a 40-day-old attempt is removed'); eq($n('zt_new'), 1, 'a fresh one stays'); $db->exec("DELETE FROM login_attempts WHERE username LIKE 'zt_%'");
+});
+
 // ------------------------------------------------------------------ summary
 $cleanup();
 echo "\n".($fail === 0 ? "ALL PASSED" : "FAILED")."  —  $pass tests ok".($fail ? ", $fail check(s) failed:\n  - ".implode("\n  - ", array_slice($failures, 0, 40)) : '')."\n";

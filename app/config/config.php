@@ -1,5 +1,10 @@
 <?php
 declare(strict_types=1);
+// In production the passwords must come from the environment (the Kubernetes Secret). The built-in local-development values are
+// refused there, so a missing Secret fails loudly instead of quietly using a password that is written in the source code.
+if (getenv('APP_ENV') === 'production' && !getenv('DB_PASSWORD')) {
+    throw new RuntimeException('DB_PASSWORD must be provided in production.');
+}
 return [
     'db_host' => getenv('DB_HOST') ?: 'db',
     'db_port' => getenv('DB_PORT') ?: '3306',

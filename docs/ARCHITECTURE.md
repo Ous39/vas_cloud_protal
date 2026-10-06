@@ -28,11 +28,14 @@ takes effect on the next request instead of being served stale from a browser's 
 
 `?page=ussd_menu` designs and previews a USSD menu tree per short code
 (`vas_portal.ussd_menu_nodes` — self-referencing hierarchy, `parent_id` NULL for root nodes).
-**This is a design/staging tool.** It does not push configuration to Mobius or any other gateway —
-that needs the gateway's own menu-config API, which isn't wired up (Mobius's own docs describe a
-menu configuration mechanism, but the details are behind access-gated pages). Until that
-integration exists, `?page=ussd_menu_export` (JSON) is the source of truth you'd hand-enter into
-the real gateway, or feed to a future push integration once its API is available.
+The menu is **live**: a Mobius PROXY menu calls the portal's `ussd.php?t=<token>&m=proxy`, the portal
+builds the screen from the Active items (`ussd_screen()`, stateless: the screen is rebuilt from the replies
+typed so far) and pushes it back through Mobius' REST `ussdcalls/proxy`. Drafts are visible only in the
+Simulator. A dial string such as `*9606*9090*2#` is the short code followed by pre-typed choices
+(`ussd_resolve_dialled()`). Item types: submenu, offer, catalogue list, recipient (buy for another number),
+quiz, Shared Bundle, **service flow** (`lib/flows.php`: choices/offers/ask/look-up/confirm/call/message steps
+whose calls to Hera branch on success / low balance / failure) and message. `?page=ussd_menu_export` (JSON)
+exports a menu; every change is versioned and restorable. See `docs/ussd/HOW-TO-BUILD-A-MENU.md`.
 - `menu_tree()` builds the nested structure from the flat table; `render_menu_preview()` renders a
   plain-text simulation of what a subscriber would actually see, for reviewing the flow without a
   live gateway.
@@ -148,7 +151,10 @@ connection-config page — that's exactly what Integrations is for.
 - **HeraProduction is read-only in the SQL Console** (SELECT/SHOW/DESCRIBE/EXPLAIN only). Production writes only happen through the audited, primary-key-scoped record forms (Add/Edit/Duplicate/Copy), never via free-form SQL. The app's own DB grant on HeraProduction is `SELECT, INSERT, UPDATE` only (see `database/init/00_platform_schema.sql` and, for an already-provisioned database, `database/migrations/2026-09-12_MANUAL_revoke_excess_grants.sql`).
 - **Full-table sync (truncate + reload) can never target HeraProduction.** Use "Merge into Production" instead, which upserts by primary key and never deletes existing rows.
 - Columns matching a sensitive-name pattern (password, secret, token, hash, otp, pin, cvv, card number, auth data, credential, api key) are redacted (`••••••••`) wherever data is rendered or exported, regardless of role.
-- Login is rate-limited: 5 failed attempts per username, or 20 failed attempts per IP, within a 15-minute window blocks further attempts.
+- Login is rate-limited: 5 failed attempts per username, or 20 failed attempts per IP, within a 15-minute window blocks further attempts. The caller's address is the last `X-Forwarded-For` entry the ingress added, and only when the connection itself comes from a private address (`client_ip()`), so the header cannot be forged. Signing in with the install default password (`admin123`) sends the user to My Account until it is changed.
+- The SQL Console cannot read the portal's own database or the server's `mysql` tables, cannot write into a live database by naming it from another, and cannot create accounts, events, triggers or stored code (`sql_assert_in_scope()`). A confirmed action re-checks the user's permission at the moment it runs (`confirmation_permission()`).
+- Outbound calls (Hera, Mobius, Slack, integration checks) speak http/https only. In production the app refuses to start without `DB_PASSWORD` from the environment instead of falling back to the development default.
+- Log tables are trimmed by `portal_housekeeping()` (login attempts, API request log and integration checks 30 days, confirmations 7 days, flow calls 60 days); the audit trail and the purchase ledger are never trimmed.
 - CSRF tokens are required on every state-changing request; session cookies are `HttpOnly`, `SameSite=Strict`, and `Secure` when served over HTTPS; responses carry a CSP, HSTS (when HTTPS), and standard anti-clickjacking/MIME-sniffing headers.
 - **Complaint / Transaction Investigation report** (`?page=investigate`): a bounded, partition-aware search over `audit_log` (max 31-day range) with MSISDN/transaction/vendor/status/channel filters, readable request/response payloads (`CONVERT(... USING utf8mb4)` on the `input`/`output` blob columns), and filtered CSV export — see `search_audit_log()` / `export_audit_log()` in `app/lib/bootstrap.php`.
 - **Partner API** (`app/public/api.php`) is read-only and authenticated separately from the portal session, via a `X-Api-Key` header checked against `vas_portal.api_keys` (key is stored as a SHA-256 hash, shown once at creation). Rate-limited to 60 requests/minute/key against `vas_portal.api_request_log`, the same pattern used for portal login rate-limiting. Manage keys at `?page=api_keys` (admin only, `manage_api_keys` permission).

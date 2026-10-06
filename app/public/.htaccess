@@ -1,2 +1,6 @@
 DirectoryIndex index.php
 Options -Indexes
+# never serve hidden files (.htaccess, .env, .git ...)
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>

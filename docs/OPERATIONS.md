@@ -48,7 +48,9 @@ Never paste keys, passwords or logs containing them into chat or tickets. System
 | Hera headers (API key) | Get a new key from the Hera owner; USSD Proxy → Buying from the menu → Headers to send |
 | Alert cron token | Alert Settings → rotate, then update the CronJob with the command it shows |
 
-Also: change the `admin` password after setting up, give each person their own login, and keep **manage_ussd_menus** (building) and **manage_api_keys** (settings, secrets, status) for people who need them.
+The portal will not start in production without `DB_PASSWORD` in the environment (the `vas-cloud-app-secret` Secret) — a missing Secret shows as pods "not ready" and `/health.php` 503, not as a silent fall-back to a built-in password.
+
+Also: change the `admin` password after setting up (signing in with the install default `admin123` forces a change), give each person their own login, and keep **manage_ussd_menus** (building) and **manage_api_keys** (settings, secrets, status) for people who need them.
 
 ## When something is wrong
 

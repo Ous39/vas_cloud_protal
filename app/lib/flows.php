@@ -314,7 +314,7 @@ function flow_lookup_default(array $step, array $vars): array { return ['vars' =
 function flow_post(array $conn, string $url, string $body): array {
     $hdr = ['Content-Type: application/json', 'Accept: application/json'];
     foreach (preg_split('/\r\n|\n/', (string)($conn['headers'] ?? '')) as $l) if (preg_match('/^[A-Za-z0-9\-]{1,40}:\s*\S.*$/', trim($l))) $hdr[] = trim($l);
-    $ch = curl_init($url); curl_setopt_array($ch, [CURLOPT_POST => true, CURLOPT_POSTFIELDS => $body, CURLOPT_HTTPHEADER => $hdr, CURLOPT_RETURNTRANSFER => true, CURLOPT_FOLLOWLOCATION => false, CURLOPT_CONNECTTIMEOUT => 3, CURLOPT_TIMEOUT => max(2, min(15, (int)($conn['timeout'] ?? 8)))]);
+    $ch = curl_init($url); curl_setopt_array($ch, [CURLOPT_POST => true, CURLOPT_POSTFIELDS => $body, CURLOPT_HTTPHEADER => $hdr, CURLOPT_RETURNTRANSFER => true, CURLOPT_FOLLOWLOCATION => false, CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS, CURLOPT_CONNECTTIMEOUT => 3, CURLOPT_TIMEOUT => max(2, min(15, (int)($conn['timeout'] ?? 8)))]);
     $raw = curl_exec($ch); $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE); $err = curl_error($ch); curl_close($ch);
     return ['code' => $code, 'raw' => is_string($raw) ? $raw : '', 'error' => $err];
 }
