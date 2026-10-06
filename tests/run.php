@@ -477,6 +477,20 @@ t('a whole menu is created in one step', function () use ($db) {
     } finally { $db->exec("DELETE FROM ussd_menu_nodes WHERE short_code IN ('*8801#','*8802#')"); $db->exec("DELETE FROM ussd_menu_versions WHERE short_code IN ('*8801#','*8802#')"); $db->exec("DELETE FROM portal_short_codes WHERE short_code IN ('*8801#','*8802#')"); }
 });
 
+t('a Check Balance action runs the flow of that name', function () use ($db) {
+    $db->exec("DELETE FROM ussd_menu_nodes WHERE short_code='*ZT11#'");
+    $ins = $db->prepare("INSERT INTO ussd_menu_nodes(short_code,display_order,prompt_text,node_type,action_key,status) VALUES('*ZT11#',?,?,?,?,'active')");
+    $ins->execute([1, 'Check Balance', 'action', 'Check Balance']); $ins->execute([2, 'Other thing', 'action', 'zt_nothing']); $id = (int)$db->query("SELECT id FROM ussd_menu_nodes WHERE short_code='*ZT11#' AND display_order=1")->fetchColumn();
+    eq(ussd_action_flow_key(['action_key' => 'Check Balance']), 'check_balance', 'the key is the name with underscores'); eq(ussd_action_flow_key(['action_key' => ' send-credit! ']), 'send_credit', 'punctuation is dropped');
+    $db->exec("UPDATE ussd_menu_nodes SET action_key='zt_balance' WHERE id=$id"); $text = fn(array $r, array $h = []) => screen('*ZT11#', $r, $h)['text']; $h = fn() => array_column(menu_health('*ZT11#'), 'msg');
+    eq($text(['1']), "Check Balance\nThis service is not available right now.", 'with no flow the customer is told it is not available (not an internal name)'); ok(str_contains(implode(' ', $h()), 'not connected to anything yet'), 'and the Menu check says how to connect it');
+    save_flow(['flow_key' => 'zt_balance', 'title' => 'ZT Balance']); flow_save_def('zt_balance', ['start' => 'bal', 'steps' => ['bal' => ['type' => 'lookup', 'text' => 'Balance: {result.resultDescription}', 'connection' => '', 'path' => '', 'body' => '']]], 'test');
+    eq($text(['1']), "Check Balance\nThis service is not available right now.", 'a flow still in Test is never shown to customers'); eq($text(['1'], ['flow_sim' => 'success']), "Balance: Sample reply (simulated)\n0. Back", 'but the Simulator walks it'); ok(str_contains(implode(' ', $h()), 'still in Test mode'), 'the Menu check says so');
+    $db->exec("UPDATE ussd_flows SET mode='live' WHERE flow_key='zt_balance'"); has($text(['1']), 'Balance: This service is not available right now.', 'Live but with no API call set: still honest'); ok(!array_filter($h(), fn($m) => str_contains($m, 'Check Balance') && str_contains($m, 'not connected')), 'the check no longer says it is unconnected');
+    $db->exec("UPDATE ussd_flows SET status='inactive' WHERE flow_key='zt_balance'"); eq($text(['1']), "Check Balance\nThis service is not available right now.", 'a flow that is switched off is not used'); ok(str_contains(implode(' ', $h()), 'switched off'), 'and the check says it is off');
+    ok(isset(flow_templates()['check_balance']), 'there is a starter flow for it');
+});
+
 // ------------------------------------------------------------------ summary
 $cleanup();
 echo "\n".($fail === 0 ? "ALL PASSED" : "FAILED")."  —  $pass tests ok".($fail ? ", $fail check(s) failed:\n  - ".implode("\n  - ", array_slice($failures, 0, 40)) : '')."\n";

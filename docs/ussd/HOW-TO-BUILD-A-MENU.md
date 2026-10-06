@@ -71,6 +71,8 @@ Every step says where to go next; `@exit` leaves the flow and returns to the men
 
 **Getting a call right.** On the same page, **Connections** holds the address + headers of the system a call goes to (headers are encrypted and never shown again). Paste a Mobius `Sending request :{…}` log line into **"Get a request body from a Mobius log line"** and the page builds the request body for you (caller's number, IMSI, addresses become placeholders; keys are ignored). Then in the call step choose the connection, give the path (the last part of the address) and paste the body.
 
+**Check Balance (and other Action items).** An item of type *Action* whose key is `check_balance` (the default for "Check Balance") is run by the service flow with that same key, as soon as the flow exists, is on and is **Live** — the menu itself does not change. To build it: Service Flows → New flow → key `check_balance`, start from **"Check balance"**, then fill in the one look-up step (connection, path and request body, from a Mobius log line of the balance request) and the wording, e.g. `Your balance is: D{result.balance}`. Try it on the page, then set the flow to Live. Until then customers are told "This service is not available right now" (never a simulated balance), and the Menu check says what is missing. The same works for any action: an Action with key `send_credit` uses the flow `send_credit`.
+
 **Safety.**
 - A flow starts in **Test**: calls are rehearsed (you choose whether they end as success, low balance or failure) and nothing is sent. Switch to **Live** only when the check says all good.
 - A call with no connection, path or body stays switched off in Live and takes the failure path.

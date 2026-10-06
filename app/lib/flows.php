@@ -359,7 +359,7 @@ function flow_lookup_hook(array $flow, array $ctx, string $callId, string $short
     return function (array $step, array $vars) use ($flow, $ctx, $callId, $shortcode): array {
         if ($flow['mode'] !== 'live') return flow_sim_lookup($step, $vars);
         $conn = flow_connection((string)($step['connection'] ?? '')); $path = trim((string)($step['path'] ?? '')); $tpl = trim((string)($step['body'] ?? ''));
-        if (!$conn || $path === '' || $tpl === '') return ['vars' => ['result.resultDescription' => 'Not switched on yet.', 'reply_text' => 'Not switched on yet.']];
+        if (!$conn || $path === '' || $tpl === '') return ['vars' => ['result.resultDescription' => 'This service is not available right now.', 'reply_text' => 'This service is not available right now.']];
         $body = flow_render_body($tpl, $vars, $ctx, 'lk-'.substr(md5($callId.$path), 0, 8), $shortcode);
         $r = cached('flowlookup:'.md5($conn['conn_key'].$path.$body), 20, fn() => flow_post($conn, rtrim((string)$conn['base_url'], '/').'/'.ltrim($path, '/'), $body)); $c = flow_classify($conn, $r);
         return ['vars' => $c['vars'] + ['lookup_ok' => $c['outcome'] === 'success' ? '1' : '']];
@@ -461,7 +461,9 @@ function flow_templates(): array {
         'failed' => ['type' => 'message', 'text' => 'Subscription failed'],
         'balance' => ['type' => 'lookup', 'text' => 'Your balance is: {result.balance}', 'connection' => '', 'path' => '', 'body' => ''],
     ]];
+    $bal = ['start' => 'bal', 'steps' => ['bal' => ['type' => 'lookup', 'text' => "Your balance is: D{result.balance}", 'connection' => '', 'path' => '', 'body' => '']]];
     return [
+        'check_balance' => ['title' => 'Check balance — one look-up; fill in the balance API call (menu items called Check Balance use a flow with the key check_balance by themselves)', 'def' => $bal],
         'seddo' => ['title' => 'Shared Bundle (Seddo) — buy, add a number, account', 'def' => $seddo],
         'purchase_with_loan' => ['title' => 'Purchase, with a loan offered when the balance is too low (fill in the API calls later)', 'def' => $loan],
     ];

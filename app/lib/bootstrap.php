@@ -2429,6 +2429,9 @@ function menu_create(string $code, string $name, string $items = ''): array {
     audit('create_menu', null, 'ussd_menu_nodes', $code, json_encode(['name' => $name, 'items' => $n]));
     return ['code' => $code, 'items' => $n];
 }
+// An Action item (e.g. "Check Balance", key check_balance) is run by the service flow of that name once that flow exists, is on and is Live —
+// so a menu that already has the item starts working the moment the flow is finished, with no change to the menu.
+function ussd_action_flow_key(array $n): string { return trim(strtolower((string)preg_replace('/[^A-Za-z0-9]+/', '_', (string)($n['action_key'] ?? ''))), '_'); }
 function menu_node(int $id): ?array {
     $st = portal_pdo()->prepare('SELECT * FROM ussd_menu_nodes WHERE id=?'); $st->execute([$id]);
     return $st->fetch() ?: null;
@@ -2667,7 +2670,13 @@ function menu_health(string $code): array {
             $memo = []; $any = false; foreach ($top as $c) if (ussd_allowed_for_other($c, $actKids, 'ussd_offer_lookup', 'ussd_catalog_offers', $memo)) { $any = true; break; }
             if (!$any) $add('error', $id, $label.': nothing in this menu can be bought for another number (offers need an "other" code in the catalogue) — customers would see an empty list.');
         }
-        if ($t === 'action') $add('warn', $id, $label.' is an Action ('.$n['action_key'].') that is not connected to anything yet — customers see a placeholder.');
+        if ($t === 'action') {
+            $ak = ussd_action_flow_key($n); $afl = $ak !== '' ? flow_get($ak) : null;
+            if (!$afl) $add('warn', $id, $label.' is an Action ('.$n['action_key'].') that is not connected to anything yet — customers are told it is not available. To connect it, create a service flow called "'.($ak ?: 'the action name').'" on Service Flows (for a balance there is a starter: "Check balance").');
+            elseif ($afl['status'] !== 'active') $add('warn', $id, $label.' is connected to the service flow "'.$ak.'", which is switched off — customers are told it is not available.');
+            elseif ($afl['mode'] !== 'live') $add('warn', $id, $label.' is connected to the service flow "'.$ak.'", which is still in Test mode — customers are told it is not available until the flow is set to Live.');
+            else { $fe = array_filter(flow_validate($afl['def']), fn($x) => $x['level'] === 'error'); if ($fe) $add('error', $id, $label.': the service flow "'.$ak.'" has '.count($fe).' thing(s) to fix — '.array_values($fe)[0]['msg']); }
+        }
         if ($t === 'end' && trim((string)($n['body_text'] ?? '')) === '' && mb_strlen($n['prompt_text']) > 60) $add('info', $id, $label.' shows its whole label as its screen; use "Screen text" for a longer message.');
         $seen = []; foreach ($live as $c) { $k = mb_strtolower($c['prompt_text']); if (isset($seen[$k])) $add('info', (int)$c['id'], 'Two items under '.$label.' are both called "'.$c['prompt_text'].'".'); $seen[$k] = 1; }
         foreach ($live as $c) $walk($c);
@@ -2964,6 +2973,8 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
         if (!ctype_digit($r) || (int)$r < 1 || (int)$r > count($options)) { $note = 'Invalid choice.'; continue; }
         $pick = $options[(int)$r - 1]; $path[] = (int)$r; $note = null;
         if (($pick['node_type'] === 'menu' && !empty($kids[(int)$pick['id']])) || in_array($pick['node_type'], ['catalog', 'recipient', 'quiz', 'sharedbundle'], true)) { $cur = $pick; $trail[] = $cur; $page = 0; if ($pick['node_type'] === 'quiz') $quiz = $quizNew($pick); if ($pick['node_type'] === 'sharedbundle') $sb = $sbNew(); continue; }
+        // an Action item whose flow is ready (Live for customers; in the Simulator whatever its mode) is opened as that flow
+        if ($pick['node_type'] === 'action') { $ak = ussd_action_flow_key($pick); $afl = $ak !== '' ? flow_get($ak) : null; if ($afl && $afl['status'] === 'active' && ($afl['mode'] === 'live' || isset($hooks['flow_sim']))) { $pick['node_type'] = 'flow'; $pick['offer_code'] = $ak; } }
         // a service flow: its own screens from here on (until it leaves, when the menu carries on with the remaining replies)
         if ($pick['node_type'] === 'flow') {
             $fk = trim((string)$pick['offer_code']); $fl = flow_get($fk);
@@ -2982,7 +2993,7 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
             continue;
         }
         // a leaf: action / end / an empty submenu — the session ends here
-        if ($pick['node_type'] === 'action') return ussd_result($pick['prompt_text']."\n(action ".$pick['action_key']." is not connected yet)", true, $path, 'action', $pick);
+        if ($pick['node_type'] === 'action') return ussd_result($pick['prompt_text']."\nThis service is not available right now.", true, $path, 'action', $pick);
         return ussd_result(trim((string)($pick['body_text'] ?? '')) !== '' ? $pick['body_text'] : $pick['prompt_text'], true, $path, 'end', $pick);
     }
     if ($confirm !== null) {
