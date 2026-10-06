@@ -96,6 +96,16 @@ It is exactly the same as dialling the short code and then typing those numbers,
 1. Create the menu in **Mobius** as a **PROXY** menu with that short code, pointing at the portal address shown on the **USSD Proxy** page (the same one as the other menus).
 2. Build the menu here. The portal serves whichever short code was dialled, as long as it has Active items.
 
+## The USSD pages work together
+
+Every USSD page shows the same tab bar: **Menus** (build) → **Service Flows** (special menus) → **Quiz** → **Simulator** (try) → **Proxy** (connect to Mobius, buying, Shared Bundle) → **Short Codes** (the register) → **Routing & IVR** (Hera's routing table).
+
+- **Proxy** opens on an *Overview* checklist — "is it ready for customers?" — and keeps the settings in tabs (Connection, Buying offers, Shared Bundle, Tools & requests). The tab you were on is remembered after you save.
+- **Short Codes** shows what each registered code is *for* next to what is really built and whether it is answering. A menu whose short code is not in the register is offered with a one-click *Register*.
+- **Routing & IVR** checks every route that is on: an offer that is switched off or missing in the catalogue, an empty or mistyped offer code, a service code used twice. Search it, or show only the rows with a problem.
+- **Service Flows** shows which menus open each flow, and says so when none does.
+- The **Menu Builder** shows, under its title, whether this short code is answering on phones and whether it is registered.
+
 ## Who can do what
 
 *View* is for everyone who can see tables. *Building* needs the `manage_ussd_menus` permission (Admin → Users).

@@ -431,6 +431,40 @@ t('old log rows are cleared out, recent ones kept', function () use ($db) {
     eq($n('zt_old'), 0, 'a 40-day-old attempt is removed'); eq($n('zt_new'), 1, 'a fresh one stays'); $db->exec("DELETE FROM login_attempts WHERE username LIKE 'zt_%'");
 });
 
+// ------------------------------------------------------------------ the USSD platform pages
+echo "\nUSSD platform\n";
+t('the routing table is checked against the catalogue', function () {
+    $routes = [
+        ['id' => 1, 'type' => 'IVR', 'shortcode' => '122', 'service_code' => '2206097222', 'offer_code' => '40142', 'status' => '1'],
+        ['id' => 2, 'type' => 'IVR', 'shortcode' => '159', 'service_code' => '2206097159', 'offer_code' => '', 'status' => '1'],
+        ['id' => 3, 'type' => 'IVR', 'shortcode' => '9169', 'service_code' => '2206097269', 'offer_code' => '40090---', 'status' => '1'],
+        ['id' => 4, 'type' => 'IVR', 'shortcode' => '157', 'service_code' => '2206097157', 'offer_code' => '41011', 'status' => '0'],
+        ['id' => 5, 'type' => 'IVR', 'shortcode' => '152', 'service_code' => '2206097152', 'offer_code' => '40088', 'status' => '1'],
+        ['id' => 6, 'type' => 'IVR', 'shortcode' => '9170', 'service_code' => '2206097152', 'offer_code' => '40120', 'status' => '1'],
+        ['id' => 7, 'type' => 'USSD', 'shortcode' => '*1#', 'service_code' => '2206097152', 'offer_code' => '99999', 'status' => 'active']];
+    $offers = ['40142' => ['name' => 'Alpha', 'status' => '1'], '41011' => ['name' => 'Off one', 'status' => '0'], '40088' => ['name' => 'Beta', 'status' => '0'], '40120' => ['name' => 'Gamma', 'status' => '1']];
+    $r = ussd_route_review($routes, $offers); $lv = fn($id) => array_column($r[$id] ?? [], 'level'); $msg = fn($id) => implode(' | ', array_column($r[$id] ?? [], 'msg'));
+    ok(!isset($r[1]), 'a route to an active offer is fine'); eq($lv(2), ['warn'], 'no offer code is a warning'); has($msg(3), 'not a plain number', 'a broken code is named'); has($msg(3), 'not in the catalogue', 'and it is not found either'); ok(!isset($r[4]), 'a switched-off route is not a problem even if its offer is off');
+    has($msg(5), 'switched off in the catalogue', 'an on route to an off offer is an error'); has($msg(5), 'also used by 9170', 'a service code used twice is mentioned'); has($msg(6), 'also used by 152', 'on both rows'); has($msg(7), 'not in the catalogue', 'an unknown offer'); ok(!str_contains($msg(7), 'also used'), 'a USSD and an IVR service code do not clash');
+    ok(ussd_route_on('1') && ussd_route_on('Active') && !ussd_route_on('0') && !ussd_route_on(''), 'on/off words');
+});
+t('the proxy checklist says what is missing', function () {
+    $c = USSD_PROXY_DEFAULTS; $st = fn(array $o) => array_column(ussd_setup_checklist($o + $c), 'state', 'title');
+    $d = $st([]); eq($d['Endpoint'], 'off', 'switched off by default'); eq($d['Buying offers'], 'off', 'buying off by default');
+    $ready = $st(['enabled' => '1', 'mode' => 'live', 'allow_ips' => '10.0.0.1', 'push_enabled' => '1', 'mobius_user' => 'u', 'mobius_pass' => 'p', 'purchase_mode' => 'live', 'purchase_url' => 'https://h/x', 'purchase_auth' => 'enc', 'share_mode' => 'live']);
+    eq(array_unique(array_values($ready)), ['ok'], 'everything set up reads ok'); eq($st(['enabled' => '1', 'mode' => 'capture'])['Endpoint'], 'warn', 'capture mode is a warning');
+    eq($st(['purchase_mode' => 'live', 'purchase_url' => 'https://h/x', 'purchase_auth' => ''])['Buying offers'], 'warn', 'live buying without headers is flagged'); eq($st([])['Who may call it'], 'warn', 'no IP list is flagged');
+});
+t('a short code knows if it is answering and where it stands', function () {
+    $live = ['enabled' => '1', 'mode' => 'live', 'push_enabled' => '1'] + USSD_PROXY_DEFAULTS; $reg = ['*ZT5#' => ['id' => 1, 'service_name' => 'x', 'status' => 'Active']];
+    $s = shortcode_state('*ZT5#', $live, $reg); ok($s['live'] && $s['why'] === '' && $s['registered']['id'] === 1, 'live and registered'); ok(shortcode_state('*ZT-NONE#', $live, $reg)['registered'] === null, 'not registered');
+    has(shortcode_state('*ZT5#', ['enabled' => '0'] + $live, $reg)['why'], 'switched off', 'why it is not live'); has(shortcode_state('*ZT5#', ['mode' => 'capture'] + $live, $reg)['why'], 'Capture', 'capture mode'); has(shortcode_state('*ZT5#', ['push_enabled' => '0'] + $live, $reg)['why'], 'Mobius', 'no push');
+    $o = menu_overview(); ok(isset($o['*ZT5#']) && $o['*ZT5#']['items'] >= 2, 'the overview counts the items of a menu'); ok(!isset($o['*ZT-NONE#']), 'and only has menus');
+});
+t('a flow knows which menus open it', function () {
+    menu_quick_add('*ZT9#', null, "Seddo | flow | zt_seddo", 'active'); $u = flow_usage('zt_seddo'); ok(in_array('*ZT9#', array_column($u, 'short_code'), true), 'the menu is listed'); eq(flow_usage('zt_nobody'), [], 'an unused flow has none');
+});
+
 // ------------------------------------------------------------------ summary
 $cleanup();
 echo "\n".($fail === 0 ? "ALL PASSED" : "FAILED")."  —  $pass tests ok".($fail ? ", $fail check(s) failed:\n  - ".implode("\n  - ", array_slice($failures, 0, 40)) : '')."\n";

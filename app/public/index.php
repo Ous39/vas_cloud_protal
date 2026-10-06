@@ -32,8 +32,17 @@ function nav_can_see(string $page): bool {
     if ($page==='promotions') return can('manage_promotions');
     if (in_array($page,['alert_settings','retention','status'],true)) return can('manage_api_keys');
     if (in_array($page,['investigate','reports','alerts','monitoring','offer_report','timeline','vendor'],true)) return can('view_reports');
-    if (in_array($page,['subscriptions','offers','offer_health','esim','sales','friends_family','voting','ussd_ivr','ussd_menu','integrations','tables','projects','shortcodes'],true)) return can('view_tables');
+    if ($page==='shortcodes') return can('manage_shortcodes');
+    if ($page==='projects') return can('manage_projects');
+    if (in_array($page,['subscriptions','offers','offer_health','esim','sales','friends_family','voting','ussd_ivr','ussd_menu','integrations','tables'],true)) return can('view_tables');
     return true;
+}
+// The tab bar every USSD page shows under its title, so Menus, Flows, Simulator, Proxy, Short Codes and Routing read as one platform.
+function ussd_subnav(string $current): void {
+    $tabs = [['ussd_menu','fa-sitemap','Menus'],['ussd_flows','fa-diagram-project','Service Flows'],['ussd_quiz','fa-circle-question','Quiz'],['ussd_sim','fa-mobile-screen','Simulator'],['ussd_proxy','fa-plug','Proxy'],['shortcodes','fa-hashtag','Short Codes'],['ussd_ivr','fa-route','Routing & IVR']];
+    echo '<ul class="nav nav-pills ussd-subnav mb-3">';
+    foreach ($tabs as [$p,$ic,$lb]) { if (!nav_can_see($p)) continue; echo '<li class="nav-item"><a class="nav-link'.($p===$current?' active':'').'" href="?page='.$p.'"><i class="fa-solid '.$ic.' me-1"></i>'.e($lb).'</a></li>'; }
+    echo '</ul>';
 }
 function layout_start(string $title): void {
     $u=user(); $schema=current_schema(); $current=$_GET['page']??'dashboard';
@@ -169,7 +178,43 @@ if ($page==='export') { $schema=current_schema(); $table=$_GET['table']??''; req
 
 if ($page==='sql') { require_perm('run_sql'); $schema=current_schema(); $result=null; if($_SERVER['REQUEST_METHOD']==='POST'){ $sql=trim($_POST['sql']??''); $kind=safe_sql_kind($sql); if(in_array($kind,SQL_READONLY_KINDS,true)){ $isCsv=(($_POST['format']??''))==='csv'; $result=run_sql($schema,$sql,$isCsv?SQL_CONSOLE_CSV_MAX_ROWS:SQL_CONSOLE_MAX_ROWS); if($isCsv){ audit('sql_csv_export',$schema,null,null,$sql); header('Content-Type:text/csv'); header('Content-Disposition: attachment; filename="query_export.csv"'); $out=fopen('php://output','w'); $first=true; foreach($result['rows'] as $row){ if($first){fputcsv($out,array_keys($row));$first=false;} fputcsv($out,csv_safe_row($row)); } if($first) fputcsv($out,['(no rows returned)']); exit; } } else { if(is_protected_schema($schema)) throw new RuntimeException($schema.' is read-only in the SQL Console. Use the record forms (Add/Edit/Copy) for production writes.'); $token=make_confirmation('sql',['schema'=>$schema,'sql'=>$sql,'return_to'=>'?page=sql']); redirect('?page=confirm&token='.$token); } if(!empty($_POST['save_name'])) portal_pdo()->prepare('INSERT INTO saved_queries(name,schema_name,sql_text,created_by) VALUES(?,?,?,?)')->execute([$_POST['save_name'],$schema,$sql,user()['username']]); } layout_start('SQL Console'); ?><div class="cardx"><h3>Safe SQL Console</h3><p class="text-muted">DELETE, DROP and TRUNCATE are blocked. Write queries require confirmation. A leading <code>WITH ... AS (...)</code> common table expression is allowed — it's classified by the real statement that follows it.<?php if(is_protected_schema($schema)):?> <strong><?=e($schema)?> is read-only here</strong> — SELECT/SHOW/DESCRIBE/EXPLAIN only; use the record forms for production writes.<?php endif;?></p><form method="post"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><textarea name="sql" class="form-control code" rows="8" placeholder="SELECT * FROM subscription LIMIT 20"><?=e($_POST['sql']??'')?></textarea><div class="row g-2 mt-2"><div class="col-md-6"><input class="form-control" name="save_name" placeholder="Optional name to save this query"></div><div class="col-md-3"><button class="btn btn-primary w-100" name="format" value="preview">Run / Preview</button></div><div class="col-md-3"><button class="btn btn-outline-primary w-100" name="format" value="csv">Download CSV</button></div></div></form></div><?php if($result):?><div class="cardx mt-3"><h3>Result</h3><?php if($result['affected']!==null):?><p>Affected rows: <?=e($result['affected'])?></p><?php else:?><?php if(!empty($result['truncated'])):?><div class="alert alert-warning py-2">Showing the first <?=number_format($result['limit'])?> rows only — add a <code>LIMIT</code> or narrower <code>WHERE</code>, or use Download CSV (up to <?=number_format(SQL_CONSOLE_CSV_MAX_ROWS)?> rows). Queries are stopped after <?=SQL_CONSOLE_TIMEOUT_MS/1000?>s.</div><?php endif;?><div class="table-scroll"><table class="table table-sm"><thead><tr><?php foreach(array_keys($result['rows'][0]??[]) as $h):?><th><?=e($h)?></th><?php endforeach;?></tr></thead><tbody><?php foreach($result['rows'] as $row):?><tr><?php foreach($row as $v):?><td><?=e(mb_strimwidth((string)$v,0,90,'...'))?></td><?php endforeach;?></tr><?php endforeach;?></tbody></table></div><?php endif;?></div><?php endif; layout_end(); exit; }
 
-if ($page==='shortcodes') { require_perm('manage_shortcodes'); $db=portal_pdo(); $edit=null; if(isset($_GET['id'])){ $st=$db->prepare('SELECT * FROM portal_short_codes WHERE id=?'); $st->execute([(int)$_GET['id']]); $edit=$st->fetch(); } if($_SERVER['REQUEST_METHOD']==='POST'){ $token=make_confirmation('save_shortcode',['id'=>$_POST['id']??null,'data'=>$_POST['data']??[],'return_to'=>'?page=shortcodes']); redirect('?page=confirm&token='.$token); } layout_start('Channel / Short Code Management'); $rows=$db->query('SELECT * FROM portal_short_codes ORDER BY short_code, channel_type, service_name')->fetchAll(); ?><div class="row g-3"><div class="col-lg-4"><div class="cardx"><h3><?= $edit?'Edit Channel':'Add Channel' ?></h3><p class="text-muted">Manage USSD and IVR channels. Saving requires confirmation.</p><form method="post"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="id" value="<?=e($edit['id']??'')?>"><label>Channel Type</label><select class="form-select mb-2" name="data[channel_type]"><?php foreach(['USSD','IVR'] as $v):?><option value="<?=e($v)?>" <?=($edit['channel_type']??'USSD')===$v?'selected':''?>><?=e($v)?></option><?php endforeach;?></select><label>Short Code</label><input class="form-control mb-2" name="data[short_code]" value="<?=e($edit['short_code']??'')?>" placeholder="*123# or 141"><label>Service Name</label><input class="form-control mb-2" name="data[service_name]" value="<?=e($edit['service_name']??'')?>" placeholder="VAS Main Menu"><label>Provider</label><input class="form-control mb-2" name="data[provider]" value="<?=e($edit['provider']??'')?>" placeholder="Comium"><label>Status</label><select class="form-select mb-2" name="data[status]"><?php foreach(['Active','Inactive','Pending','Suspended'] as $v):?><option value="<?=e($v)?>" <?=($edit['status']??'Pending')===$v?'selected':''?>><?=e($v)?></option><?php endforeach;?></select><label>Description</label><textarea class="form-control mb-2" name="data[description]" rows="3"><?=e($edit['description']??'')?></textarea><button class="btn btn-primary w-100">Preview & Confirm Save</button><?php if($edit):?><a class="btn btn-outline-secondary w-100 mt-2" href="?page=shortcodes">Cancel Edit</a><?php endif;?></form></div></div><div class="col-lg-8"><div class="cardx"><div class="d-flex justify-content-between align-items-center"><h3>Channel Register</h3><span class="badge bg-primary"><?=count($rows)?> channels</span></div><div class="table-scroll"><table class="table table-hover"><thead><tr><th>Type</th><th>Short Code</th><th>Service Name</th><th>Provider</th><th>Status</th><th>Linked Projects</th><th></th></tr></thead><tbody><?php foreach($rows as $r): $st=$db->prepare('SELECT COUNT(*) c FROM portal_project_channels WHERE channel_id=?'); $st->execute([$r['id']]); $linked=(int)$st->fetch()['c']; ?><tr><td><span class="badge bg-dark"><?=e($r['channel_type'])?></span></td><td><strong><?=e($r['short_code'])?></strong></td><td><?=e($r['service_name'])?></td><td><?=e($r['provider'])?></td><td><span class="badge status-<?=e(strtolower($r['status']))?>"><?=e($r['status'])?></span></td><td><?=e($linked)?></td><td class="sticky-actions"><a class="btn btn-sm btn-warning" href="?page=shortcodes&id=<?=e($r['id'])?>">Edit</a></td></tr><?php endforeach;?></tbody></table></div></div></div></div><?php layout_end(); exit; }
+if ($page==='shortcodes') {
+    require_perm('manage_shortcodes'); $db=portal_pdo(); $edit=null;
+    if(isset($_GET['id'])){ $st=$db->prepare('SELECT * FROM portal_short_codes WHERE id=?'); $st->execute([(int)$_GET['id']]); $edit=$st->fetch(); }
+    if($_SERVER['REQUEST_METHOD']==='POST'){ $token=make_confirmation('save_shortcode',['id'=>$_POST['id']??null,'data'=>$_POST['data']??[],'return_to'=>'?page=shortcodes']); redirect('?page=confirm&token='.$token); }
+    // a short code that already has a menu opens the form filled in, so registering it is one click and a name
+    $form = $edit ?: (isset($_GET['new']) ? ['channel_type'=>'USSD','short_code'=>trim((string)$_GET['new']),'service_name'=>'','provider'=>'Comium','status'=>'Active','description'=>''] : []);
+    $rows=$db->query('SELECT c.*, (SELECT COUNT(*) FROM portal_project_channels pc WHERE pc.channel_id=c.id) AS linked FROM portal_short_codes c ORDER BY c.short_code, c.channel_type, c.service_name')->fetchAll();
+    $registry=[]; foreach($rows as $r) if($r['channel_type']==='USSD') $registry[$r['short_code']]=$r;
+    $overview=menu_overview(); $cfg=ussd_proxy_config(); $unregistered=array_values(array_diff(array_keys($overview), array_keys($registry)));
+    layout_start('Channel / Short Code Management'); ussd_subnav('shortcodes');
+    ?>
+    <?php if($unregistered):?><div class="alert alert-warning py-2"><b>Menus that are not in the register yet:</b>
+        <?php foreach($unregistered as $uc):?><a class="btn btn-sm btn-outline-dark ms-1" href="?page=shortcodes&new=<?=urlencode($uc)?>"><i class="fa-solid fa-plus me-1"></i><?=e($uc)?></a><?php endforeach;?>
+        <div class="small mt-1">These short codes answer customers (or are being built) but nobody has written down what they are for. Click one, give it a name, save.</div></div><?php endif;?>
+    <div class="row g-3"><div class="col-lg-4"><div class="cardx"><h3><?= $edit?'Edit Channel':'Add Channel' ?></h3><p class="text-muted">Manage USSD and IVR channels. Saving requires confirmation.</p>
+        <form method="post"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="id" value="<?=e($edit['id']??'')?>">
+        <label>Channel Type</label><select class="form-select mb-2" name="data[channel_type]"><?php foreach(['USSD','IVR'] as $v):?><option value="<?=e($v)?>" <?=($form['channel_type']??'USSD')===$v?'selected':''?>><?=e($v)?></option><?php endforeach;?></select>
+        <label>Short Code</label><input class="form-control mb-2" name="data[short_code]" value="<?=e($form['short_code']??'')?>" placeholder="*123# or 141">
+        <label>Service Name</label><input class="form-control mb-2" name="data[service_name]" value="<?=e($form['service_name']??'')?>" placeholder="VAS Main Menu"<?=isset($_GET['new'])&&!$edit?' autofocus':''?>>
+        <label>Provider</label><input class="form-control mb-2" name="data[provider]" value="<?=e($form['provider']??'')?>" placeholder="Comium">
+        <label>Status</label><select class="form-select mb-2" name="data[status]"><?php foreach(['Active','Inactive','Pending','Suspended'] as $v):?><option value="<?=e($v)?>" <?=($form['status']??'Pending')===$v?'selected':''?>><?=e($v)?></option><?php endforeach;?></select>
+        <label>Description</label><textarea class="form-control mb-2" name="data[description]" rows="3"><?=e($form['description']??'')?></textarea>
+        <button class="btn btn-primary w-100">Preview & Confirm Save</button><?php if($edit||isset($_GET['new'])):?><a class="btn btn-outline-secondary w-100 mt-2" href="?page=shortcodes">Cancel</a><?php endif;?></form></div></div>
+    <div class="col-lg-8"><div class="cardx"><div class="d-flex flex-wrap justify-content-between align-items-center gap-2"><h3 class="mb-0">Channel Register</h3><span class="badge bg-primary"><?=count($rows)?> channels</span><input class="form-control form-control-sm w-auto ms-auto" id="scFilter" placeholder="Search short code, service, provider…" style="min-width:16rem"></div>
+        <p class="small text-muted mt-2 mb-2">The register says what each short code is <i>for</i>; the <b>Menu</b> and <b>On phones</b> columns show what is really built and answering today.</p>
+        <div class="table-scroll"><table class="table table-hover" id="scTable"><thead><tr><th>Type</th><th>Short Code</th><th>Service Name</th><th>Provider</th><th>Status</th><th>Menu</th><th>On phones</th><th>Projects</th><th></th></tr></thead><tbody>
+        <?php foreach($rows as $r): $ov=$r['channel_type']==='USSD'?($overview[$r['short_code']]??null):null; $stt=$r['channel_type']==='USSD'?shortcode_state($r['short_code'],$cfg,$registry):null;?>
+        <tr><td><span class="badge bg-dark"><?=e($r['channel_type'])?></span></td><td><strong><?=e($r['short_code'])?></strong></td><td><?=e($r['service_name'])?></td><td><?=e($r['provider'])?></td>
+            <td><span class="badge status-<?=e(strtolower($r['status']))?>"><?=e($r['status'])?></span></td>
+            <td><?php if($r['channel_type']!=='USSD'):?><span class="text-muted">—</span><?php elseif(!$ov):?><span class="badge bg-secondary" title="Nothing has been built in the Menu Builder for this short code">no menu</span> <a class="small" href="?page=ussd_menu&new_short_code=<?=urlencode($r['short_code'])?>">build</a>
+                <?php else:?><a href="?page=ussd_menu&short_code=<?=urlencode($r['short_code'])?>"><?=$ov['active']?> on<?=$ov['draft']?' · '.$ov['draft'].' draft':''?></a> <?php if($ov['errors']):?><span class="badge bg-danger"><?=$ov['errors']?> to fix</span><?php elseif($ov['warns']):?><span class="badge bg-warning text-dark"><?=$ov['warns']?> to check</span><?php else:?><span class="badge bg-success">ok</span><?php endif;?> <a class="small" href="?page=ussd_sim&sc=<?=urlencode($r['short_code'])?>">try</a><?php endif;?></td>
+            <td><?php if(!$stt||!$ov):?><span class="text-muted">—</span><?php elseif($stt['live']):?><span class="badge bg-success">answering</span><?php else:?><span class="badge bg-secondary" title="Not answering because <?=e($stt['why'])?>">not live</span><?php endif;?></td>
+            <td><?=e($r['linked'])?></td><td class="sticky-actions"><a class="btn btn-sm btn-warning" href="?page=shortcodes&id=<?=e($r['id'])?>">Edit</a></td></tr>
+        <?php endforeach;?><?php if(!$rows):?><tr><td colspan="9" class="text-muted">Nothing registered yet.</td></tr><?php endif;?></tbody></table></div></div></div></div>
+    <script nonce="<?=e(csp_nonce())?>">document.getElementById('scFilter')?.addEventListener('input',function(e){var q=e.target.value.toLowerCase();document.querySelectorAll('#scTable tbody tr').forEach(function(r){r.hidden=q!==''&&r.textContent.toLowerCase().indexOf(q)<0;});});</script>
+    <?php layout_end(); exit;
+}
 
 if ($page==='offers') {
     require_perm('view_tables'); $schema=current_schema();
@@ -869,16 +914,25 @@ if ($page==='ussd_ivr') {
     $edit=null; if(isset($_GET['id'])){ $edit=fetch_record($schema,'channel_service_code',['id'=>(int)$_GET['id']]); }
     $typeFilter = in_array($_GET['type']??'', ['USSD','IVR'], true) ? $_GET['type'] : null;
     $routes = channel_route_activity($schema, $typeFilter);
+    $offerRows = ussd_route_offers($schema, array_column($routes, 'offer_code')); $review = ussd_route_review($routes, $offerRows);
+    $nBad = count(array_filter($review, fn($p) => in_array('error', array_column($p, 'level'), true))); $nWarn = count($review) - $nBad;
+    $q = trim((string)($_GET['q'] ?? '')); $onlyProblems = ($_GET['problems'] ?? '') === '1';
+    $shown = array_values(array_filter($routes, function ($r) use ($q, $onlyProblems, $review, $offerRows) {
+        if ($onlyProblems && empty($review[(int)$r['id']])) return false;
+        if ($q === '') return true; $o = $offerRows[trim((string)$r['offer_code'])] ?? null;
+        return stripos(implode(' ', [$r['shortcode'], $r['service_code'], $r['offer_code'], $o['name'] ?? '']), $q) !== false;
+    }));
+    $qs = fn(array $x) => '?'.http_build_query(array_filter(array_merge(['page' => 'ussd_ivr', 'type' => $typeFilter, 'q' => $q, 'problems' => $onlyProblems ? '1' : ''], $x), fn($v) => $v !== null && $v !== ''));
     $queue = agent_queue_snapshot($schema);
     $ussdToday = channel_activity_today($schema, ['USSD']);
     $ivrToday = channel_activity_today($schema, ['IVR']);
-    layout_start('USSD & IVR');
+    layout_start('USSD & IVR'); ussd_subnav('ussd_ivr');
     ?>
     <div class="metric-grid">
         <div class="metric"><span>USSD Transactions Today</span><strong><?=number_format($ussdToday['total'])?></strong></div>
-        <div class="metric"><span>USSD Failed Today</span><strong><?=number_format($ussdToday['failed'])?></strong></div>
+        <div class="metric"><span>USSD Failed Today</span><strong><?=number_format($ussdToday['failed'])?></strong><?php if($ussdToday['total']>0):?><small class="text-muted"><?=round($ussdToday['failed']*100/$ussdToday['total'],1)?>% of USSD</small><?php endif;?></div>
         <div class="metric"><span>IVR Transactions Today</span><strong><?=number_format($ivrToday['total'])?></strong></div>
-        <div class="metric"><span>IVR Failed Today</span><strong><?=number_format($ivrToday['failed'])?></strong></div>
+        <div class="metric"><span>IVR Failed Today</span><strong><?=number_format($ivrToday['failed'])?></strong><?php if($ivrToday['total']>0):?><small class="text-muted"><?=round($ivrToday['failed']*100/$ivrToday['total'],1)?>% of IVR</small><?php endif;?></div>
     </div>
     <p class="text-muted mt-2">Counted from <?=e(AUDIT_LOG_TABLE)?> where channel = USSD/IVR. Channel registration/ownership (short codes, providers) lives on the <a href="?page=shortcodes">Short Codes</a> page; this page is the operational routing and live-queue view.</p>
     <div class="row g-3 mt-1">
@@ -887,18 +941,27 @@ if ($page==='ussd_ivr') {
                 <label>Type</label><select class="form-select mb-2" name="data[type]"><?php foreach(['USSD','IVR'] as $v):?><option value="<?=e($v)?>" <?=($edit['type']??'USSD')===$v?'selected':''?>><?=e($v)?></option><?php endforeach;?></select>
                 <label>Short Code</label><input class="form-control mb-2" name="data[shortcode]" value="<?=e($edit['shortcode']??'')?>" placeholder="*123#">
                 <label>Service Code</label><input class="form-control mb-2" name="data[service_code]" value="<?=e($edit['service_code']??'')?>">
-                <label>Offer Code</label><input class="form-control mb-2" name="data[offer_code]" value="<?=e($edit['offer_code']??'')?>">
-                <label>Status</label><input class="form-control mb-2" name="data[status]" value="<?=e($edit['status']??'active')?>">
+                <label>Offer Code <small class="text-muted">(digits only — checked against the catalogue below)</small></label><input class="form-control mb-2" name="data[offer_code]" value="<?=e($edit['offer_code']??'')?>" inputmode="numeric" pattern="[0-9]*">
+                <label>Status</label><select class="form-select mb-2" name="data[status]"><option value="1" <?=!$edit||ussd_route_on($edit['status'])?'selected':''?>>On — customers can use it</option><option value="0" <?=$edit&&!ussd_route_on($edit['status'])?'selected':''?>>Off</option></select>
                 <button class="btn btn-primary w-100">Preview & Confirm Save</button>
                 <?php if($edit):?><a class="btn btn-outline-secondary w-100 mt-2" href="?page=ussd_ivr">Cancel Edit</a><?php endif;?>
             </form>
         </div></div>
         <div class="col-lg-7"><div class="cardx">
-            <div class="d-flex justify-content-between align-items-center"><h3>Routing Table</h3><div class="btn-group btn-group-sm"><a class="btn btn-outline-primary <?=!$typeFilter?'active':''?>" href="?page=ussd_ivr">All</a><a class="btn btn-outline-primary <?=$typeFilter==='USSD'?'active':''?>" href="?page=ussd_ivr&type=USSD">USSD</a><a class="btn btn-outline-primary <?=$typeFilter==='IVR'?'active':''?>" href="?page=ussd_ivr&type=IVR">IVR</a></div></div>
-            <?php if(!$routes):?><p class="text-muted mb-0 mt-2">No routes configured<?=$typeFilter?" for $typeFilter":''?>.</p><?php else:?>
-            <table class="table table-hover table-sm mt-2"><thead><tr><th>Type</th><th>Short Code</th><th>Service Code</th><th>Offer Code</th><th>Status</th><th></th></tr></thead><tbody>
-            <?php foreach($routes as $r):?><tr><td><span class="badge bg-dark"><?=e($r['type'])?></span></td><td><?=e($r['shortcode'])?></td><td><?=e($r['service_code'])?></td><td><?=e($r['offer_code'])?></td><td><?=e($r['status'])?></td><td><a class="btn btn-sm btn-warning" href="?page=ussd_ivr&id=<?=e($r['id'])?>">Edit</a></td></tr><?php endforeach;?>
-            </tbody></table><?php endif;?>
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2"><h3 class="mb-0">Routing Table</h3><div class="btn-group btn-group-sm"><a class="btn btn-outline-primary <?=!$typeFilter?'active':''?>" href="<?=e($qs(['type'=>null]))?>">All</a><a class="btn btn-outline-primary <?=$typeFilter==='USSD'?'active':''?>" href="<?=e($qs(['type'=>'USSD']))?>">USSD</a><a class="btn btn-outline-primary <?=$typeFilter==='IVR'?'active':''?>" href="<?=e($qs(['type'=>'IVR']))?>">IVR</a></div></div>
+            <form method="get" class="d-flex flex-wrap gap-2 mt-2"><input type="hidden" name="page" value="ussd_ivr"><?php if($typeFilter):?><input type="hidden" name="type" value="<?=e($typeFilter)?>"><?php endif;?>
+                <input class="form-control form-control-sm w-auto" name="q" value="<?=e($q)?>" placeholder="Search short code, service code, offer…" style="min-width:16rem">
+                <div class="form-check align-self-center"><input class="form-check-input" type="checkbox" name="problems" value="1" id="onlyp" <?=$onlyProblems?'checked':''?> data-autosubmit><label class="form-check-label small" for="onlyp">Only rows with a problem</label></div>
+                <button class="btn btn-sm btn-outline-primary">Search</button><?php if($q!==''||$onlyProblems):?><a class="btn btn-sm btn-link" href="<?=e($qs(['q'=>null,'problems'=>null]))?>">Clear</a><?php endif;?></form>
+            <div class="small mt-2"><?php if($nBad||$nWarn):?><?php if($nBad):?><span class="badge bg-danger"><?=$nBad?> to fix</span> <?php endif;?><?php if($nWarn):?><span class="badge bg-warning text-dark"><?=$nWarn?> to look at</span> <?php endif;?><span class="text-muted">Only rows that are switched on can fail a customer; hover a badge for the reason.</span><?php else:?><span class="badge bg-success">all good</span> <span class="text-muted">Every route that is on points to an offer that is on.</span><?php endif;?> <span class="text-muted ms-1">Showing <?=count($shown)?> of <?=count($routes)?>.</span></div>
+            <?php if(!$shown):?><p class="text-muted mb-0 mt-2"><?=$routes?'Nothing matches.':'No routes configured'.($typeFilter?" for $typeFilter":'').'.'?></p><?php else:?>
+            <div class="table-scroll"><table class="table table-hover table-sm mt-2"><thead><tr><th>Type</th><th>Short Code</th><th>Service Code</th><th>Offer</th><th>Status</th><th>Check</th><th></th></tr></thead><tbody>
+            <?php foreach($shown as $r): $o=$offerRows[trim((string)$r['offer_code'])]??null; $pp=$review[(int)$r['id']]??[]; $on=ussd_route_on($r['status']);?><tr class="<?=$on?'':'text-muted'?>"><td><span class="badge bg-dark"><?=e($r['type'])?></span></td><td><?=e($r['shortcode'])?></td><td><?=e($r['service_code'])?></td>
+                <td><?=e($r['offer_code'])?><?php if($o):?> <small class="text-muted"><?=e($o['name'])?> · D<?=e(rtrim(rtrim(number_format((float)$o['one_time_price'],2,'.',''),'0'),'.'))?></small><?php endif;?></td>
+                <td><span class="badge <?=$on?'bg-success':'bg-secondary'?>"><?=$on?'On':'Off'?></span></td>
+                <td><?php foreach($pp as $p):?><span class="badge <?=$p['level']==='error'?'bg-danger':'bg-warning text-dark'?>" title="<?=e($p['msg'])?>"><?=$p['level']==='error'?'fix':'check'?></span> <?php endforeach;?></td>
+                <td><a class="btn btn-sm btn-warning" href="?page=ussd_ivr&id=<?=e($r['id'])?>">Edit</a></td></tr><?php endforeach;?>
+            </tbody></table></div><?php endif;?>
         </div>
         <div class="cardx mt-3"><h3>Live Agent Queue</h3><p class="text-muted">Current USSD/IVR sessions held in <code>agent_queue</code>.</p>
             <?php if(!$queue):?><p class="text-muted mb-0">Queue is empty.</p><?php else:?><div class="table-scroll"><table class="table table-sm mb-0"><thead><tr><th>MSISDN</th><th>Service Code</th><th>Status</th></tr></thead><tbody><?php foreach($queue as $q):?><tr><td><?=e($q['msisdn'])?></td><td><?=e($q['service_code'])?></td><td><span class="badge bg-info text-dark"><?=e($q['status'])?></span></td></tr><?php endforeach;?></tbody></table></div><?php endif;?>
@@ -946,11 +1009,26 @@ if ($page==='ussd_proxy') {
     $keys=array_values(array_unique($keys));
     $host=($_SERVER['HTTP_HOST']??'your-host'); $proto=(($_SERVER['HTTP_X_FORWARDED_PROTO']??'')==='https'||(!empty($_SERVER['HTTPS'])&&$_SERVER['HTTPS']!=='off'))?'https':'http';
     $base=rtrim(dirname($_SERVER['SCRIPT_NAME']??'/'),'/'); $urlFor=fn($m)=>$proto.'://'.$host.$base.'/ussd.php?t='.$token.'&m='.$m;
-    layout_start('USSD Proxy');
+    layout_start('USSD Proxy'); ussd_subnav('ussd_proxy');
     ?>
+    <?php $checklist=ussd_setup_checklist($cfg); $nOk=count(array_filter($checklist,fn($c)=>$c['state']==='ok')); $tabName=['connect'=>'Connection','buy'=>'Buying offers','share'=>'Shared Bundle'];?>
+    <ul class="nav nav-tabs mb-3" id="proxyTabs" role="tablist">
+        <?php foreach(['overview'=>['Overview','fa-list-check'],'connect'=>['Connection','fa-plug'],'buy'=>['Buying offers','fa-cart-shopping'],'share'=>['Shared Bundle','fa-share-nodes'],'tools'=>['Tools & requests','fa-screwdriver-wrench']] as $tk=>[$tl,$ti]):?>
+        <li class="nav-item" role="presentation"><button class="nav-link <?=$tk==='overview'?'active':''?>" type="button" data-bs-toggle="tab" data-bs-target="#tab-<?=$tk?>"><i class="fa-solid <?=$ti?> me-1"></i><?=e($tl)?><?php if($tk==='overview'):?> <span class="badge <?=$nOk===count($checklist)?'bg-success':'bg-warning text-dark'?>"><?=$nOk?>/<?=count($checklist)?></span><?php endif;?></button></li>
+        <?php endforeach;?>
+    </ul>
+    <div class="tab-content">
+    <div class="tab-pane fade show active" id="tab-overview">
+    <div class="cardx"><h3 class="mb-2"><i class="fa-solid fa-list-check me-2"></i>Is it ready for customers?</h3>
+        <p class="text-muted small">Everything that has to be right for a customer to dial a code and be served. Press a line to go to its settings.</p>
+        <ul class="list-unstyled mb-0"><?php foreach($checklist as $c):?><li class="py-1 d-flex gap-2 align-items-start"><span class="badge <?=['ok'=>'bg-success','warn'=>'bg-warning text-dark','off'=>'bg-secondary'][$c['state']]?> mt-1" style="min-width:3.2rem"><?=['ok'=>'ok','warn'=>'check','off'=>'off'][$c['state']]?></span><span><a href="#" data-goto="<?=e($c['tab'])?>"><b><?=e($c['title'])?></b></a> <span class="text-muted"><?=e($c['detail'])?></span></span></li><?php endforeach;?></ul>
+        <div class="small text-muted mt-3">Menus: <a href="?page=ussd_menu">Menu Builder</a> · <a href="?page=shortcodes">Short Codes</a> · <a href="?page=status">System Status</a> · the address to give Mobius is under <a href="#" data-goto="connect">Connection</a>.</div>
+    </div>
+    </div>
+    <div class="tab-pane fade" id="tab-connect">
     <div class="cardx">
         <h3><i class="fa-solid fa-plug me-2"></i>USSD proxy endpoint <span class="badge <?=$cfg['enabled']==='1'?($cfg['mode']==='live'?'bg-success':'bg-warning text-dark'):'bg-secondary'?> ms-2"><?=$cfg['enabled']==='1'?($cfg['mode']==='live'?'ON — serving menus':'ON — capture only'):'OFF'?></span></h3>
-        <p class="text-muted mb-2">The address a Mobius <b>PROXY</b> (or <b>MS_INITIATED</b>) menu calls. It is <b>off</b> until you switch it on below, so nothing changes in production until you decide. Start in <b>Capture</b> mode: it records exactly what Mobius sends (and answers with a fixed test text), so we can set the field names from a real request instead of guessing. Only the menu you point at it is affected — no other short code is touched.</p>
+        <p class="text-muted mb-2">The address a Mobius <b>PROXY</b> (or <b>MS_INITIATED</b>) menu calls. While the endpoint is <b>off</b> Mobius gets "Not found" and nothing changes for customers. <b>Capture</b> mode only records what Mobius sends (useful when connecting a new menu); <b>Live</b> serves the menus built in the <a href="?page=ussd_menu">Menu Builder</a>. Only the Mobius menu you point at this address is affected — no other short code is touched.</p>
         <p class="mb-1 small text-muted">Put one of these in the Mobius menu's <b>URL</b> field (use the address Mobius can actually reach — the in-cluster one only works from inside the cluster):</p>
         <?php foreach(['proxy'=>'PROXY menu','ms_initiated'=>'MS_INITIATED menu'] as $m=>$lbl):?>
         <div class="small fw-semibold mt-2"><?=e($lbl)?> — public address</div><pre class="mb-1 txid" title="Click to select, then copy" data-public-url="ussd.php?t=<?=e($token)?>&amp;m=<?=e($m)?>"><?=e($urlFor($m))?></pre>
@@ -1003,7 +1081,9 @@ if ($page==='ussd_proxy') {
         <?php if($mobiusProbe):?><div class="mt-2"><?php foreach($mobiusProbe as $mp):?><div class="small"><span class="badge <?=$mp['ok']?'bg-success':'bg-danger'?> me-1"><?=$mp['ok']?'OK':'Refused'?></span><b><?=e($mp['label'])?></b> — <?=e($mp['msg'])?></div><?php endforeach;?></div><?php endif;?>
         <?php if($mobiusTest):?><div class="mt-2"><?php foreach($mobiusTest as $mt):?><div class="small"><span class="badge <?=$mt['ok']?'bg-success':'bg-danger'?> me-1"><?=$mt['ok']?'OK':'Failed'?></span><code><?=e($mt['base'])?></code> <?=e($mt['msg'])?></div><?php endforeach;?></div><?php endif;?>
     </div>
-    <div class="cardx mt-3"><h3>Buying from the menu <small class="text-muted">(offer items in the Menu Builder)</small></h3>
+    </div>
+    <div class="tab-pane fade" id="tab-buy">
+    <div class="cardx"><h3>Buying from the menu <small class="text-muted">(offer items in the Menu Builder)</small></h3>
         <p class="text-muted">When a customer picks an <b>offer</b> item, the menu shows its name and price (read from <b><?=e(USSD_OFFER_SCHEMA)?></b> only) and asks <i>1. Confirm / 2. Cancel</i>. What happens on Confirm depends on the mode. Each call can buy each offer only once, even if Mobius repeats a request.</p>
         <form method="post" class="row g-3"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="save_purchase">
             <div class="col-md-4"><label class="small text-muted mb-0">Mode</label><select class="form-select" name="purchase_mode">
@@ -1033,8 +1113,10 @@ if ($page==='ussd_proxy') {
         <?php if($purchases):?><div class="table-scroll mt-3"><table class="table table-sm mb-0"><thead><tr><th>Time</th><th>Number</th><th>Offer</th><th>Mode</th><th>Result</th><th>Shown to customer</th></tr></thead><tbody>
             <?php foreach($purchases as $pu):?><tr><td class="text-nowrap"><?=e($pu['created_at'])?></td><td><?=e($pu['msisdn'])?><?=!empty($pu['recipient'])?' <small class="text-muted">→ '.e($pu['recipient']).'</small>':''?></td><td title="<?=e((string)($pu['request_body']??''))?>"><?=e($pu['offer_code'])?> <small class="text-muted"><?=e($pu['offer_name'])?></small><?=!empty($pu['request_body'])?' <i class="fa-solid fa-code text-muted" title="Hover to see the request we sent"></i>':''?></td><td><?=e($pu['mode'])?></td><td><span class="badge <?=['ok'=>'bg-success','sent'=>'bg-primary','blocked'=>'bg-secondary','test'=>'bg-info text-dark','lowbal'=>'bg-warning text-dark','failed'=>'bg-danger','pending'=>'bg-warning text-dark'][$pu['status']]??'bg-secondary'?>"><?=e($pu['status'])?></span><?=$pu['http_code']?' <small class="text-muted">HTTP '.e($pu['http_code']).'</small>':''?></td><td title="<?=e((string)$pu['response'])?>"><?=e((string)$pu['reply_text'])?></td></tr><?php endforeach;?></tbody></table></div><?php endif;?>
     </div>
-    <div class="cardx mt-3"><h3>Shared Bundle <small class="text-muted">(Seddo — the "Shared Bundle service" menu item)</small></h3>
-        <p class="text-muted">Buy the bundle, add a sharing number, check balance and numbers — the flow from the Shared Bundle diagram, calling Hera's <code>…/prepaid/ShareBundle/</code> addresses. <b>Test</b> simulates every answer and sends nothing. In <b>Live</b>, the calls are real and use the headers saved for purchases. The <b>subscribe</b> and <b>add-number</b> bodies below are first guesses from the diagram's variable names (not yet checked against Hera): try one of each on a test number and read the reply in the table below. A blank body blocks that call.</p>
+    </div>
+    <div class="tab-pane fade" id="tab-share">
+    <div class="cardx"><h3>Shared Bundle <small class="text-muted">(Seddo — the "Shared Bundle service" menu item)</small></h3>
+        <p class="text-muted">Buy the bundle, add a sharing number, check balance and numbers — the flow from the Shared Bundle diagram, calling Hera's <code>…/prepaid/ShareBundle/</code> addresses. <b>Test</b> simulates every answer and sends nothing. In <b>Live</b>, the calls are real and use the headers saved for purchases. The bodies below were copied from Mobius's own requests (IMSI, addresses and dialog ids come from the live call). To change one, copy the request from a Mobius log line; a blank body blocks that call. The newest replies are in the <b>Buying offers</b> tab's table.</p>
         <form method="post" class="row g-3"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="save_share">
             <div class="col-md-3"><label class="small text-muted mb-0">Mode</label><select class="form-select" name="share_mode"><option value="off" <?=$cfg['share_mode']==='off'?'selected':''?>>Off</option><option value="test" <?=$cfg['share_mode']==='test'?'selected':''?>>Test — simulated, nothing sent</option><option value="live" <?=$cfg['share_mode']==='live'?'selected':''?>>Live — real calls</option></select></div>
             <div class="col-md-7"><label class="small text-muted mb-0">ShareBundle address <small>(subscribe / addNumber / DataUsage / listNumber are added to it)</small></label><input class="form-control" name="share_base" value="<?=e($cfg['share_base'])?>"></div>
@@ -1053,7 +1135,9 @@ if ($page==='ussd_proxy') {
             <div class="col-md-2"><button class="btn btn-sm btn-outline-secondary w-100">Ask Hera</button></div></form>
         <?php if($shareAsk):?><div class="mt-2 small"><div><b>Hera answered</b> (HTTP <?=e($shareAsk['code'])?>)<?=$shareAsk['error']!==''?': '.e($shareAsk['error']):''?> — shown to a customer as:</div><pre class="mb-1"><?=e($shareAsk['text'])?></pre><div>Raw reply:</div><pre class="mb-0"><?=e($shareAsk['raw'])?></pre></div><?php endif;?>
     </div>
-    <div class="cardx mt-3"><h3>Try it without Mobius</h3>
+    </div>
+    <div class="tab-pane fade" id="tab-tools">
+    <div class="cardx"><h3>Try it without Mobius</h3>
         <p class="text-muted">Paste a sample request (JSON, XML or <code>name=value&amp;name=value</code>) — or press <b>Replay</b> on a captured one below. It runs the live logic with the settings above and shows what would be sent back. Nothing is stored and no session is kept.</p>
         <form method="post" class="row g-2"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="test">
             <div class="col-12"><textarea class="form-control code" rows="3" name="sample" placeholder='{"msisdn":"220xxxxxxx","sessionId":"abc123","text":"1"}'><?=e($testIn)?></textarea></div>
@@ -1078,6 +1162,18 @@ if ($page==='ussd_proxy') {
             <td><form method="post"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="replay"><input type="hidden" name="id" value="<?=e($lg['id'])?>"><button class="btn btn-sm btn-outline-primary" title="Run this request through the live logic without sending anything">Replay</button></form></td></tr>
         <?php endforeach;?></tbody></table></div><?php endif;?>
     </div>
+    </div>
+    </div>
+    <script nonce="<?=e(csp_nonce())?>">
+    // remember the open tab (saving a form reloads the page), and let a link elsewhere on the page open a tab
+    window.addEventListener('load', function () {
+        var key = 'vasProxyTab', btn = function (t) { return document.querySelector('[data-bs-target="#tab-' + t + '"]'); }, saved = null;
+        try { saved = (location.hash || '').replace('#tab-', '') || sessionStorage.getItem(key); } catch (e) {}
+        if (saved && btn(saved)) btn(saved).click();
+        document.querySelectorAll('#proxyTabs [data-bs-toggle="tab"]').forEach(function (b) { b.addEventListener('shown.bs.tab', function (ev) { try { sessionStorage.setItem(key, ev.target.dataset.bsTarget.replace('#tab-', '')); } catch (e) {} }); });
+        document.querySelectorAll('[data-goto]').forEach(function (a) { a.addEventListener('click', function (ev) { ev.preventDefault(); var b = btn(a.dataset.goto); if (b) { b.click(); window.scrollTo(0, 0); } }); });
+    });
+    </script>
     <?php layout_end(); exit;
 }
 
@@ -1093,7 +1189,7 @@ if ($page==='ussd_sim') {
     $fsim=(string)($_GET['fsim']??'success'); if(!in_array($fsim,['success','lowbal,success','lowbal,fail','lowbal','fail'],true)) $fsim='success';
     $scr=ussd_screen($sc,$replies,$withDraft?['active','draft']:['active'],null,['seed'=>$seed,'share'=>'ussd_share_sim','msisdn'=>'2200000000','flow_sim'=>$fsim]);
     $trail=implode(',',$replies);
-    layout_start('USSD Simulator');
+    layout_start('USSD Simulator'); ussd_subnav('ussd_sim');
     ?>
     <div class="row g-3">
         <div class="col-lg-5"><div class="cardx">
@@ -1148,7 +1244,7 @@ if ($page==='ussd_quiz') {
         $st=$db->prepare('SELECT msisdn, SUM(score) pts, COUNT(*) games FROM ussd_quiz_plays WHERE quiz_key=? AND created_at >= NOW() - INTERVAL 7 DAY GROUP BY msisdn ORDER BY pts DESC LIMIT 10'); $st->execute([$key]); $top=$st->fetchAll();
     }
     $activeQ=count(array_filter($qs,fn($q)=>$q['status']==='active'));
-    layout_start('USSD Quiz');
+    layout_start('USSD Quiz'); ussd_subnav('ussd_quiz');
     ?>
     <div class="cardx">
         <h3><i class="fa-solid fa-circle-question me-2"></i>USSD Quiz</h3>
@@ -1243,7 +1339,7 @@ if ($page==='ussd_flows') {
     $typeName=['choices'=>'choices','offers'=>'offers','ask'=>'ask','lookup'=>'look up','confirm'=>'confirm','call'=>'call','message'=>'message']; $typeBadge=['choices'=>'bg-primary','offers'=>'bg-warning text-dark','ask'=>'bg-info text-dark','lookup'=>'bg-secondary','confirm'=>'bg-dark','call'=>'bg-danger','message'=>'bg-success'];
     $go=function(array $s):string{ $t=$s['type']??''; $a=[]; if($t==='choices') foreach($s['options']??[] as $o) $a[]='“'.($o['label']??'').'” → '.($o['next']??'?'); elseif($t==='confirm') { $a[]='yes → '.($s['yes']??'?'); $a[]='no → '.($s['no']??'?'); } elseif($t==='call') foreach(['success'=>'success','lowbal'=>'low balance','fail'=>'other failure'] as $k=>$l) $a[]=$l.' → '.($s['outcomes'][$k]??'?'); elseif(in_array($t,['offers','ask'],true)) $a[]='then → '.($s['next']??'?'); elseif($t==='lookup') $a[]='shows the reply, 0 = back'; elseif($t==='message') $a[]='ends the session'; return implode('  ·  ',$a); };
     $stepKeys=array_keys($steps);
-    layout_start('Service Flows');
+    layout_start('Service Flows'); ussd_subnav('ussd_flows');
     ?>
     <div class="cardx">
         <div class="d-flex flex-wrap justify-content-between align-items-center gap-2"><h3 class="mb-0"><i class="fa-solid fa-diagram-project me-2"></i>Service Flows</h3></div>
@@ -1261,6 +1357,10 @@ if ($page==='ussd_flows') {
         <div class="col-lg-7">
             <div class="cardx"><div class="d-flex justify-content-between align-items-center"><h3 class="mb-2">Check — <?=e($flow['title'])?></h3><span><?php if($nErr):?><span class="badge bg-danger"><?=$nErr?> to fix</span><?php elseif($nWarn):?><span class="badge bg-warning text-dark"><?=$nWarn?> to look at</span><?php else:?><span class="badge bg-success">all good</span><?php endif;?></span></div>
                 <?php if(!$health):?><p class="small text-muted mb-0">Every step leads somewhere and every call is set up.</p><?php else:?><ul class="list-unstyled small mb-0"><?php foreach($health as $h):?><li class="py-1"><span class="badge <?=['error'=>'bg-danger','warn'=>'bg-warning text-dark','info'=>'bg-info text-dark'][$h['level']]?> me-1"><?=['error'=>'fix','warn'=>'check','info'=>'note'][$h['level']]?></span><?=e($h['msg'])?></li><?php endforeach;?></ul><?php endif;?></div>
+            <?php $usedIn=flow_usage($fk);?>
+            <div class="cardx mt-3"><h3 class="mb-2">Where it is used</h3>
+                <?php if(!$usedIn):?><p class="small text-muted mb-0">Not in any menu yet — customers cannot reach it. In the <a href="?page=ussd_menu">Menu Builder</a> add an item of type <b>Service flow</b> and choose “<?=e($flow['title'])?>”.</p>
+                <?php else:?><ul class="small mb-0"><?php foreach($usedIn as $u):?><li><a href="?page=ussd_menu&short_code=<?=urlencode($u['short_code'])?>"><?=e($u['short_code'])?></a> — “<?=e($u['label'])?>” <?=$u['status']==='active'?'<span class="badge bg-success">on</span>':'<span class="badge bg-secondary">'.e($u['status']).'</span>'?></li><?php endforeach;?></ul><?php endif;?></div>
             <div class="cardx mt-3"><h3>Steps</h3>
                 <?php foreach($steps as $sk=>$s0): $isStart=($def['start']??'')===$sk;?>
                 <div class="border rounded p-2 mb-2 <?=$isStart?'border-primary':''?>">
@@ -1387,7 +1487,7 @@ if ($page==='ussd_menu') {
     $nErr=count(array_filter($health,fn($h)=>$h['level']==='error')); $nWarn=count(array_filter($health,fn($h)=>$h['level']==='warn'));
     $versions=[]; if($shortCode!==''){ $st=portal_pdo()->prepare('SELECT id,reason,nodes,created_by,created_at FROM ussd_menu_versions WHERE short_code=? ORDER BY id DESC LIMIT 12'); $st->execute([$shortCode]); $versions=$st->fetchAll(); }
     $drafts=count(array_filter($flatNodes,fn($n)=>$n['status']==='draft'));
-    layout_start('USSD Menu Builder');
+    layout_start('USSD Menu Builder'); ussd_subnav('ussd_menu');
     ?>
     <div class="cardx">
         <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
@@ -1408,7 +1508,11 @@ if ($page==='ussd_menu') {
                 <b>Item types:</b> <b>Submenu</b> (a list of more items) · <b>Catalogue list</b> (offers from the catalogue, kept up to date by itself) · <b>Offer</b> (sells one offer) · <b>End</b> (just a message) · <b>Buy for another number</b> · <b>Shared Bundle</b> · <b>Quiz</b>. The <b>label</b> is the line in the parent's menu; the optional <b>screen text</b> is what shows when the customer opens it. The code must also exist as a PROXY menu in Mobius, pointing at the portal address on the USSD Proxy page.
             </div></details>
     </div>
-    <?php if($shortCode!==''):?>
+    <?php if($shortCode!==''): $stt=shortcode_state($shortCode); $reg=$stt['registered'];?>
+    <div class="cardx mt-3 py-2"><div class="d-flex flex-wrap gap-3 align-items-center small">
+        <span><b>On phones:</b> <?php if($stt['live']):?><span class="badge bg-success">answering</span><?php else:?><span class="badge bg-secondary">not live</span> <span class="text-muted">because <?=e($stt['why'])?> — see <a href="?page=ussd_proxy">Proxy</a></span><?php endif;?></span>
+        <span><b>Register:</b> <?php if($reg):?><a href="?page=shortcodes&id=<?=e($reg['id'])?>"><?=e($reg['service_name'])?></a> <span class="badge status-<?=e(strtolower($reg['status']))?>"><?=e($reg['status'])?></span><?php else:?><span class="text-muted">not registered</span> <a href="?page=shortcodes&new=<?=urlencode($shortCode)?>">register it</a><?php endif;?></span>
+        <span><b>Direct codes:</b> <span class="text-muted">each item shows its own (⚡) — dial it to jump straight there</span></span></div></div>
     <div class="row g-3 mt-1">
         <div class="col-lg-7">
             <div class="cardx">

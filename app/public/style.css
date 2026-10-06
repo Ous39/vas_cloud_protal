@@ -244,3 +244,8 @@ footer{text-align:center;padding:16px 0;background:#232323;color:#fff}
 .stepform:has(#step_type option[value="message"]:checked) .fld.t-message{display:block}
 @supports not selector(:has(*)){.stepform .fld{display:block}}
 .menu-row:hover{background:rgba(0,0,0,.035);border-radius:6px}
+
+/* the tab bar shared by every USSD page */
+.ussd-subnav .nav-link{padding:.35rem .8rem;border-radius:999px;color:#475569;background:#fff;border:1px solid #e2e8f0;margin-right:.35rem;font-size:.9rem}
+.ussd-subnav .nav-link:hover{background:#f1f5f9}
+.ussd-subnav .nav-link.active{background:#dc3545;border-color:#dc3545;color:#fff}

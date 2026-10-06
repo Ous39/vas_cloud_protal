@@ -2342,6 +2342,77 @@ function integration_uptime_pct(int $id, int $sinceHours = 24): ?float {
 function menu_shortcodes(): array {
     return array_column(portal_pdo()->query("SELECT DISTINCT short_code FROM ussd_menu_nodes WHERE short_code NOT LIKE '% [archived %' ORDER BY short_code")->fetchAll(), 'short_code');
 }
+// ---- The USSD platform at a glance (Short Codes, USSD & IVR, USSD Proxy and the Menu Builder all use these) ----
+// Is a short code answering customers right now, and is it in the Short Code register?
+function shortcode_state(string $code, ?array $cfg = null, ?array $registry = null): array {
+    $cfg = $cfg ?? ussd_proxy_config();
+    if ($registry === null) { $registry = []; try { foreach (portal_pdo()->query("SELECT * FROM portal_short_codes WHERE channel_type='USSD'")->fetchAll() as $r) $registry[$r['short_code']] = $r; } catch (Throwable $e) {} }
+    $why = $cfg['enabled'] !== '1' ? 'the USSD endpoint is switched off' : ($cfg['mode'] !== 'live' ? 'the USSD endpoint is in Capture mode' : ($cfg['push_enabled'] !== '1' ? 'screens are not being pushed back through Mobius' : ''));
+    return ['live' => $why === '', 'why' => $why, 'registered' => $registry[$code] ?? null];
+}
+// One entry per short code that has a menu: items on / draft and what the Menu check says.
+function menu_overview(): array {
+    $out = [];
+    foreach (menu_shortcodes() as $code) {
+        $flat = menu_nodes_flat($code); $h = menu_health($code);
+        $out[$code] = ['items' => count($flat), 'active' => count(array_filter($flat, fn($n) => $n['status'] === 'active')), 'draft' => count(array_filter($flat, fn($n) => $n['status'] === 'draft')),
+            'errors' => count(array_filter($h, fn($x) => $x['level'] === 'error')), 'warns' => count(array_filter($h, fn($x) => $x['level'] === 'warn'))];
+    }
+    return $out;
+}
+// Menus (short code + item) that open a given service flow.
+function flow_usage(string $flowKey): array {
+    try { $st = portal_pdo()->prepare("SELECT short_code, prompt_text AS label, status FROM ussd_menu_nodes WHERE node_type='flow' AND offer_code=? AND short_code NOT LIKE '% [archived %' ORDER BY short_code, id"); $st->execute([$flowKey]); return $st->fetchAll(); }
+    catch (Throwable $e) { return []; }
+}
+// The catalogue row behind each offer code used by a routing table (the active one when several share a code).
+function ussd_route_offers(string $schema, array $codes): array {
+    $codes = array_values(array_unique(array_filter(array_map(fn($c) => trim((string)$c), $codes), fn($c) => $c !== ''))); if (!$codes) return [];
+    try {
+        if (!table_exists($schema, 'vas_offers')) return [];
+        $del = column_exists($schema, 'vas_offers', 'deleted_at') ? " AND (deleted_at IS NULL OR deleted_at='')" : '';
+        $st = pdo($schema)->prepare('SELECT offer_code, name, one_time_price, status FROM vas_offers WHERE offer_code IN ('.implode(',', array_fill(0, count($codes), '?')).')'.$del.' ORDER BY id'); $st->execute($codes);
+    } catch (Throwable $e) { return []; }
+    $by = []; foreach ($st->fetchAll() as $o) { $c = (string)$o['offer_code']; if (!isset($by[$c]) || offer_is_active($o['status']) || !offer_is_active($by[$c]['status'])) $by[$c] = $o; }
+    return $by;
+}
+function ussd_route_on($status): bool { return in_array(strtolower(trim((string)$status)), ['1', 'active', 'on', 'true', 'yes'], true); }
+// What is wrong with each routing row: [route id => [['level' => 'error'|'warn', 'msg' => …], …]]. Only rows that are switched on can be a problem for customers.
+function ussd_route_review(array $routes, array $offers): array {
+    $out = []; $add = function ($r, string $lvl, string $msg) use (&$out) { $out[(int)$r['id']][] = ['level' => $lvl, 'msg' => $msg]; };
+    $byService = []; foreach ($routes as $r) if (ussd_route_on($r['status']) && trim((string)$r['service_code']) !== '') $byService[$r['type'].'|'.trim((string)$r['service_code'])][] = $r;
+    foreach ($routes as $r) {
+        $on = ussd_route_on($r['status']); $code = trim((string)$r['offer_code']); if (!$on) continue;
+        if ($code === '') $add($r, 'warn', 'No offer code — dialling this does not sell anything.');
+        else {
+            if (!ctype_digit($code)) $add($r, 'warn', 'The offer code "'.$code.'" is not a plain number — check it for a typo.');
+            if (!isset($offers[$code])) $add($r, 'error', 'Offer '.$code.' is not in the catalogue.');
+            elseif (!offer_is_active($offers[$code]['status'])) $add($r, 'error', 'Offer '.$code.' ('.$offers[$code]['name'].') is switched off in the catalogue.');
+        }
+        $same = $byService[$r['type'].'|'.trim((string)$r['service_code'])] ?? [];
+        if (count($same) > 1) $add($r, 'warn', 'The service code '.$r['service_code'].' is also used by '.implode(', ', array_map(fn($x) => $x['shortcode'], array_filter($same, fn($x) => (int)$x['id'] !== (int)$r['id']))).'.');
+    }
+    return $out;
+}
+// The setup steps of the USSD Proxy page as a checklist: [['state' => ok|warn|off, 'title', 'detail', 'tab'], …].
+function ussd_setup_checklist(array $cfg): array {
+    $o = []; $add = function (string $state, string $title, string $detail, string $tab) use (&$o) { $o[] = ['state' => $state, 'title' => $title, 'detail' => $detail, 'tab' => $tab]; };
+    if ($cfg['enabled'] !== '1') $add('off', 'Endpoint', 'Switched off — Mobius gets "Not found", customers are not served.', 'connect');
+    elseif ($cfg['mode'] !== 'live') $add('warn', 'Endpoint', 'On, but in Capture mode: it only records what Mobius sends and answers with a fixed test text.', 'connect');
+    else $add('ok', 'Endpoint', 'On and serving the menus.', 'connect');
+    $add(trim((string)$cfg['allow_ips']) === '' ? 'warn' : 'ok', 'Who may call it', trim((string)$cfg['allow_ips']) === '' ? 'Anyone with the secret address can call it. Best practice: list the Mobius servers\' addresses.' : 'Only: '.$cfg['allow_ips'], 'connect');
+    $mobiusOk = $cfg['push_enabled'] === '1' && $cfg['mobius_user'] !== '' && $cfg['mobius_pass'] !== '';
+    $add($mobiusOk ? 'ok' : ($cfg['push_enabled'] === '1' ? 'warn' : 'off'), 'Answering through Mobius', $mobiusOk ? 'Switched on with a saved API user.' : ($cfg['push_enabled'] === '1' ? 'Switched on, but the API user or password is missing.' : 'Switched off — PROXY menus cannot get their screens back to the phone.'), 'connect');
+    $pm = $cfg['purchase_mode'];
+    if ($pm === 'off') $add('off', 'Buying offers', 'Off — customers are told it is not switched on.', 'buy');
+    elseif ($pm !== 'live') $add('warn', 'Buying offers', 'In test mode: nothing is bought, customers are told it was a test.', 'buy');
+    elseif (trim((string)$cfg['purchase_url']) === '') $add('warn', 'Buying offers', 'Live, but there is no purchase address.', 'buy');
+    elseif ($cfg['purchase_auth'] === '') $add('warn', 'Buying offers', 'Live, but no headers (API key) are saved — Hera will refuse the requests.', 'buy');
+    else $add('ok', 'Buying offers', 'Live, with an address and headers saved.', 'buy');
+    $sm = $cfg['share_mode'];
+    $add($sm === 'live' ? ($cfg['purchase_auth'] === '' ? 'warn' : 'ok') : ($sm === 'test' ? 'warn' : 'off'), 'Shared Bundle (Seddo)', $sm === 'live' ? ($cfg['purchase_auth'] === '' ? 'Live, but the headers saved under Buying are missing.' : 'Live.') : ($sm === 'test' ? 'In test mode: every answer is simulated.' : 'Off.'), 'share');
+    return $o;
+}
 function menu_node(int $id): ?array {
     $st = portal_pdo()->prepare('SELECT * FROM ussd_menu_nodes WHERE id=?'); $st->execute([$id]);
     return $st->fetch() ?: null;
