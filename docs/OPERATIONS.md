@@ -41,12 +41,12 @@ Everything the portal owns lives in the **`vas_portal`** database (users, audit 
 
 **Operations → Refunds** (admins with the settings permission). Two steps on one page:
 
-1. **Investigate** — type the customer's number (7 digits, or with 220) and how far back to look. The page shows the purchases made through the USSD menu (as buyer or as the other number, with "not charged" flagged where Hera said nothing was taken), the number's subscriptions, and its transactions with the offer and vendor each carried. **Use** on any row fills the form below.
+1. **Investigate** — type the customer's number (7 digits, or with 220) and the dates to look between (set *From* to the day it was bought; subscriptions go back up to 400 days, the transaction log shows its newest 31 days of the range). Hera's tables hold the number as 6704843, the USSD ledger as 2206704843: the page tries both. The page shows the purchases made through the USSD menu (as buyer or as the other number, with "not charged" flagged where Hera said nothing was taken), the number's subscriptions, and its transactions with the offer and vendor each carried. **Use** on any row fills the form below.
 2. **Refund** — five fields, as in Hera's example: *offer code*, *vendor*, *number* (who got the bundle — the other number for a buy-for-other), *channel* (REF) and *date it was bought* (`2025-08-08 15:30:18`). **Preview** shows exactly what will be sent (`POST …/hera/prepaid/BundleSubscription` with the purchase headers); **Send** confirms and sends.
 
 Hera is asked once per number + offer + time: a refund that went through is never sent again (typing the number with or without 220 makes no difference); a failed or test one can be tried again. Every request, who sent it, and Hera's reply are in the history at the bottom and in the audit trail; a refund started from a purchase also shows on that purchase in USSD Proxy → Buying offers.
 
-Mode (off / test / live) and the address are set under USSD Proxy → Buying offers → Refunds. Start in **Test** (recorded, nothing sent). The pods must be able to resolve the refund host (`kubectl -n vas-cloud exec deploy/vas-cloud-app -- getent hosts vas-preprod.comium.gm`; if nothing prints, add it under `hostAliases` as for `vas-testing`). The page reads the database currently selected at the top (use HeraProduction for real customers).
+Mode (off / test / live) and the address are set under USSD Proxy → Buying offers → Refunds. Start in **Test** (recorded, nothing sent). The refund address is the production Hera (`https://vas-prod.comium.gm/hera/prepaid/BundleSubscription`). The pods must be able to resolve the refund host (`kubectl -n vas-cloud exec deploy/vas-cloud-app -- getent hosts vas-prod.comium.gm`; if nothing prints, add it under `hostAliases` as for `vas-testing`). The page reads the database currently selected at the top (use HeraProduction for real customers).
 
 ## Secrets
 

@@ -573,9 +573,24 @@ t('refunds: the fields, the exact request, once per number+offer+time', function
     ok(ussd_refund_eligible(['mode' => 'live', 'status' => 'ok']) && !ussd_refund_eligible(['mode' => 'live', 'status' => 'lowbal']) && !ussd_refund_eligible(['mode' => 'test', 'status' => 'ok']) && !ussd_refund_eligible(['mode' => 'live', 'status' => 'ok', 'refund_status' => 'ok']) && !ussd_refund_eligible(['mode' => 'live', 'status' => 'failed', 'response' => 'Deduction for Subscription failed']), 'the ledger offers a link only where it makes sense');
     $db->exec("DELETE FROM refund_requests WHERE offer_code LIKE 'ZT%' OR offer_code='40004'"); $db->exec("DELETE FROM ussd_purchases WHERE call_id LIKE 'ZT-rf%'");
 });
-t('looking into a number gathers what the portal knows', function () {
-    $r = refund_lookup(app_config('default_schema'), '220866600770', date('Y-m-d', strtotime('-6 days')), date('Y-m-d'));
-    ok(isset($r['subscriptions'], $r['transactions'], $r['purchases'], $r['errors']) && is_array($r['purchases']), 'all three parts come back, a part that cannot be read as an error message, never an exception');
+t('looking into a number: Hera holds it as 6704843, the USSD ledger as 2206704843', function () use ($db) {
+    $sch = USSD_OFFER_SCHEMA; $made = [];
+    foreach (['subscription' => "CREATE TABLE subscription (id INT AUTO_INCREMENT PRIMARY KEY, date DATETIME, purchase_sequence VARCHAR(20), subscriber_msisdn VARCHAR(20), receiver_msisdn VARCHAR(20), transaction_id VARCHAR(60), subscription_type VARCHAR(40), channel VARCHAR(30), result_desc VARCHAR(100), data_volume VARCHAR(20), sms_volume VARCHAR(20), minutes_volume VARCHAR(20), data_expiry DATETIME NULL, sms_expiry DATETIME NULL, minutes_expiry DATETIME NULL)",
+              'audit_log' => "CREATE TABLE audit_log (id INT AUTO_INCREMENT PRIMARY KEY, transaction_id VARCHAR(60), create_date DATETIME, msisdn VARCHAR(20), vendor_entity_name VARCHAR(60), channel VARCHAR(30), result_status VARCHAR(20), result_description VARCHAR(100), response_time INT, input BLOB, output BLOB)"] as $tbl => $ddl)
+        if (!table_exists($sch, $tbl)) { pdo($sch)->exec($ddl); $made[] = $tbl; }
+    $today = date('Y-m-d'); $old = date('Y-m-d', strtotime('-60 days')); $d = pdo($sch);
+    try {
+        $d->exec("DELETE FROM subscription WHERE transaction_id LIKE 'ZT-rl%'"); $d->exec("DELETE FROM audit_log WHERE transaction_id LIKE 'ZT-rl%'");
+        $d->prepare("INSERT INTO subscription(date,subscriber_msisdn,receiver_msisdn,transaction_id,subscription_type,channel,result_desc) VALUES(?,?,?,?,?,?,?)")->execute(["$today 10:00:00", '6704843', '6600770', 'ZT-rl1', '40004', 'USSD', 'Success']);
+        $d->prepare("INSERT INTO subscription(date,subscriber_msisdn,receiver_msisdn,transaction_id,subscription_type,channel,result_desc) VALUES(?,?,?,?,?,?,?)")->execute(["$old 10:00:00", '6704843', '6704843', 'ZT-rl2', '40005', 'USSD', 'Success']);
+        $a = $d->prepare("INSERT INTO audit_log(transaction_id,create_date,msisdn,vendor_entity_name,channel,result_status,result_description,input) VALUES(?,?,?,?,?,?,?,?)");
+        $a->execute(['ZT-rl3', "$today 10:00:01", '6704843', 'OcsProduction', 'USSD', '0', 'Success', '{"offerCode":"40004","vendor":"huawei"}']); $a->execute(['ZT-rl4', "$today 11:00:00", '2206600770', 'OcsProduction', 'USSD', '0', 'Success', '{"x":{"offer_code":"7","vendor":"zte"}}']);
+        $r = refund_lookup($sch, '2206704843', date('Y-m-d', strtotime('-6 days')), $today);
+        eq(array_column($r['subscriptions'], 'transaction_id'), ['ZT-rl1'], 'the subscription is found with the local number'); eq($r['form']['subscriptions'] ?? null, '6704843', 'which is the form tried first'); eq($r['transactions'][0]['offer_code'] ?? null, '40004', 'the transaction carries its offer'); eq($r['transactions'][0]['vendor'] ?? null, 'huawei', 'and its vendor');
+        $r2 = refund_lookup($sch, '2206600770', date('Y-m-d', strtotime('-6 days')), $today); eq($r2['form']['transactions'] ?? null, '2206600770', 'a table that holds the number with 220 is found by the second form'); eq($r2['transactions'][0]['offer_code'] ?? null, '7', 'and its hints too');
+        $r3 = refund_lookup($sch, '2206704843', $old, $today); eq(array_column($r3['subscriptions'], 'transaction_id'), ['ZT-rl1', 'ZT-rl2'], 'an older purchase is found when the range reaches back'); ok(count(array_filter($r3['notes'], fn($n) => str_contains($n, 'transaction log'))) === 1, 'and the log says it only looked at its newest 31 days');
+        ok(isset($r['purchases'], $r['errors']) && is_array($r['purchases']), 'the purchase ledger part always comes back');
+    } finally { $d->exec("DELETE FROM subscription WHERE transaction_id LIKE 'ZT-rl%'"); $d->exec("DELETE FROM audit_log WHERE transaction_id LIKE 'ZT-rl%'"); foreach ($made as $tbl) $d->exec("DROP TABLE $tbl"); }
 });
 
 // ------------------------------------------------------------------ summary

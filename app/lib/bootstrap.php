@@ -3357,16 +3357,23 @@ function refund_vendor_for(string $schema, string $offer): string {
     return '';
 }
 // Everything the portal knows about a number in a date range: its subscriptions, its transactions (with the offer and vendor they carried) and the
-// purchases made through the USSD menu (as buyer or as the other number). A part that cannot be read comes back as an error message, not an exception.
+// purchases made through the USSD menu (as buyer or as the other number). Hera's own tables hold the number in the local form (6704843) while the USSD
+// ledger holds it with 220, so each table is asked in the local form first and, only if that finds nothing, with 220. A part that cannot be read comes
+// back as an error message, not an exception. Subscriptions may be searched over a long range; the transaction log only over its newest 31 days.
+const REFUND_SUBSCRIPTION_MAX_DAYS = 400;
 function refund_lookup(string $schema, string $msisdnFull, string $from, string $to): array {
-    $out = ['subscriptions' => [], 'transactions' => [], 'purchases' => [], 'errors' => []];
+    $out = ['subscriptions' => [], 'transactions' => [], 'purchases' => [], 'errors' => [], 'notes' => [], 'form' => []];
+    $local = ussd_local_number($msisdnFull); $forms = array_values(array_unique([$local, $msisdnFull])); $tsTo = strtotime($to);
+    $subFrom = max(strtotime($from), $tsTo - (REFUND_SUBSCRIPTION_MAX_DAYS - 1) * 86400); $logFrom = max(strtotime($from), $tsTo - (AUDIT_LOG_MAX_RANGE_DAYS - 1) * 86400);
+    if ($subFrom > strtotime($from)) $out['notes'][] = 'Subscriptions are searched for at most '.REFUND_SUBSCRIPTION_MAX_DAYS.' days (from '.date('Y-m-d', $subFrom).').';
+    if ($logFrom > strtotime($from)) $out['notes'][] = 'The transaction log is only searched for the newest '.AUDIT_LOG_MAX_RANGE_DAYS.' days of the range (from '.date('Y-m-d', $logFrom).') — narrow the dates to look at an older day.';
     try { if (!table_exists($schema, 'subscription')) throw new RuntimeException('subscription does not exist in '.$schema);
-        $out['subscriptions'] = search_subscriptions($schema, ['msisdn' => $msisdnFull, 'transaction_id' => '', 'subscription_type' => '', 'channel' => '', 'date_from' => $from, 'date_to' => $to], 1, 30)['rows']; }
+        foreach ($forms as $m) { $rows = search_subscriptions($schema, ['msisdn' => $m, 'transaction_id' => '', 'subscription_type' => '', 'channel' => '', 'date_from' => date('Y-m-d', $subFrom), 'date_to' => $to], 1, 30)['rows']; if ($rows) { $out['subscriptions'] = $rows; $out['form']['subscriptions'] = $m; break; } } }
     catch (Throwable $e) { $out['errors']['subscriptions'] = $e->getMessage(); }
-    try { $rows = search_audit_log($schema, ['date_from' => $from, 'date_to' => $to, 'msisdn' => $msisdnFull, 'transaction_id' => '', 'result_status' => '', 'vendor' => '', 'channel' => '', 'result_desc' => ''], 1, 40)['rows'];
-        foreach ($rows as $r) { $h = refund_hints($r['input_text'] ?? ''); $out['transactions'][] = ['transaction_id' => $r['transaction_id'], 'create_date' => $r['create_date'], 'channel' => $r['channel'], 'vendor_entity_name' => $r['vendor_entity_name'], 'result_status' => $r['result_status'], 'result_description' => $r['result_description']] + $h; } }
+    try { foreach ($forms as $m) { $rows = search_audit_log($schema, ['date_from' => date('Y-m-d', $logFrom), 'date_to' => $to, 'msisdn' => $m, 'transaction_id' => '', 'result_status' => '', 'vendor' => '', 'channel' => '', 'result_desc' => ''], 1, 40)['rows'];
+            if ($rows) { foreach ($rows as $r) { $h = refund_hints($r['input_text'] ?? ''); $out['transactions'][] = ['transaction_id' => $r['transaction_id'], 'create_date' => $r['create_date'], 'channel' => $r['channel'], 'vendor_entity_name' => $r['vendor_entity_name'], 'result_status' => $r['result_status'], 'result_description' => $r['result_description']] + $h; } $out['form']['transactions'] = $m; break; } } }
     catch (Throwable $e) { $out['errors']['transactions'] = $e->getMessage(); }
-    try { ussd_purchase_table(); $st = portal_pdo()->prepare('SELECT * FROM ussd_purchases WHERE msisdn=? OR recipient=? ORDER BY id DESC LIMIT 15'); $st->execute([$msisdnFull, $msisdnFull]); $out['purchases'] = $st->fetchAll(); }
+    try { ussd_purchase_table(); $st = portal_pdo()->prepare('SELECT * FROM ussd_purchases WHERE msisdn IN (?,?) OR recipient IN (?,?) ORDER BY id DESC LIMIT 15'); $st->execute([$msisdnFull, $local, $msisdnFull, $local]); $out['purchases'] = $st->fetchAll(); }
     catch (Throwable $e) { $out['errors']['purchases'] = $e->getMessage(); }
     return $out;
 }
@@ -3624,7 +3631,7 @@ const SHARE_OLD_DEFAULTS = [
 const USSD_PURCHASE_BODY_OTHER = '{"callID":"{txn}","originalRequest":"{shortcode}","localAddress":{local_address_json},"remoteAddress":{remote_address_json},"msisdn":"{msisdn}","imsi":"{imsi}","localDialogID":{local_dialog_id},"remoteDialogID":{remote_dialog_id},"isMobileOriginated":true,"mobileRequestIdentifier":1,"isInitial":false,"isProxy":false,"chargesWithCurrency":"{price_d}","offerCode":"{offer_code}","vendor":"{vendor}","channel":"USSD","otherMsisdn":"{other_msisdn}","otherOfferCode":"{other_offer_code}","operation":"purchaseOffer"}';
 const USSD_PURCHASE_BODY_V1 = '{"msisdn":"{msisdn}","offer_code":"{offer_code}","transaction_id":"{txn}","channel":"USSD"}';
 const USSD_PROXY_DEFAULTS = [
-    'refund_mode' => 'off', 'refund_url' => 'https://vas-preprod.comium.gm/hera/prepaid/BundleSubscription',
+    'refund_mode' => 'off', 'refund_url' => 'https://vas-prod.comium.gm/hera/prepaid/BundleSubscription',
     'enabled' => '0', 'token' => '', 'mode' => 'capture', 'allow_ips' => '',
     'shortcode_proxy' => '*9606*9090#', 'shortcode_ms_initiated' => '*9606*9090#',
     'f_msisdn' => '', 'f_session' => '', 'f_input' => '', 'f_shortcode' => '',
