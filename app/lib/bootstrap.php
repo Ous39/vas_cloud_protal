@@ -3309,53 +3309,103 @@ function ussd_execute_purchase(array $cfg, array $screen, string $msisdn, string
         return ['text' => 'Sorry, we could not process this request. Please try again later.', 'note' => 'purchase error: '.substr($e->getMessage(), 0, 100)];
     }
 }
-// ---- Refunds: Hera BundleSubscription with channel REF, for a purchase made for oneself or for another number ----
-// An admin presses Refund on a row of the purchase ledger. Only a live purchase that went through (or was refused after it tried) can be refunded;
-// the number asked about is whoever the bundle was for (the other number, for a buy-for-other); Hera is asked once — a refund that went through is
-// never sent again, one that failed or was only a test can be tried again. off = refused here, test = recorded and nothing sent, live = sent.
-function ussd_refund_body(string $tpl, array $p, string $vendor): string {
-    $esc = fn($s) => substr((string)json_encode((string)$s, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), 1, -1);
-    $target = preg_replace('/\D+/', '', (string)(($p['recipient'] ?? '') !== '' ? $p['recipient'] : $p['msisdn']));
-    return strtr($tpl, ['{offer_code}' => $esc($p['offer_code']), '{date}' => $esc($p['created_at']), '{vendor}' => $esc($vendor), '{msisdn}' => $esc($target), '{msisdn_local}' => $esc(ussd_local_number($target)),
-        '{buyer_local}' => $esc(ussd_local_number((string)$p['msisdn'])), '{txn}' => $esc($p['call_id'])]);
+// ---- Refunds: look into a subscription first, then ask Hera (BundleSubscription, channel REF) to refund it ----
+// The Refunds page lets an admin investigate a number (its subscriptions, its transactions, the portal's own purchases), then fill in the five fields of
+// the request — offer code, vendor, number, channel (REF) and the time it was bought — preview exactly what will be sent, and send it. Hera is asked once
+// per number + offer + time: a refund that went through is never sent again; a failed or test one can be tried again. off = refused here, test = recorded and
+// nothing sent, live = sent. Every request, who sent it and Hera's reply are kept.
+function refund_tables(): void {
+    static $done = false; if ($done) return;
+    portal_pdo()->exec("CREATE TABLE IF NOT EXISTS refund_requests (
+        id INT NOT NULL AUTO_INCREMENT PRIMARY KEY, msisdn VARCHAR(30) NOT NULL, offer_code VARCHAR(45) NOT NULL, vendor VARCHAR(45) NOT NULL, channel VARCHAR(20) NOT NULL, sub_date DATETIME NOT NULL,
+        mode VARCHAR(8) NOT NULL, status VARCHAR(10) NOT NULL, http_code INT NULL, request_body TEXT NULL, response TEXT NULL, note VARCHAR(255) NULL, purchase_id INT NULL,
+        created_by VARCHAR(80) NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, INDEX idx_msisdn (msisdn, created_at), INDEX idx_key (msisdn, offer_code, sub_date)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+    $done = true;
 }
-// A refused purchase is only refundable when it does not look like nothing was taken: Hera's "Deduction for Subscription failed" and a low balance mean the
-// customer was not charged, so there is nothing to give back.
+// A number as the tables hold it (220 + the local digits): 6704843, 2206704843 and 866600770 all work.
+function refund_full_msisdn(string $raw): string { $d = preg_replace('/\D+/', '', $raw); if ($d === '') return ''; return str_starts_with($d, '220') && strlen($d) >= 10 ? $d : '220'.$d; }
+// Checks the five fields and puts them in the shape Hera wants (the number without 220, the time as 2025-08-08 15:30:18).
+function refund_normalize(array $in): array {
+    $offer = trim((string)($in['offer_code'] ?? '')); if (!preg_match('/^[A-Za-z0-9_-]{1,30}$/', $offer)) throw new RuntimeException('Enter the offer code (letters, digits, - or _).');
+    $vendor = trim((string)($in['vendor'] ?? '')); if (!preg_match('/^[A-Za-z0-9_.-]{1,40}$/', $vendor)) throw new RuntimeException('Enter the vendor, for example huawei.');
+    $full = refund_full_msisdn((string)($in['msisdn'] ?? '')); if (!preg_match('/^\d{9,15}$/', $full)) throw new RuntimeException("Enter the customer's number (7 digits, or with 220 in front).");
+    $channel = strtoupper(trim((string)($in['channel'] ?? 'REF'))); if ($channel === '') $channel = 'REF'; if (!preg_match('/^[A-Z0-9_-]{1,20}$/', $channel)) throw new RuntimeException('The channel is a short word such as REF.');
+    $date = trim((string)($in['date'] ?? '')); if (!preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $date) || strtotime($date) === false) throw new RuntimeException('The date must look like 2025-08-08 15:30:18 (when the bundle was bought).');
+    if (strtotime($date) > time() + 86400) throw new RuntimeException('That date is in the future.');
+    return ['offer_code' => $offer, 'vendor' => $vendor, 'msisdn_full' => $full, 'msisdn' => ussd_local_number($full), 'channel' => $channel, 'date' => $date];
+}
+// The request exactly as in Hera's example: {"offerCode":"40004","date":"2025-08-08 15:30:18","vendor":"huawei","msisdn":"6704843","channel":"REF"}
+function refund_body(array $n): string {
+    return (string)json_encode(['offerCode' => $n['offer_code'], 'date' => $n['date'], 'vendor' => $n['vendor'], 'msisdn' => $n['msisdn'], 'channel' => $n['channel']], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+}
+// What a logged request says about the offer and vendor ("offerCode" and "vendor" anywhere in the JSON).
+function refund_hints(?string $payload): array {
+    $out = ['offer_code' => '', 'vendor' => '']; $j = json_decode((string)$payload, true);
+    $walk = function ($v) use (&$walk, &$out): void { if (!is_array($v)) return;
+        foreach ($v as $k => $x) { $lk = strtolower((string)$k);
+            if (is_scalar($x)) { if ($out['offer_code'] === '' && in_array($lk, ['offercode', 'offer_code'], true) && (string)$x !== '') $out['offer_code'] = (string)$x; if ($out['vendor'] === '' && $lk === 'vendor' && (string)$x !== '') $out['vendor'] = (string)$x; }
+            else $walk($x); } };
+    if (is_array($j)) $walk($j);
+    elseif (preg_match('/"offerCode"\s*:\s*"([^"]+)"/i', (string)$payload, $m)) $out['offer_code'] = $m[1];
+    return $out;
+}
+function refund_vendor_for(string $schema, string $offer): string {
+    foreach (array_unique([$schema, USSD_OFFER_SCHEMA]) as $s) {
+        try { if (!table_exists($s, 'vas_offers')) continue; $st = pdo($s)->prepare('SELECT vendor FROM vas_offers WHERE offer_code=? ORDER BY id DESC LIMIT 1'); $st->execute([$offer]); $v = (string)$st->fetchColumn(); if ($v !== '') return $v; } catch (Throwable $e) {}
+    }
+    return '';
+}
+// Everything the portal knows about a number in a date range: its subscriptions, its transactions (with the offer and vendor they carried) and the
+// purchases made through the USSD menu (as buyer or as the other number). A part that cannot be read comes back as an error message, not an exception.
+function refund_lookup(string $schema, string $msisdnFull, string $from, string $to): array {
+    $out = ['subscriptions' => [], 'transactions' => [], 'purchases' => [], 'errors' => []];
+    try { if (!table_exists($schema, 'subscription')) throw new RuntimeException('subscription does not exist in '.$schema);
+        $out['subscriptions'] = search_subscriptions($schema, ['msisdn' => $msisdnFull, 'transaction_id' => '', 'subscription_type' => '', 'channel' => '', 'date_from' => $from, 'date_to' => $to], 1, 30)['rows']; }
+    catch (Throwable $e) { $out['errors']['subscriptions'] = $e->getMessage(); }
+    try { $rows = search_audit_log($schema, ['date_from' => $from, 'date_to' => $to, 'msisdn' => $msisdnFull, 'transaction_id' => '', 'result_status' => '', 'vendor' => '', 'channel' => '', 'result_desc' => ''], 1, 40)['rows'];
+        foreach ($rows as $r) { $h = refund_hints($r['input_text'] ?? ''); $out['transactions'][] = ['transaction_id' => $r['transaction_id'], 'create_date' => $r['create_date'], 'channel' => $r['channel'], 'vendor_entity_name' => $r['vendor_entity_name'], 'result_status' => $r['result_status'], 'result_description' => $r['result_description']] + $h; } }
+    catch (Throwable $e) { $out['errors']['transactions'] = $e->getMessage(); }
+    try { ussd_purchase_table(); $st = portal_pdo()->prepare('SELECT * FROM ussd_purchases WHERE msisdn=? OR recipient=? ORDER BY id DESC LIMIT 15'); $st->execute([$msisdnFull, $msisdnFull]); $out['purchases'] = $st->fetchAll(); }
+    catch (Throwable $e) { $out['errors']['purchases'] = $e->getMessage(); }
+    return $out;
+}
+function refund_history(int $limit = 25): array { refund_tables(); return portal_pdo()->query('SELECT * FROM refund_requests ORDER BY id DESC LIMIT '.(int)$limit)->fetchAll(); }
+// Sends one refund. $purchaseId (optional) ties it to a row of the USSD purchase ledger, which then shows it too.
+function refund_send(array $cfg, array $in, string $by = '', ?int $purchaseId = null): array {
+    $mode = in_array($cfg['refund_mode'], ['test', 'live'], true) ? $cfg['refund_mode'] : 'off';
+    if ($mode === 'off') throw new RuntimeException('Refunds are switched off (USSD Proxy → Buying offers → Refunds).');
+    $n = refund_normalize($in); refund_tables(); $db = portal_pdo(); $body = refund_body($n);
+    $lock = 'refund:'.md5($n['msisdn'].'|'.$n['offer_code'].'|'.$n['date']); $got = (int)$db->query('SELECT GET_LOCK('.$db->quote($lock).', 5)')->fetchColumn();
+    try {
+        $done = $db->prepare("SELECT created_at FROM refund_requests WHERE msisdn=? AND offer_code=? AND sub_date=? AND status IN ('ok','pending') LIMIT 1"); $done->execute([$n['msisdn'], $n['offer_code'], $n['date']]);
+        if ($d = $done->fetch()) throw new RuntimeException('A refund for this number, offer and time was already sent ('.$d['created_at'].'). It is not sent twice.');
+        $ins = $db->prepare("INSERT INTO refund_requests(msisdn,offer_code,vendor,channel,sub_date,mode,status,request_body,purchase_id,created_by) VALUES(?,?,?,?,?,?,'pending',?,?,?)");
+        $ins->execute([$n['msisdn'], $n['offer_code'], $n['vendor'], $n['channel'], $n['date'], $mode, $body, $purchaseId, mb_substr($by, 0, 80)]); $id = (int)$db->lastInsertId();
+    } finally { if ($got) $db->query('SELECT RELEASE_LOCK('.$db->quote($lock).')'); }
+    $http = null; $resp = null;
+    if ($mode === 'test') { $status = 'test'; $note = 'TEST: nothing was sent to Hera.'; }
+    else {
+        $r = ussd_hera_post($cfg, $body, (string)$cfg['refund_url']); $http = $r['code']; $resp = $r['error'] !== '' ? 'error: '.$r['error'] : mb_substr($r['raw'], 0, 1000);
+        $status = flow_classify(['ok_code' => '0', 'lowbal' => ''], $r)['outcome'] === 'success' ? 'ok' : 'failed';
+        $note = $r['error'] !== '' ? 'No answer from Hera: '.$r['error'] : (($t = ussd_share_text(json_decode((string)$r['raw'], true), (string)$r['raw'])) !== '' ? mb_substr($t, 0, 200) : 'HTTP '.$r['code']);
+    }
+    $db->prepare('UPDATE refund_requests SET status=?, http_code=?, response=?, note=? WHERE id=?')->execute([$status, $http, $resp, mb_substr($note, 0, 255), $id]);
+    if ($purchaseId) { ussd_purchase_table(); $db->prepare("UPDATE ussd_purchases SET refund_status=?, refund_at=NOW(), refund_by=?, refund_request=?, refund_response=?, refund_note=? WHERE id=?")->execute([$status, mb_substr($by, 0, 80), $body, $resp, mb_substr($note, 0, 255), $purchaseId]); }
+    audit('refund_send', null, 'refund_requests', (string)$id, json_encode(['mode' => $mode, 'status' => $status, 'offer' => $n['offer_code'], 'msisdn' => $n['msisdn'], 'date' => $n['date'], 'http' => $http]));
+    return ['id' => $id, 'status' => $status, 'note' => $note, 'mode' => $mode, 'sent' => $body];
+}
+// A purchase of the USSD menu where Hera said nothing was taken (deduction failed, balance too low) has nothing to refund: the ledger offers no link for it.
 function ussd_refund_not_charged(array $p): bool { return (bool)preg_match('/deduction|insufficient|low balance|not enough/i', (string)($p['response'] ?? '').' '.(string)($p['reply_text'] ?? '')); }
 function ussd_refund_eligible(array $p): bool {
     if (($p['mode'] ?? '') !== 'live' || in_array($p['refund_status'] ?? '', ['ok', 'pending'], true)) return false;
     return in_array($p['status'] ?? '', ['ok', 'sent'], true) || (($p['status'] ?? '') === 'failed' && !ussd_refund_not_charged($p));
 }
-function ussd_refund_purchase(array $cfg, int $id, string $by = ''): array {
-    ussd_purchase_table(); $db = portal_pdo(); $mode = in_array($cfg['refund_mode'], ['test', 'live'], true) ? $cfg['refund_mode'] : 'off';
-    if ($mode === 'off') throw new RuntimeException('Refunds are switched off (USSD Proxy → Buying offers → Refunds).');
-    $st = $db->prepare('SELECT * FROM ussd_purchases WHERE id=?'); $st->execute([$id]); $p = $st->fetch(); if (!$p) throw new RuntimeException('That purchase is not in the ledger.');
-    if (($p['refund_status'] ?? '') === 'ok') throw new RuntimeException('This purchase has already been refunded.');
-    if (!ussd_refund_eligible($p)) throw new RuntimeException('Only a live purchase that went through can be refunded (or one that failed without Hera saying the deduction failed). A purchase where nothing was charged has nothing to refund.');
-    $claim = $db->prepare("UPDATE ussd_purchases SET refund_status='pending', refund_by=?, refund_at=NOW() WHERE id=? AND (refund_status IS NULL OR refund_status IN ('failed','test'))"); $claim->execute([mb_substr($by, 0, 80), $id]);
-    if ($claim->rowCount() === 0) throw new RuntimeException('This purchase is already being refunded.');
-    $v = $db->query('SELECT 1')->fetchColumn(); $vendor = '';
-    try { $vs = pdo(USSD_OFFER_SCHEMA)->prepare('SELECT vendor FROM vas_offers WHERE offer_code=? ORDER BY id DESC LIMIT 1'); $vs->execute([$p['offer_code']]); $vendor = (string)$vs->fetchColumn(); } catch (Throwable $e) {}
-    $body = ussd_refund_body((string)$cfg['refund_body'], $p, $vendor); $sent = ussd_request_for_log($body); $http = null; $resp = null;
-    if ($mode === 'test') { $status = 'test'; $note = 'TEST: nothing was sent to Hera.'; }
-    elseif ($vendor === '') { $status = 'failed'; $note = 'The offer '.$p['offer_code'].' is not in the catalogue, so its vendor is unknown — nothing was sent.'; }
-    else {
-        $r = ussd_hera_post($cfg, $body, (string)$cfg['refund_url']); $http = $r['code']; $resp = $r['error'] !== '' ? 'error: '.$r['error'] : mb_substr($r['raw'], 0, 1000);
-        $cl = flow_classify(['ok_code' => '0', 'lowbal' => ''], $r); $status = $cl['outcome'] === 'success' ? 'ok' : 'failed';
-        $note = $r['error'] !== '' ? 'No answer from Hera: '.$r['error'] : (($t = ussd_share_text(json_decode((string)$r['raw'], true), (string)$r['raw'])) !== '' ? mb_substr($t, 0, 200) : 'HTTP '.$r['code']);
-    }
-    $db->prepare('UPDATE ussd_purchases SET refund_status=?, refund_request=?, refund_response=?, refund_note=? WHERE id=?')->execute([$status, $sent, $resp, mb_substr($note, 0, 255), $id]);
-    audit('ussd_refund', null, 'ussd_purchases', (string)$id, json_encode(['mode' => $mode, 'status' => $status, 'offer' => $p['offer_code'], 'for' => ussd_local_number((string)(($p['recipient'] ?? '') !== '' ? $p['recipient'] : $p['msisdn'])), 'http' => $http]));
-    return ['status' => $status, 'note' => $note, 'mode' => $mode];
-}
 function save_refund_config(array $d): void {
     $mode = in_array($d['refund_mode'] ?? '', ['test', 'live'], true) ? $d['refund_mode'] : 'off'; $url = trim((string)($d['refund_url'] ?? ''));
     if ($url !== '' && (!preg_match('#^https?://#i', $url) || !filter_var($url, FILTER_VALIDATE_URL) || mb_strlen($url) > 500)) throw new RuntimeException('The refund address must be a full http:// or https:// URL.');
     if ($mode === 'live' && $url === '') throw new RuntimeException('Live refunds need the refund address. Use Test until you have it.');
-    $body = trim((string)($d['refund_body'] ?? '')); if ($body === '' || mb_strlen($body) > 2000) throw new RuntimeException('The refund request body must be filled in (at most 2000 characters).');
-    $sample = ussd_refund_body($body, ['offer_code' => '40004', 'created_at' => '2025-08-08 15:30:18', 'msisdn' => '2206704843', 'recipient' => '', 'call_id' => 'x'], 'huawei');
-    if (!is_array(json_decode($sample, true))) throw new RuntimeException('The refund request body is not valid JSON once filled in — check the quotes and the {placeholders}.');
-    ussd_proxy_set(['refund_mode' => $mode, 'refund_url' => $url, 'refund_body' => $body]); audit('ussd_refund_save', null, 'ussd_proxy_config', null, 'mode='.$mode.' url='.parse_url($url, PHP_URL_HOST));
+    ussd_proxy_set(['refund_mode' => $mode, 'refund_url' => $url]); audit('ussd_refund_save', null, 'ussd_proxy_config', null, 'mode='.$mode.' url='.parse_url($url, PHP_URL_HOST));
 }
 // ---- Shared Bundle (Seddo): the ShareBundle calls under .../hera/prepaid/ShareBundle/ ----
 // share_mode: off = the service says it is not switched on; test = every answer is simulated and nothing is sent;
@@ -3573,10 +3623,8 @@ const SHARE_OLD_DEFAULTS = [
 // Buying for another number (from Mobius's own log): the same purchaseOffer, the base offerCode and its otherOfferCode, plus otherMsisdn exactly as the customer typed it.
 const USSD_PURCHASE_BODY_OTHER = '{"callID":"{txn}","originalRequest":"{shortcode}","localAddress":{local_address_json},"remoteAddress":{remote_address_json},"msisdn":"{msisdn}","imsi":"{imsi}","localDialogID":{local_dialog_id},"remoteDialogID":{remote_dialog_id},"isMobileOriginated":true,"mobileRequestIdentifier":1,"isInitial":false,"isProxy":false,"chargesWithCurrency":"{price_d}","offerCode":"{offer_code}","vendor":"{vendor}","channel":"USSD","otherMsisdn":"{other_msisdn}","otherOfferCode":"{other_offer_code}","operation":"purchaseOffer"}';
 const USSD_PURCHASE_BODY_V1 = '{"msisdn":"{msisdn}","offer_code":"{offer_code}","transaction_id":"{txn}","channel":"USSD"}';
-// Refund: Hera BundleSubscription with channel REF — {offer_code} {date} (when it was bought) {vendor} {msisdn_local} (the number that got the bundle) {buyer_local} {txn}
-const USSD_REFUND_BODY = '{"offerCode":"{offer_code}","date":"{date}","vendor":"{vendor}","msisdn":"{msisdn_local}","channel":"REF"}';
 const USSD_PROXY_DEFAULTS = [
-    'refund_mode' => 'off', 'refund_url' => 'https://vas-preprod.comium.gm/hera/prepaid/BundleSubscription', 'refund_body' => USSD_REFUND_BODY,
+    'refund_mode' => 'off', 'refund_url' => 'https://vas-preprod.comium.gm/hera/prepaid/BundleSubscription',
     'enabled' => '0', 'token' => '', 'mode' => 'capture', 'allow_ips' => '',
     'shortcode_proxy' => '*9606*9090#', 'shortcode_ms_initiated' => '*9606*9090#',
     'f_msisdn' => '', 'f_session' => '', 'f_input' => '', 'f_shortcode' => '',

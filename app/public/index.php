@@ -33,13 +33,14 @@ function nav_can_see(string $page): bool {
     if (in_array($page,['alert_settings','retention','status'],true)) return can('manage_api_keys');
     if (in_array($page,['investigate','reports','alerts','monitoring','offer_report','timeline','vendor'],true)) return can('view_reports');
     if ($page==='shortcodes') return can('manage_shortcodes');
+    if ($page==='refunds') return can('manage_api_keys');
     if ($page==='projects') return can('manage_projects');
     if (in_array($page,['subscriptions','offers','offer_health','esim','sales','friends_family','voting','ussd_ivr','ussd_menu','ussd_menus','integrations','tables'],true)) return can('view_tables');
     return true;
 }
 // The tab bar every USSD page shows under its title, so Menus, Flows, Simulator, Proxy, Short Codes and Routing read as one platform.
 function ussd_subnav(string $current): void {
-    $tabs = [['ussd_menus','fa-list','Menus'],['ussd_menu','fa-sitemap','Builder'],['ussd_flows','fa-diagram-project','Service Flows'],['ussd_quiz','fa-circle-question','Quiz'],['ussd_sim','fa-mobile-screen','Simulator'],['ussd_proxy','fa-plug','Proxy'],['shortcodes','fa-hashtag','Short Codes'],['ussd_ivr','fa-route','Routing & IVR']];
+    $tabs = [['ussd_menus','fa-list','Menus'],['ussd_menu','fa-sitemap','Builder'],['ussd_flows','fa-diagram-project','Service Flows'],['ussd_quiz','fa-circle-question','Quiz'],['ussd_sim','fa-mobile-screen','Simulator'],['ussd_proxy','fa-plug','Proxy'],['shortcodes','fa-hashtag','Short Codes'],['ussd_ivr','fa-route','Routing & IVR'],['refunds','fa-rotate-left','Refunds']];
     echo '<ul class="nav nav-pills ussd-subnav mb-3">';
     foreach ($tabs as [$p,$ic,$lb]) { if (!nav_can_see($p)) continue; echo '<li class="nav-item"><a class="nav-link'.($p===$current?' active':'').'" href="?page='.$p.'"><i class="fa-solid '.$ic.' me-1"></i>'.e($lb).'</a></li>'; }
     echo '</ul>';
@@ -49,7 +50,7 @@ function layout_start(string $title): void {
     $nav = [
         ['dashboard','fa-gauge','Dashboard'],
         ['monitoring','fa-heart-pulse','Monitoring'],
-        ['group','fa-layer-group','Operations',[['subscriptions','fa-user-check','Subscriptions'],['offers','fa-tags','Offer Management'],['offer_health','fa-stethoscope','Offer Health'],['esim','fa-sim-card','eSIM Profiles'],['sales','fa-file-invoice-dollar','Sales & Invoices'],['friends_family','fa-user-group','Friends & Family'],['voting','fa-square-poll-vertical','Voting Service']]],
+        ['group','fa-layer-group','Operations',[['refunds','fa-rotate-left','Refunds'],['subscriptions','fa-user-check','Subscriptions'],['offers','fa-tags','Offer Management'],['offer_health','fa-stethoscope','Offer Health'],['esim','fa-sim-card','eSIM Profiles'],['sales','fa-file-invoice-dollar','Sales & Invoices'],['friends_family','fa-user-group','Friends & Family'],['voting','fa-square-poll-vertical','Voting Service']]],
         ['group','fa-tower-broadcast','Infrastructure',[['ussd_ivr','fa-mobile-screen-button','USSD & IVR'],['ussd_menus','fa-list','USSD Menus'],['ussd_menu','fa-sitemap','USSD Menu Builder'],['ussd_sim','fa-mobile-screen','USSD Simulator'],['ussd_quiz','fa-circle-question','USSD Quiz'],['ussd_flows','fa-diagram-project','Service Flows'],['ussd_proxy','fa-plug','USSD Proxy'],['integrations','fa-plug-circle-check','Integrations']]],
         ['group','fa-chart-line','Reports',[['investigate','fa-headset','Complaint Investigation'],['timeline','fa-timeline','Customer Timeline'],['alerts','fa-triangle-exclamation','Alerts'],['offer_report','fa-bullhorn','Offer Performance'],['reports','fa-chart-line','Reports'],['sql','fa-code','SQL Console']]],
         ['group','fa-gears','Admin',[['tables','fa-database','Database Tables'],['promotions','fa-bullhorn','Promotions'],['projects','fa-diagram-project','Projects'],['shortcodes','fa-hashtag','Short Codes'],['api_keys','fa-key','Partner API Keys'],['alert_settings','fa-bell','Alert Settings'],['retention','fa-database','Data Retention'],['status','fa-server','System Status'],['audit','fa-shield-halved','Audit Trail'],['users','fa-users-gear','Users']]],
@@ -902,6 +903,82 @@ if ($page==='api_keys') {
     <?php layout_end(); exit;
 }
 
+if ($page==='refunds') {
+    require_perm('manage_api_keys'); $schema=current_schema(); $cfg=ussd_proxy_config(); $mode=in_array($cfg['refund_mode'],['test','live'],true)?$cfg['refund_mode']:'off'; $by=(string)(user()['username']??'');
+    $F=['offer_code'=>trim((string)($_GET['offer']??'')),'vendor'=>trim((string)($_GET['vendor']??'')),'msisdn'=>trim((string)($_GET['msisdn']??'')),'channel'=>'REF','date'=>trim((string)($_GET['date']??''))]; $purchaseId=(int)($_GET['purchase']??0)?:null;
+    $preview=null;
+    if ($_SERVER['REQUEST_METHOD']==='POST') {
+        $F=['offer_code'=>trim((string)($_POST['offer_code']??'')),'vendor'=>trim((string)($_POST['vendor']??'')),'msisdn'=>trim((string)($_POST['msisdn']??'')),'channel'=>trim((string)($_POST['channel']??'REF')),'date'=>trim((string)($_POST['date']??''))]; $purchaseId=(int)($_POST['purchase_id']??0)?:null;
+        $doR=(string)($_POST['do']??'');
+        try {
+            if ($doR==='send') {
+                $rr=refund_send($cfg,$F,$by,$purchaseId);
+                flash($rr['status']==='ok'?'success':($rr['status']==='test'?'info':'danger'),'Refund '.['ok'=>'accepted by Hera','test'=>'recorded as a TEST (nothing was sent)','failed'=>'was NOT accepted'][$rr['status']].': '.$rr['note']);
+                redirect('?page=refunds&msisdn='.urlencode($F['msisdn']));
+            }
+            $n=refund_normalize($F); refund_tables(); $pv=portal_pdo()->prepare("SELECT status, created_at, note FROM refund_requests WHERE msisdn=? AND offer_code=? AND sub_date=? ORDER BY id DESC LIMIT 3"); $pv->execute([$n['msisdn'],$n['offer_code'],$n['date']]);
+            $preview=['n'=>$n,'body'=>refund_body($n),'earlier'=>$pv->fetchAll()]; $F['msisdn']=$n['msisdn']; $F['channel']=$n['channel'];
+        } catch (RuntimeException $e) { flash('danger',$e->getMessage()); }
+    }
+    $days=in_array((int)($_GET['days']??7),[1,3,7,14,31],true)?(int)($_GET['days']??7):7; $lookupFull=refund_full_msisdn(trim((string)($_GET['msisdn']??$F['msisdn'])));
+    $look=null; if($lookupFull!=='' && ($_SERVER['REQUEST_METHOD']==='GET' || $preview!==null) && strlen($lookupFull)>=9){ $look=refund_lookup($schema,$lookupFull,date('Y-m-d',strtotime('-'.($days-1).' days')),date('Y-m-d')); }
+    if ($F['offer_code']!=='' && $F['vendor']==='') $F['vendor']=refund_vendor_for($schema,$F['offer_code']);
+    $hist=refund_history(25);
+    layout_start('Refunds'); ussd_subnav('refunds');
+    $fill=fn(array $x)=>e(json_encode($x,JSON_UNESCAPED_SLASHES));
+    ?>
+    <?php if($mode==='off'):?><div class="alert alert-secondary py-2">Refunds are <b>switched off</b>: you can investigate, but nothing can be sent. Turn on <b>Test</b> or <b>Live</b> under <a href="?page=ussd_proxy">USSD Proxy → Buying offers → Refunds</a>.</div>
+    <?php elseif($mode==='test'):?><div class="alert alert-info py-2">Refunds are in <b>Test</b> mode: a refund is recorded and <b>nothing is sent to Hera</b>.</div>
+    <?php else:?><div class="alert alert-warning py-2">Refunds are <b>Live</b>: <b>Send refund</b> asks Hera now (<?=e(parse_url((string)$cfg['refund_url'],PHP_URL_HOST))?>), and a refund that goes through cannot be sent again.</div><?php endif;?>
+    <div class="cardx"><h3 class="mb-2"><span class="badge bg-primary me-2">1</span>Investigate</h3>
+        <form method="get" class="row g-2 align-items-end"><input type="hidden" name="page" value="refunds">
+            <div class="col-md-4"><label class="small text-muted mb-0">Customer's number</label><input class="form-control" name="msisdn" value="<?=e($lookupFull!==''?ussd_local_number($lookupFull):'')?>" placeholder="e.g. 6704843" inputmode="numeric"></div>
+            <div class="col-md-3"><label class="small text-muted mb-0">Look back</label><select class="form-select" name="days"><?php foreach([1=>'today',3=>'3 days',7=>'7 days',14=>'14 days',31=>'31 days'] as $dv=>$dl):?><option value="<?=$dv?>" <?=$days===$dv?'selected':''?>><?=e($dl)?></option><?php endforeach;?></select></div>
+            <div class="col-md-2"><button class="btn btn-primary w-100"><i class="fa-solid fa-magnifying-glass me-1"></i>Look</button></div>
+            <div class="col-md-3 small text-muted">Reading <b><?=e($schema)?></b>. Press <b>Use</b> on a row to put it in the refund form below.</div></form>
+        <?php if($look):?>
+        <?php foreach($look['errors'] as $part=>$msg):?><div class="alert alert-warning py-1 mt-2 mb-0 small"><b><?=e(ucfirst($part))?>:</b> <?=e($msg)?></div><?php endforeach;?>
+        <h6 class="mt-3">Purchases through the USSD menu <small class="text-muted">(this portal's ledger — as buyer or as the other number)</small></h6>
+        <?php if(!$look['purchases']):?><p class="small text-muted mb-0">None.</p><?php else:?><div class="table-scroll"><table class="table table-sm align-middle"><thead><tr><th>Time</th><th>Buyer → other</th><th>Offer</th><th>Mode</th><th>Result</th><th>Refund</th><th></th></tr></thead><tbody>
+            <?php foreach($look['purchases'] as $pu): $target=!empty($pu['recipient'])?$pu['recipient']:$pu['msisdn'];?><tr><td class="text-nowrap"><?=e($pu['created_at'])?></td><td><?=e(ussd_local_number((string)$pu['msisdn']))?><?=!empty($pu['recipient'])?' → '.e(ussd_local_number((string)$pu['recipient'])):''?></td><td><?=e($pu['offer_code'])?> <small class="text-muted"><?=e($pu['offer_name'])?></small></td><td><?=e($pu['mode'])?></td>
+                <td><span class="badge <?=['ok'=>'bg-success','sent'=>'bg-primary','failed'=>'bg-danger','lowbal'=>'bg-warning text-dark','test'=>'bg-info text-dark'][$pu['status']]??'bg-secondary'?>"><?=e($pu['status'])?></span> <small class="text-muted"><?=e(mb_strimwidth((string)$pu['reply_text'],0,60,'…'))?></small><?=ussd_refund_not_charged($pu)?' <span class="badge bg-light text-dark border" title="Hera said nothing was taken">not charged</span>':''?></td>
+                <td><?=e((string)($pu['refund_status']??''))?:'—'?></td><td><button type="button" class="btn btn-sm btn-outline-primary py-0" data-fill="<?=$fill(['offer_code'=>$pu['offer_code'],'vendor'=>refund_vendor_for($schema,(string)$pu['offer_code']),'msisdn'=>ussd_local_number((string)$target),'date'=>$pu['created_at'],'purchase_id'=>(int)$pu['id']])?>">Use</button></td></tr><?php endforeach;?></tbody></table></div><?php endif;?>
+        <h6 class="mt-3">Subscriptions <small class="text-muted">(as the buyer)</small></h6>
+        <?php if(!$look['subscriptions']):?><p class="small text-muted mb-0">None in this period<?=isset($look['errors']['subscriptions'])?' (could not be read)':''?>.</p><?php else:?><div class="table-scroll"><table class="table table-sm align-middle"><thead><tr><th>Date</th><th>Receiver</th><th>Transaction</th><th>Type</th><th>Channel</th><th>Result</th><th></th></tr></thead><tbody>
+            <?php foreach($look['subscriptions'] as $su):?><tr><td class="text-nowrap"><?=e($su['date'])?></td><td><?=e(ussd_local_number((string)$su['receiver_msisdn']))?></td><td class="small"><?=e($su['transaction_id'])?></td><td><?=e($su['subscription_type'])?></td><td><?=e($su['channel'])?></td><td class="small"><?=e(mb_strimwidth((string)$su['result_desc'],0,50,'…'))?></td>
+                <td><button type="button" class="btn btn-sm btn-outline-primary py-0" data-fill="<?=$fill(['msisdn'=>ussd_local_number((string)(($su['receiver_msisdn']??'')!==''?$su['receiver_msisdn']:$su['subscriber_msisdn'])),'date'=>$su['date'],'offer_code'=>preg_match('/^\d+$/',(string)$su['subscription_type'])?(string)$su['subscription_type']:''])?>">Use</button></td></tr><?php endforeach;?></tbody></table></div><?php endif;?>
+        <h6 class="mt-3">Transactions <small class="text-muted">(the platform's own log; the offer and vendor come from the request it carried)</small></h6>
+        <?php if(!$look['transactions']):?><p class="small text-muted mb-0">None in this period<?=isset($look['errors']['transactions'])?' (could not be read)':''?>.</p><?php else:?><div class="table-scroll"><table class="table table-sm align-middle"><thead><tr><th>Date</th><th>Channel</th><th>Offer</th><th>Vendor</th><th>Result</th><th class="small">Transaction</th><th></th></tr></thead><tbody>
+            <?php foreach($look['transactions'] as $tx):?><tr><td class="text-nowrap"><?=e($tx['create_date'])?></td><td><?=e($tx['channel'])?></td><td><?=e($tx['offer_code'])?:'—'?></td><td><?=e($tx['vendor'])?:'—'?></td><td><span class="badge <?=is_success_status($tx['result_status'])?'bg-success':'bg-danger'?>"><?=e($tx['result_status'])?></span> <small class="text-muted"><?=e(mb_strimwidth((string)$tx['result_description'],0,40,'…'))?></small></td><td class="small"><?=e($tx['transaction_id'])?></td>
+                <td><?php if($tx['offer_code']!==''):?><button type="button" class="btn btn-sm btn-outline-primary py-0" data-fill="<?=$fill(['offer_code'=>$tx['offer_code'],'vendor'=>$tx['vendor']!==''?$tx['vendor']:refund_vendor_for($schema,$tx['offer_code']),'msisdn'=>ussd_local_number($lookupFull),'date'=>$tx['create_date']])?>">Use</button><?php endif;?></td></tr><?php endforeach;?></tbody></table></div><?php endif;?>
+        <?php endif;?></div>
+    <div class="cardx mt-3" id="refundForm"><h3 class="mb-2"><span class="badge bg-primary me-2">2</span>Refund</h3>
+        <form method="post" id="rf" class="row g-2"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="preview"><input type="hidden" name="purchase_id" value="<?=e((string)($purchaseId??''))?>">
+            <div class="col-md-2"><label class="small text-muted mb-0">Offer code</label><input class="form-control" name="offer_code" value="<?=e($F['offer_code'])?>" placeholder="40004" required></div>
+            <div class="col-md-2"><label class="small text-muted mb-0">Vendor</label><input class="form-control" name="vendor" value="<?=e($F['vendor'])?>" placeholder="huawei" required></div>
+            <div class="col-md-2"><label class="small text-muted mb-0">Number (who got the bundle)</label><input class="form-control" name="msisdn" value="<?=e($F['msisdn'])?>" placeholder="6704843" inputmode="numeric" required></div>
+            <div class="col-md-2"><label class="small text-muted mb-0">Channel</label><input class="form-control" name="channel" value="<?=e($F['channel']?:'REF')?>" required></div>
+            <div class="col-md-3"><label class="small text-muted mb-0">Date it was bought</label><input class="form-control" name="date" value="<?=e($F['date'])?>" placeholder="2025-08-08 15:30:18" required></div>
+            <div class="col-md-1 d-flex align-items-end"><button class="btn btn-outline-primary w-100">Preview</button></div></form>
+        <div class="small text-muted mt-1">For a purchase made for another number, use the <b>other</b> number — the one that received the bundle.</div>
+        <?php if($preview):?>
+        <div class="border rounded p-3 mt-3 bg-light"><div class="fw-semibold mb-1">This is exactly what will be sent</div>
+            <div class="small text-muted">POST <code><?=e($cfg['refund_url'])?></code> with your saved headers</div><pre class="mb-2 mt-1"><?=e($preview['body'])?></pre>
+            <?php foreach($preview['earlier'] as $ev):?><div class="small"><span class="badge <?=['ok'=>'bg-success','test'=>'bg-info text-dark','failed'=>'bg-danger','pending'=>'bg-warning text-dark'][$ev['status']]??'bg-secondary'?>"><?=e($ev['status'])?></span> an earlier request for this number, offer and time — <?=e($ev['created_at'])?> <span class="text-muted"><?=e((string)$ev['note'])?></span></div><?php endforeach;?>
+            <?php if($mode==='off'):?><div class="text-danger mt-2">Refunds are switched off — it cannot be sent.</div>
+            <?php else:?><form method="post" class="mt-2" data-confirm="<?=e(($mode==='live'?'Ask Hera NOW to refund ':'Record a TEST refund of ').$preview['n']['offer_code'].' for '.$preview['n']['msisdn'].' (bought '.$preview['n']['date'].')? '.($mode==='live'?'A refund that goes through cannot be sent again.':'Nothing is sent.'))?>"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="send"><input type="hidden" name="purchase_id" value="<?=e((string)($purchaseId??''))?>">
+                <?php foreach(['offer_code','vendor','msisdn','channel','date'] as $k):?><input type="hidden" name="<?=$k?>" value="<?=e($preview['n'][$k])?>"><?php endforeach;?>
+                <button class="btn btn-danger"><i class="fa-solid fa-rotate-left me-1"></i><?=$mode==='live'?'Send refund to Hera':'Record test refund'?></button></form><?php endif;?></div>
+        <?php endif;?></div>
+    <div class="cardx table-card mt-3"><h3 class="px-3 pt-3 mb-2">Refund history</h3>
+        <?php if(!$hist):?><p class="text-muted px-3 pb-3 mb-0">No refunds yet.</p><?php else:?><div class="table-scroll"><table class="table table-sm align-middle mb-0"><thead><tr><th>When</th><th>By</th><th>Number</th><th>Offer</th><th>Vendor</th><th>Bought</th><th>Mode</th><th>Result</th><th>Hera said</th></tr></thead><tbody>
+            <?php foreach($hist as $h):?><tr><td class="text-nowrap"><?=e($h['created_at'])?></td><td><?=e($h['created_by'])?></td><td><?=e($h['msisdn'])?></td><td><?=e($h['offer_code'])?></td><td><?=e($h['vendor'])?></td><td class="text-nowrap"><?=e($h['sub_date'])?></td><td><?=e($h['mode'])?></td><td><span class="badge <?=['ok'=>'bg-success','test'=>'bg-info text-dark','failed'=>'bg-danger','pending'=>'bg-warning text-dark'][$h['status']]??'bg-secondary'?>"><?=e($h['status'])?></span></td><td class="small" title="<?=e((string)$h['request_body'])?>"><?=e((string)$h['note'])?></td></tr><?php endforeach;?></tbody></table></div><?php endif;?></div>
+    <script nonce="<?=e(csp_nonce())?>">
+    document.querySelectorAll('[data-fill]').forEach(function(b){b.addEventListener('click',function(){var d=JSON.parse(b.dataset.fill),f=document.getElementById('rf');['offer_code','vendor','msisdn','date'].forEach(function(k){if(d[k]!==undefined&&d[k]!=='')f.elements[k].value=d[k];});f.elements['purchase_id'].value=d.purchase_id||'';document.getElementById('refundForm').scrollIntoView({behavior:'smooth'});f.elements['vendor'].focus();});});
+    </script>
+    <?php layout_end(); exit;
+}
+
 if ($page==='ussd_ivr') {
     require_perm('view_tables'); $schema=current_schema();
     if (!table_exists($schema,'channel_service_code')) throw new RuntimeException('channel_service_code does not exist in '.$schema);
@@ -977,12 +1054,6 @@ if ($page==='ussd_proxy') {
         if ($do==='save') { save_ussd_proxy_config($_POST); flash('success','USSD proxy settings saved.'); redirect('?page=ussd_proxy'); }
         if ($do==='save_share') { save_share_config($_POST); flash('success','Shared Bundle settings saved.'); redirect('?page=ussd_proxy'); }
         if ($do==='save_refund') { try { save_refund_config($_POST); flash('success','Refund settings saved.'); } catch (RuntimeException $e) { flash('danger',$e->getMessage()); } redirect('?page=ussd_proxy'); }
-        if ($do==='refund') {
-            try { $rr=ussd_refund_purchase(ussd_proxy_config(),(int)($_POST['id']??0),(string)(user()['username']??''));
-                flash($rr['status']==='ok'?'success':($rr['status']==='test'?'info':'danger'),'Refund '.['ok'=>'accepted by Hera','test'=>'recorded as a TEST (nothing was sent)','failed'=>'was not accepted'][$rr['status']].': '.$rr['note']); }
-            catch (RuntimeException $e) { flash('danger',$e->getMessage()); }
-            redirect('?page=ussd_proxy');
-        }
         if ($do==='save_purchase') { save_purchase_config($_POST); flash('success','Purchase settings saved.'); redirect('?page=ussd_proxy'); }
         if ($do==='save_mobius') { save_mobius_config($_POST); flash('success','Mobius connection saved. Use "Test connection" to check the login.'); redirect('?page=ussd_proxy'); }
         if ($do==='rotate') { ussd_proxy_rotate_token(); flash('warning','New token created. Update the URL in the Mobius menu(s) — the old URL no longer works.'); redirect('?page=ussd_proxy'); }
@@ -1121,16 +1192,16 @@ if ($page==='ussd_proxy') {
             <?php foreach($purchases as $pu):?><tr><td class="text-nowrap"><?=e($pu['created_at'])?></td><td><?=e($pu['msisdn'])?><?=!empty($pu['recipient'])?' <small class="text-muted">→ '.e($pu['recipient']).'</small>':''?></td><td title="<?=e((string)($pu['request_body']??''))?>"><?=e($pu['offer_code'])?> <small class="text-muted"><?=e($pu['offer_name'])?></small><?=!empty($pu['request_body'])?' <i class="fa-solid fa-code text-muted" title="Hover to see the request we sent"></i>':''?></td><td><?=e($pu['mode'])?></td><td><span class="badge <?=['ok'=>'bg-success','sent'=>'bg-primary','blocked'=>'bg-secondary','test'=>'bg-info text-dark','lowbal'=>'bg-warning text-dark','failed'=>'bg-danger','pending'=>'bg-warning text-dark'][$pu['status']]??'bg-secondary'?>"><?=e($pu['status'])?></span><?=$pu['http_code']?' <small class="text-muted">HTTP '.e($pu['http_code']).'</small>':''?></td><td title="<?=e((string)$pu['response'])?>"><?=e((string)$pu['reply_text'])?></td>
                 <td class="text-nowrap"><?php $rs=(string)($pu['refund_status']??'');?><?php if($rs==='ok'):?><span class="badge bg-success" title="<?=e((string)($pu['refund_note']??''))?> — <?=e((string)($pu['refund_by']??''))?>, <?=e((string)($pu['refund_at']??''))?>">refunded</span>
                     <?php elseif($rs==='pending'):?><span class="badge bg-warning text-dark">in progress</span>
-                    <?php elseif(ussd_refund_eligible($pu) && $cfg['refund_mode']!=='off'):?><form method="post" class="d-inline" data-confirm="<?=e('Refund '.$pu['offer_code'].' '.$pu['offer_name'].' for '.ussd_local_number((string)(!empty($pu['recipient'])?$pu['recipient']:$pu['msisdn'])).' (bought '.$pu['created_at'].')? '.($pu['status']==='failed'?'This purchase FAILED — only refund it if the customer was really charged. ':'').($cfg['refund_mode']==='live'?'Hera will be asked now and a refund that goes through cannot be repeated.':'Test mode: nothing is sent.'))?>"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="refund"><input type="hidden" name="id" value="<?=e($pu['id'])?>"><button class="btn btn-sm btn-outline-danger py-0"><?=$cfg['refund_mode']==='test'?'Refund (test)':'Refund'?></button></form>
+                    <?php elseif(ussd_refund_eligible($pu) && $cfg['refund_mode']!=='off'):?><a class="btn btn-sm btn-outline-danger py-0" href="?page=refunds&msisdn=<?=urlencode((string)(!empty($pu['recipient'])?$pu['recipient']:$pu['msisdn']))?>&offer=<?=urlencode((string)$pu['offer_code'])?>&date=<?=urlencode((string)$pu['created_at'])?>&purchase=<?=(int)$pu['id']?>" title="Look into it first, then refund">Investigate &amp; refund</a>
                     <?php else:?><span class="text-muted">—</span><?php endif;?>
                     <?php if(in_array($rs,['failed','test'],true)):?> <span class="badge <?=$rs==='failed'?'bg-danger':'bg-info text-dark'?>" title="<?=e((string)($pu['refund_note']??''))?>">last: <?=e($rs)?></span><?php endif;?></td></tr><?php endforeach;?></tbody></table></div><?php endif;?>
     </div>
     <div class="cardx mt-3"><h3>Refunds <small class="text-muted">(Hera BundleSubscription, channel REF — for a purchase made for yourself or for another number)</small></h3>
-        <p class="text-muted small">Each live purchase in the table above gets a <b>Refund</b> button. It asks Hera, once, to refund that purchase: the number is whoever the bundle was for (for a buy-for-other, the other number), together with the offer, its vendor and the time it was bought. A refund that goes through can never be sent again; one that failed or was only a test can be tried again. The headers are the ones saved for purchases. <b>Test</b> records the refund and sends nothing.</p>
+        <p class="text-muted small">Refunds are made on the <a href="?page=refunds">Refunds page</a>: look into a number first, then send the request (offer code, vendor, number, channel, time) to Hera — once per number, offer and time. Each live purchase above has an <b>Investigate &amp; refund</b> link that opens it there with the details filled in. The headers are the ones saved for purchases. <b>Test</b> records the refund and sends nothing; <b>Off</b> blocks refunds.</p>
         <form method="post"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="save_refund">
             <div class="row g-2"><div class="col-md-3"><label class="small text-muted mb-0">Mode</label><select class="form-select" name="refund_mode"><?php foreach(['off'=>'Off — the button is hidden','test'=>'Test — record it, send nothing','live'=>'Live — ask Hera'] as $k=>$l):?><option value="<?=$k?>" <?=$cfg['refund_mode']===$k?'selected':''?>><?=e($l)?></option><?php endforeach;?></select></div>
                 <div class="col-md-9"><label class="small text-muted mb-0">Refund address (POST, JSON)</label><input class="form-control" name="refund_url" value="<?=e($cfg['refund_url'])?>"></div>
-                <div class="col-12"><label class="small text-muted mb-0">Request body — placeholders: {offer_code} {date} (when it was bought) {vendor} {msisdn_local} (who got the bundle, without 220) {buyer_local} {txn}</label><textarea class="form-control font-monospace" name="refund_body" rows="3"><?=e($cfg['refund_body'])?></textarea></div></div>
+                </div>
             <button class="btn btn-primary mt-2">Save refund settings</button></form></div>
     </div>
     <div class="tab-pane fade" id="tab-share">
