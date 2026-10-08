@@ -65,6 +65,28 @@ Also: change the `admin` password after setting up (signing in with the install 
 
 **The portal itself is down** — `kubectl -n vas-cloud get pods`, `kubectl -n vas-cloud logs deployment/vas-cloud-app`. Pods "not ready" with a healthy cluster usually means the portal database is unreachable (`/health.php` returns 503).
 
+## The database disk is full (happened 2026-10-08)
+
+**Symptoms:** nobody can sign in, `/health.php` says `"down"`, the app log says `Too many connections`, the alert cron jobs fail, and `kubectl logs mysql-0` repeats `Disk is full writing './binlog.…' (errno 28)`.
+
+**Cause:** MySQL's binary logs (a change journal, nothing in this setup reads it) grew by about 1 GB a day and filled the 10 GB volume. The portal's real data is only about 60 MB.
+
+**Fix (nothing is lost):**
+1. Protect the data first, in case the volume claim is ever removed: `kubectl patch pv <the pv name> -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}'`.
+2. If MySQL refuses even root (`Too many connections`), delete the OLDEST `binlog.0000NN` file with `kubectl -n vas-cloud exec mysql-0 -- rm /var/lib/mysql/binlog.0000NN` to make room. Never touch other files in that folder.
+3. `PURGE BINARY LOGS TO '<the newest binlog file>'` (run through `kubectl exec mysql-0 -- sh -c "mysql -uroot -p\"\$MYSQL_ROOT_PASSWORD\" -e …"` so the password is not typed).
+4. Keep only 3 days from now on: `SET PERSIST binlog_expire_logs_seconds=259200` (done 2026-10-08).
+5. Check `df -h /var/lib/mysql` and `/health.php`; take a dump (`mysqldump --single-transaction --all-databases`) and keep a copy off the cluster.
+
+**Still to do:** the volume claim `mysql-data-mysql-0` is `Terminating` (someone asked for it to be deleted). It stays bound while `mysql-0` runs, but a restart of `mysql-0` or a reboot of the `master` node would finish the deletion and leave MySQL `Pending`. Repair in a short window, with a fresh dump taken first — the data is kept and re-attached, not restored:
+1. `kubectl -n vas-cloud scale deployment vas-cloud-app --replicas=0`, then `kubectl -n vas-cloud scale statefulset mysql --replicas=0`. The stuck claim now finishes deleting and the volume shows `Released` (it is kept because of `Retain`).
+2. Free the volume for a new claim: `kubectl patch pv <pv name> --type=json -p='[{"op":"remove","path":"/spec/claimRef"}]'`.
+3. Create the claim again, pointing at that same volume (do this BEFORE step 4, or the StatefulSet makes its own empty one): name `mysql-data-mysql-0`, namespace `vas-cloud`, `storageClassName: longhorn`, `volumeName: <pv name>`, `accessModes: [ReadWriteOnce]`, `resources.requests.storage: 10Gi`.
+4. `kubectl -n vas-cloud scale statefulset mysql --replicas=1`, wait for `1/1`, then scale the app back to 2.
+5. To make it bigger, repeat with MySQL stopped: raise the claim's `storage` (e.g. 30Gi) and let Longhorn expand it, or use Longhorn's Volume → Expand.
+
+**Early warning:** the portal cannot see that disk. Set a Longhorn / Rancher alert for the volume at 80% used.
+
 ## Safety rules that are built in
 
 Production Hera databases are read-only from the portal; nothing is ever deleted (menus, versions and old items are archived, purchases are a permanent ledger); every change is in the audit trail; each customer call can buy each offer only once even if Mobius repeats a request; Test modes simulate everything and send nothing.
