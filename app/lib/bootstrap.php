@@ -3319,13 +3319,19 @@ function ussd_refund_body(string $tpl, array $p, string $vendor): string {
     return strtr($tpl, ['{offer_code}' => $esc($p['offer_code']), '{date}' => $esc($p['created_at']), '{vendor}' => $esc($vendor), '{msisdn}' => $esc($target), '{msisdn_local}' => $esc(ussd_local_number($target)),
         '{buyer_local}' => $esc(ussd_local_number((string)$p['msisdn'])), '{txn}' => $esc($p['call_id'])]);
 }
-function ussd_refund_eligible(array $p): bool { return ($p['mode'] ?? '') === 'live' && in_array($p['status'] ?? '', ['ok', 'sent', 'failed'], true) && !in_array($p['refund_status'] ?? '', ['ok', 'pending'], true); }
+// A refused purchase is only refundable when it does not look like nothing was taken: Hera's "Deduction for Subscription failed" and a low balance mean the
+// customer was not charged, so there is nothing to give back.
+function ussd_refund_not_charged(array $p): bool { return (bool)preg_match('/deduction|insufficient|low balance|not enough/i', (string)($p['response'] ?? '').' '.(string)($p['reply_text'] ?? '')); }
+function ussd_refund_eligible(array $p): bool {
+    if (($p['mode'] ?? '') !== 'live' || in_array($p['refund_status'] ?? '', ['ok', 'pending'], true)) return false;
+    return in_array($p['status'] ?? '', ['ok', 'sent'], true) || (($p['status'] ?? '') === 'failed' && !ussd_refund_not_charged($p));
+}
 function ussd_refund_purchase(array $cfg, int $id, string $by = ''): array {
     ussd_purchase_table(); $db = portal_pdo(); $mode = in_array($cfg['refund_mode'], ['test', 'live'], true) ? $cfg['refund_mode'] : 'off';
     if ($mode === 'off') throw new RuntimeException('Refunds are switched off (USSD Proxy → Buying offers → Refunds).');
     $st = $db->prepare('SELECT * FROM ussd_purchases WHERE id=?'); $st->execute([$id]); $p = $st->fetch(); if (!$p) throw new RuntimeException('That purchase is not in the ledger.');
     if (($p['refund_status'] ?? '') === 'ok') throw new RuntimeException('This purchase has already been refunded.');
-    if (!ussd_refund_eligible($p)) throw new RuntimeException('Only a live purchase that went through (or was refused after it tried) can be refunded.');
+    if (!ussd_refund_eligible($p)) throw new RuntimeException('Only a live purchase that went through can be refunded (or one that failed without Hera saying the deduction failed). A purchase where nothing was charged has nothing to refund.');
     $claim = $db->prepare("UPDATE ussd_purchases SET refund_status='pending', refund_by=?, refund_at=NOW() WHERE id=? AND (refund_status IS NULL OR refund_status IN ('failed','test'))"); $claim->execute([mb_substr($by, 0, 80), $id]);
     if ($claim->rowCount() === 0) throw new RuntimeException('This purchase is already being refunded.');
     $v = $db->query('SELECT 1')->fetchColumn(); $vendor = '';
