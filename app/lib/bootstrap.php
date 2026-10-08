@@ -3351,10 +3351,73 @@ function refund_hints(?string $payload): array {
     return $out;
 }
 function refund_vendor_for(string $schema, string $offer): string {
+    static $seen = []; if (isset($seen[$schema.'|'.$offer])) return $seen[$schema.'|'.$offer]; $seen[$schema.'|'.$offer] = '';
     foreach (array_unique([$schema, USSD_OFFER_SCHEMA]) as $s) {
-        try { if (!table_exists($s, 'vas_offers')) continue; $st = pdo($s)->prepare('SELECT vendor FROM vas_offers WHERE offer_code=? ORDER BY id DESC LIMIT 1'); $st->execute([$offer]); $v = (string)$st->fetchColumn(); if ($v !== '') return $v; } catch (Throwable $e) {}
+        try { if (!table_exists($s, 'vas_offers')) continue; $st = pdo($s)->prepare('SELECT vendor FROM vas_offers WHERE offer_code=? ORDER BY id DESC LIMIT 1'); $st->execute([$offer]); $v = (string)$st->fetchColumn(); if ($v !== '') return $seen[$schema.'|'.$offer] = $v; } catch (Throwable $e) {}
     }
     return '';
+}
+// ---- Was it deducted? Was the bundle received? ----
+// A purchase leaves two traces in the platform log. OcsProduction is the charge; its transaction id says what it was:
+//   20261008155509-HERA-0353-USSD-866060456-40101  = time, sequence, channel, number, offer. Status 0 = taken, 20000005 = balance too low.
+// PcrfProduction gives the bundle (data); its id has no number or offer, but it is logged in the same second for the same number.
+//   status 0 = given; 90398 "Exceeds the limit of repeatedly provisioned service…" or "Parameter missing <SRVNAME>" = refused.
+// Deducted and not received = OCS took the money, PCRF refused the bundle. A purchase with no PCRF record at all (voice, SMS…) is shown as deducted, "not recorded".
+function refund_parse_ocs_txn(string $txn): ?array {
+    if (!preg_match('/^(\d{14})-HERA-(\d+)-([A-Za-z]+)-(\d{7,15})-([A-Za-z0-9_]+)$/', trim($txn), $m)) return null;
+    return ['seq' => $m[2], 'channel' => strtoupper($m[3]), 'msisdn' => $m[4], 'offer_code' => $m[5]];
+}
+// $rows: platform-log rows (transaction_id, create_date, msisdn, vendor_entity_name, result_status, result_description). Returns one entry per OCS purchase (or refund).
+function refund_assess(array $rows): array {
+    $isVendor = fn($r, $k) => stripos((string)($r['vendor_entity_name'] ?? ''), $k) !== false; $pcrf = []; $refs = [];
+    foreach ($rows as $r) {
+        if ($isVendor($r, 'pcrf')) $pcrf[trim((string)$r['msisdn'])][] = $r;
+        $p = refund_parse_ocs_txn((string)$r['transaction_id']); if ($p && $p['channel'] === 'REF' && $isVendor($r, 'ocs') && is_success_status($r['result_status'])) $refs[$p['msisdn'].'|'.$p['offer_code']][] = (string)$r['create_date'];
+    }
+    $out = [];
+    foreach ($rows as $r) {
+        if (!$isVendor($r, 'ocs') || !($p = refund_parse_ocs_txn((string)$r['transaction_id']))) continue;
+        $e = ['date' => (string)$r['create_date'], 'msisdn' => $p['msisdn'], 'offer_code' => $p['offer_code'], 'channel' => $p['channel'], 'transaction_id' => (string)$r['transaction_id'], 'ocs_result' => trim((string)($r['result_description'] ?? '')),
+            'deducted' => null, 'received' => null, 'verdict' => '', 'reason' => '', 'refunded' => false];
+        if ($p['channel'] === 'REF') { $e['verdict'] = 'refund'; $e['deducted'] = is_success_status($r['result_status']); $out[] = $e; continue; }
+        if (!is_success_status($r['result_status'])) { $e['deducted'] = false; $e['verdict'] = 'not_deducted'; $e['reason'] = $e['ocs_result']; $out[] = $e; continue; }
+        $e['deducted'] = true; $t = strtotime($e['date']); $good = false; $bad = null;
+        foreach ($pcrf[$p['msisdn']] ?? [] as $q) if (abs(strtotime((string)$q['create_date']) - $t) <= 2) { if (is_success_status($q['result_status'])) $good = true; else $bad = $bad ?? $q; }
+        if ($bad && !$good) { $e['received'] = false; $e['verdict'] = 'deducted_not_received'; $e['reason'] = trim((string)$bad['result_description']); }
+        elseif ($good) { $e['received'] = true; $e['verdict'] = 'received'; }
+        else $e['verdict'] = 'deducted';
+        foreach ($refs[$p['msisdn'].'|'.$p['offer_code']] ?? [] as $rt) if (strtotime($rt) >= $t) $e['refunded'] = true;
+        $out[] = $e;
+    }
+    return $out;
+}
+// Marks the entries the portal itself has already refunded (a request that went through, or whose answer was unclear).
+function refund_mark_done(array $entries): array {
+    if (!$entries) return $entries;
+    try { refund_tables(); $st = portal_pdo()->prepare("SELECT 1 FROM refund_requests WHERE msisdn=? AND offer_code=? AND sub_date=? AND status IN ('ok','sent','pending') LIMIT 1");
+        foreach ($entries as &$e) { if ($e['refunded']) continue; $st->execute([ussd_local_number((string)$e['msisdn']), $e['offer_code'], $e['date']]); if ($st->fetchColumn()) $e['refunded'] = true; } unset($e); }
+    catch (Throwable $e) {}
+    return $entries;
+}
+// Everyone's purchases that were deducted and not received, in a date range (the platform log, newest first; PCRF refusals joined to the OCS charge of the same second).
+const REFUND_MISSING_MAX_DAYS = 7;
+function refund_missing(string $schema, string $from, string $to, int $limit = 100): array {
+    if (!table_exists($schema, AUDIT_LOG_TABLE)) throw new RuntimeException(AUDIT_LOG_TABLE.' does not exist in '.$schema);
+    $f = audit_log_filters_from_request(['date_from' => $from, 'date_to' => $to]);
+    if ((strtotime($to) - strtotime($from)) / 86400 >= REFUND_MISSING_MAX_DAYS) throw new RuntimeException('This list looks at up to '.REFUND_MISSING_MAX_DAYS.' days at a time.');
+    $db = pdo($schema);
+    $st = $db->prepare("SELECT create_date, msisdn, result_status, result_description FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date BETWEEN ? AND ? AND vendor_entity_name LIKE 'Pcrf%' AND NOT (".AUDIT_SUCCESS_SQL.") ORDER BY create_date DESC LIMIT ".(int)($limit * 2));
+    $st->execute([$f['date_from'].' 00:00:00', $f['date_to'].' 23:59:59']); $fails = $st->fetchAll();
+    $oc = $db->prepare("SELECT create_date, transaction_id, result_status, result_description, vendor_entity_name, msisdn FROM ".ident(AUDIT_LOG_TABLE)." WHERE msisdn = ? AND create_date BETWEEN ? AND ? AND vendor_entity_name LIKE 'Ocs%' ORDER BY create_date");
+    $out = []; $seen = [];
+    foreach ($fails as $x) {
+        $m = trim((string)$x['msisdn']); $t = strtotime((string)$x['create_date']); $key = $m.'|'.$x['create_date']; if (isset($seen[$key])) continue; $seen[$key] = 1;
+        $oc->execute([$m, date('Y-m-d H:i:s', $t - 3), date('Y-m-d H:i:s', $t + 3)]);
+        foreach (refund_assess(array_merge($oc->fetchAll(), [['transaction_id' => '', 'create_date' => $x['create_date'], 'msisdn' => $m, 'vendor_entity_name' => 'PcrfProduction', 'result_status' => $x['result_status'], 'result_description' => $x['result_description']]])) as $e)
+            if ($e['verdict'] === 'deducted_not_received' && !isset($seen['t:'.$e['transaction_id']])) { $seen['t:'.$e['transaction_id']] = 1; $out[] = $e; }
+        if (count($out) >= $limit) break;
+    }
+    return refund_mark_done($out);
 }
 // Everything the portal knows about a number in a date range: its subscriptions, its transactions (with the offer and vendor they carried) and the
 // purchases made through the USSD menu (as buyer or as the other number). Hera's own tables hold the number in the local form (6704843) while the USSD
@@ -3362,7 +3425,7 @@ function refund_vendor_for(string $schema, string $offer): string {
 // back as an error message, not an exception. Subscriptions may be searched over a long range; the transaction log only over its newest 31 days.
 const REFUND_SUBSCRIPTION_MAX_DAYS = 400;
 function refund_lookup(string $schema, string $msisdnFull, string $from, string $to): array {
-    $out = ['subscriptions' => [], 'transactions' => [], 'purchases' => [], 'errors' => [], 'notes' => [], 'form' => []];
+    $out = ['subscriptions' => [], 'transactions' => [], 'assessed' => [], 'purchases' => [], 'errors' => [], 'notes' => [], 'form' => []];
     $local = ussd_local_number($msisdnFull); $forms = array_values(array_unique([$local, $msisdnFull])); $tsTo = strtotime($to);
     $subFrom = max(strtotime($from), $tsTo - (REFUND_SUBSCRIPTION_MAX_DAYS - 1) * 86400); $logFrom = max(strtotime($from), $tsTo - (AUDIT_LOG_MAX_RANGE_DAYS - 1) * 86400);
     if ($subFrom > strtotime($from)) $out['notes'][] = 'Subscriptions are searched for at most '.REFUND_SUBSCRIPTION_MAX_DAYS.' days (from '.date('Y-m-d', $subFrom).').';
@@ -3370,8 +3433,9 @@ function refund_lookup(string $schema, string $msisdnFull, string $from, string 
     try { if (!table_exists($schema, 'subscription')) throw new RuntimeException('subscription does not exist in '.$schema);
         foreach ($forms as $m) { $rows = search_subscriptions($schema, ['msisdn' => $m, 'transaction_id' => '', 'subscription_type' => '', 'channel' => '', 'date_from' => date('Y-m-d', $subFrom), 'date_to' => $to], 1, 30)['rows']; if ($rows) { $out['subscriptions'] = $rows; $out['form']['subscriptions'] = $m; break; } } }
     catch (Throwable $e) { $out['errors']['subscriptions'] = $e->getMessage(); }
-    try { foreach ($forms as $m) { $rows = search_audit_log($schema, ['date_from' => date('Y-m-d', $logFrom), 'date_to' => $to, 'msisdn' => $m, 'transaction_id' => '', 'result_status' => '', 'vendor' => '', 'channel' => '', 'result_desc' => ''], 1, 40)['rows'];
-            if ($rows) { foreach ($rows as $r) { $h = refund_hints($r['input_text'] ?? ''); $out['transactions'][] = ['transaction_id' => $r['transaction_id'], 'create_date' => $r['create_date'], 'channel' => $r['channel'], 'vendor_entity_name' => $r['vendor_entity_name'], 'result_status' => $r['result_status'], 'result_description' => $r['result_description']] + $h; } $out['form']['transactions'] = $m; break; } } }
+    try { foreach ($forms as $m) { $rows = search_audit_log($schema, ['date_from' => date('Y-m-d', $logFrom), 'date_to' => $to, 'msisdn' => $m, 'transaction_id' => '', 'result_status' => '', 'vendor' => '', 'channel' => '', 'result_desc' => ''], 1, 100)['rows'];
+            if ($rows) { foreach ($rows as $r) { $h = refund_hints($r['input_text'] ?? ''); $out['transactions'][] = ['transaction_id' => $r['transaction_id'], 'create_date' => $r['create_date'], 'msisdn' => $r['msisdn'], 'channel' => $r['channel'], 'vendor_entity_name' => $r['vendor_entity_name'], 'result_status' => $r['result_status'], 'result_description' => $r['result_description']] + $h; }
+                $out['assessed'] = refund_mark_done(refund_assess($out['transactions'])); $out['form']['transactions'] = $m; break; } } }
     catch (Throwable $e) { $out['errors']['transactions'] = $e->getMessage(); }
     try { ussd_purchase_table(); $st = portal_pdo()->prepare('SELECT * FROM ussd_purchases WHERE msisdn IN (?,?) OR recipient IN (?,?) ORDER BY id DESC LIMIT 15'); $st->execute([$msisdnFull, $local, $msisdnFull, $local]); $out['purchases'] = $st->fetchAll(); }
     catch (Throwable $e) { $out['errors']['purchases'] = $e->getMessage(); }

@@ -603,6 +603,39 @@ t('looking into a number: Hera holds it as 6704843, the USSD ledger as 220670484
     } finally { $d->exec("DELETE FROM subscription WHERE transaction_id LIKE 'ZT-rl%'"); $d->exec("DELETE FROM audit_log WHERE transaction_id LIKE 'ZT-rl%'"); foreach ($made as $tbl) $d->exec("DROP TABLE $tbl"); }
 });
 
+t('deducted or not, received or not: read from the OCS and PCRF traces', function () use ($db) {
+    $row = fn($txn, $t, $m, $vendor, $st, $desc) => ['transaction_id' => $txn, 'create_date' => $t, 'msisdn' => $m.' ', 'vendor_entity_name' => $vendor, 'result_status' => $st, 'result_description' => $desc];
+    eq(refund_parse_ocs_txn('20261008155509-HERA-0353-USSD-866060456-40101'), ['seq' => '0353', 'channel' => 'USSD', 'msisdn' => '866060456', 'offer_code' => '40101'], 'the transaction id says channel, number and offer'); ok(refund_parse_ocs_txn('20261008155509-HERA-0952') === null && refund_parse_ocs_txn('garbage') === null, 'other ids are not purchases');
+    $rows = [
+        $row('20261008155509-HERA-0952', '2026-10-08 15:55:09', '866060456', 'PcrfProduction', '90398', 'Exceeds the limit of repeatedly provisioned service for subscriber'), $row('20261008155509-HERA-0353-USSD-866060456-40101', '2026-10-08 15:55:09', '866060456', 'OcsProduction', '0', 'Operation successfully.'),
+        $row('20261008112000-HERA-0001', '2026-10-08 11:20:00', '866111111', 'PcrfProduction', '0', 'Operation successfully.'), $row('20261008112000-HERA-0002-USSD-866111111-40098', '2026-10-08 11:20:00', '866111111', 'OcsProduction', '0', 'Operation successfully.'),
+        $row('20261008111810-HERA-0816-USSD-866060456-40101', '2026-10-08 11:18:10', '866060456', 'OcsProduction', '20000005', 'Service information verification error: The account balance is insufficient.'),
+        $row('20261008100000-HERA-0003-USSD-866222222-50001', '2026-10-08 10:00:00', '866222222', 'OcsProduction', '0', 'Operation successfully.'),
+        $row('20261008090000-HERA-0004-USSD-866333333-40004', '2026-10-08 09:00:00', '866333333', 'OcsProduction', '0', 'Operation successfully.'), $row('20261008090001-HERA-0005', '2026-10-08 09:00:01', '866333333', 'PcrfProduction', 'Parameter missing <"SRVNAME">', 'Parameter missing <"SRVNAME">'),
+        $row('20261008154309-HERA-0166-REF-866333333-40004', '2026-10-08 15:43:09', '866333333', 'OcsProduction', '0', 'Operation successfully.')];
+    $by = []; foreach (refund_assess($rows) as $e) $by[$e['transaction_id']] = $e;
+    $v = fn($t) => $by[$t]['verdict'] ?? 'missing';
+    eq($v('20261008155509-HERA-0353-USSD-866060456-40101'), 'deducted_not_received', 'the money was taken and the policy system refused the bundle'); eq([$by['20261008155509-HERA-0353-USSD-866060456-40101']['deducted'], $by['20261008155509-HERA-0353-USSD-866060456-40101']['received']], [true, false], 'so deducted yes, received no'); has($by['20261008155509-HERA-0353-USSD-866060456-40101']['reason'], 'Exceeds the limit', 'with the reason');
+    eq($v('20261008112000-HERA-0002-USSD-866111111-40098'), 'received', 'charged and given is received'); eq($v('20261008111810-HERA-0816-USSD-866060456-40101'), 'not_deducted', 'a low balance means nothing was deducted'); eq($by['20261008111810-HERA-0816-USSD-866060456-40101']['deducted'], false, 'deducted: no');
+    eq($v('20261008100000-HERA-0003-USSD-866222222-50001'), 'deducted', 'charged with no provisioning step on record is shown as deducted, received not recorded'); eq($by['20261008100000-HERA-0003-USSD-866222222-50001']['received'], null, 'unknown, not guessed');
+    eq($v('20261008090000-HERA-0004-USSD-866333333-40004'), 'deducted_not_received', 'a refusal one second later still counts'); ok($by['20261008090000-HERA-0004-USSD-866333333-40004']['refunded'], 'and a later successful REF for the same number and offer marks it refunded'); eq($v('20261008154309-HERA-0166-REF-866333333-40004'), 'refund', 'the REF row itself is a refund');
+});
+t('everyone deducted and not received in a date range', function () use ($db) {
+    $sch = USSD_OFFER_SCHEMA; $made = false; $d = pdo($sch);
+    if (!table_exists($sch, 'audit_log')) { $d->exec("CREATE TABLE audit_log (id INT AUTO_INCREMENT PRIMARY KEY, transaction_id VARCHAR(60), create_date DATETIME, msisdn VARCHAR(20), vendor_entity_name VARCHAR(60), channel VARCHAR(30), result_status VARCHAR(20), result_description VARCHAR(100), response_time INT, input BLOB, output BLOB)"); $made = true; }
+    refund_tables(); $today = date('Y-m-d'); $db->exec("DELETE FROM refund_requests WHERE msisdn IN ('866060456','866777777')");
+    try {
+        $d->exec("DELETE FROM audit_log WHERE transaction_id LIKE 'ZT-%' OR msisdn IN ('866060456','866777777','866888888')");
+        $a = $d->prepare("INSERT INTO audit_log(transaction_id,create_date,msisdn,vendor_entity_name,channel,result_status,result_description) VALUES(?,?,?,?,?,?,?)"); $ts = date('YmdHis', strtotime("$today 10:00:00"));
+        $a->execute(["$ts-HERA-0353-USSD-866060456-40101", "$today 10:00:00", '866060456', 'OcsProduction', 'USSD', '0', 'Operation successfully.']); $a->execute(["$ts-HERA-0952", "$today 10:00:00", '866060456', 'PcrfProduction', '', '90398', 'Exceeds the limit of repeatedly provisioned service for subscriber']);
+        $ts2 = date('YmdHis', strtotime("$today 11:00:00")); $a->execute(["$ts2-HERA-0400-USSD-866777777-40004", "$today 11:00:00", '866777777', 'OcsProduction', 'USSD', '0', 'Operation successfully.']); $a->execute(["$ts2-HERA-0955", "$today 11:00:00", '866777777', 'PcrfProduction', '', '90398', 'Parameter missing']);
+        $ts3 = date('YmdHis', strtotime("$today 12:00:00")); $a->execute(["$ts3-HERA-0500-USSD-866888888-40004", "$today 12:00:00", '866888888', 'OcsProduction', 'USSD', '0', 'Operation successfully.']); $a->execute(["$ts3-HERA-0956", "$today 12:00:00", '866888888', 'PcrfProduction', '', '0', 'Operation successfully.']);
+        $m = refund_missing($sch, $today, $today); eq(array_column($m, 'msisdn'), ['866777777', '866060456'], 'only the charged-and-refused ones, newest first (the delivered one is not listed)'); eq($m[1]['offer_code'], '40101', 'with the offer from the charge'); eq($m[1]['date'], "$today 10:00:00", 'and the time it was charged'); ok(!$m[0]['refunded'] && !$m[1]['refunded'], 'none refunded yet');
+        $db->prepare("INSERT INTO refund_requests(msisdn,offer_code,vendor,channel,sub_date,mode,status) VALUES('866060456','40101','huawei','REF',?,'live','ok')")->execute(["$today 10:00:00"]); $m2 = refund_missing($sch, $today, $today); $r = array_column($m2, 'refunded', 'msisdn'); eq([$r['866060456'], $r['866777777']], [true, false], 'one the portal refunded is marked');
+        thrown(fn() => refund_missing($sch, date('Y-m-d', strtotime('-20 days')), $today), 'up to', 'a long range is refused');
+    } finally { $d->exec("DELETE FROM audit_log WHERE msisdn IN ('866060456','866777777','866888888')"); if ($made) $d->exec('DROP TABLE audit_log'); $db->exec("DELETE FROM refund_requests WHERE msisdn IN ('866060456','866777777')"); }
+});
+
 // ------------------------------------------------------------------ summary
 $cleanup();
 echo "\n".($fail === 0 ? "ALL PASSED" : "FAILED")."  —  $pass tests ok".($fail ? ", $fail check(s) failed:\n  - ".implode("\n  - ", array_slice($failures, 0, 40)) : '')."\n";
