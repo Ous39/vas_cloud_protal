@@ -36,4 +36,24 @@ if ($parts[0] === 'sb') {
 }
 // /bal/<scenario>/Balance   (Hera prepaid/Balance: body {"msisdn":"<local number>"}; the reply is as Hera gave it: result is the balance)
 if ($parts[0] === 'bal') { if (($parts[1] ?? 'ok') === 'err500') { http_response_code(500); $j(['status' => 500, 'error' => 'Internal Server Error']); exit; } $j(['resultCode' => '000', 'resultDescription' => 'Success', 'result' => '1']); exit; }
+// /mobius/rest/<call>   (Mobius REST: auth/login, ussdmenues/list|count|set). The menus live in a temp file the tests can read and seed.
+if ($parts[0] === 'mobius') {
+    $rest = implode('/', array_slice($parts, 2)); $in = json_decode($body, true) ?: []; $store = $dir.'/zt_stub_mobius_menus.json';
+    $menus = is_file($store) ? (json_decode((string)file_get_contents($store), true) ?: []) : [];
+    if ($rest === 'auth/login') { $j(['status' => 'SUCCESS', 'sessionID' => 'sid-test']); exit; }
+    if (($in['sessionID'] ?? '') !== 'sid-test') { $j(['status' => 'ERROR', 'errorMessage' => 'invalid session']); exit; }
+    switch ($rest) {
+        case 'ussdmenues/count': $j(['status' => 'SUCCESS', 'data' => count($menus)]); break;
+        case 'ussdmenues/list':
+            $size = (int)($in['pageSize'] ?? 100); $from = $in['firstKey'] ?? null; $rows = $menus;
+            if ($from !== null) { $at = array_search($from, array_column($rows, 'menuID'), true); $rows = $at === false ? [] : array_slice($rows, $at + 1); }
+            $j(['status' => 'SUCCESS', 'data' => array_slice($rows, 0, $size)]); break;
+        case 'ussdmenues/set':
+            $d = $in['data'] ?? []; if (empty($d['shortcode'])) { $j(['status' => 'ERROR', 'errorMessage' => 'shortcode required']); break; }
+            if (!empty($d['menuID'])) { foreach ($menus as $k => $m) if ($m['menuID'] === $d['menuID']) $menus[$k] = $d; } else { $d['menuID'] = 'm'.(count($menus) + 1).substr(md5(uniqid('', true)), 0, 8); $menus[] = $d; }
+            file_put_contents($store, json_encode($menus)); $j(['status' => 'SUCCESS', 'data' => $d]); break;
+        default: $j(['status' => 'ERROR', 'errorMessage' => 'unknown call']);
+    }
+    exit;
+}
 http_response_code(404); $j(['error' => 'unknown']);

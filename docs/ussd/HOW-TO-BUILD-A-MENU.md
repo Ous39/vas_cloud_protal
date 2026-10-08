@@ -10,7 +10,7 @@ The Menus page lists every short code — its name, how many items are on or sti
 
 The next screen is a **setup checklist** with the exact values to type in **Mobius → Menus → Add new row** (Name, Shortcode, Extendable = false, Type = PROXY, and a **Copy the URL** button). Do that, then press **Build** to finish the items, check them, activate them, and dial the code on a phone. Each row also has **Try it** (simulator), the setup checklist and **Copy URL**.
 
-The portal cannot yet create the menu inside Mobius for you, or see which menus exist there — that step is by hand.
+**Mobius, from the same page.** Press **Check Mobius** (admins with the settings permission): the portal reads Mobius' own list of menus (the same list as Mobius → USSD Shortcodes) and adds an **In Mobius** column — *in Mobius* (it calls this portal), *points elsewhere* (a menu with that short code exists but belongs to something else) or *not in Mobius*, with a **Create** button that makes the PROXY menu there for you, copying the address and destinations from the menu that already calls this portal. The ✎ button on a row changes the **name and short code** (and, for a menu that is in Mobius, *Extendable*) in the portal and, if you leave the box ticked, in Mobius too. Safety rules: the portal only ever changes a Mobius menu whose address is this portal's own; the other menus of the operator (airtime recharge, data usage…) are listed read-only; nothing is ever deleted from here; and every change is in the audit trail. If Mobius refuses something, its message is shown.
 
 ## The 5-minute way (in the Builder)
 

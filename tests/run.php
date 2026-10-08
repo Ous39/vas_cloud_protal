@@ -522,6 +522,33 @@ t('adding a flow item works in a fresh request (no table is created inside the t
     eq(trim($out), 'ADDED 1', 'a flow item is added by a request that has not touched the flow tables yet');
 });
 
+t('menus inside Mobius: read, create, change - only ours', function () use ($cfgFor, $stub) {
+    $store = sys_get_temp_dir().'/zt_stub_mobius_menus.json'; $ours = 'https://x/portal/ussd.php?t=ZT-TOKEN&m=proxy';
+    file_put_contents($store, json_encode([['menuID' => 'o1', 'name' => 'Ours main', 'shortcode' => '*8800#', 'shortcodeType' => 'PROXY', 'isExtendable' => false, 'remoteURL' => $ours, 'destinationID' => ['d1']],
+        ['menuID' => 'e1', 'name' => 'EVD', 'shortcode' => '*16', 'shortcodeType' => 'PROXY', 'isExtendable' => true, 'remoteURL' => 'https://prod/hera/ussd', 'destinationID' => []]]));
+    $cfg = $cfgFor(['mobius_base' => "$stub/mobius/rest/", 'mobius_user' => 'u', 'mobius_pass' => encrypt_secret(md5('p')), 'token' => 'ZT-TOKEN', 'shortcode_proxy' => '*8800#', 'mobius_session' => '', 'mobius_variant' => '0']);
+    $l = mobius_list_menus($cfg); ok($l['ok'], 'Mobius is read'); eq(count($l['menus']), 2, 'both menus are listed'); eq($l['count'], 2, 'and the count agrees');
+    eq(mobius_menu_state('*8800#', $l['menus'], $cfg)['state'], 'ours', 'a menu that calls this portal is ours'); eq(mobius_menu_state('*16', $l['menus'], $cfg)['state'], 'elsewhere', 'another operator menu is left alone'); eq(mobius_menu_state('*8801#', $l['menus'], $cfg)['state'], 'missing', 'an unknown code is missing');
+    $r = mobius_create_menu($cfg, 'Balance', '*8801', false); eq($r['state'], 'ours', 'a new menu appears in Mobius as ours'); eq($r['menu']['shortcode'] ?? null, '*8801#', 'with the normalised short code'); eq($r['menu']['shortcodeType'] ?? null, 'PROXY', 'as a PROXY menu'); eq($r['menu']['remoteURL'] ?? null, $ours, 'calling the same address as ours'); eq($r['menu']['destinationID'] ?? null, ['d1'], 'with the same destinations');
+    thrown(fn() => mobius_create_menu($cfg, 'Again', '*8801#'), 'already exists in Mobius', 'a code Mobius has is not created again'); thrown(fn() => mobius_create_menu($cfg, 'Clash', '*16'), 'already exists in Mobius', 'nor one that belongs to something else');
+    $id = $r['menu']['menuID']; $u = mobius_update_menu($cfg, $id, 'Balance two', '*8802#', true); eq([$u['menu']['shortcode'] ?? null, $u['menu']['name'] ?? null, $u['menu']['isExtendable'] ?? null], ['*8802#', 'Balance two', true], 'name, short code and extendable are changed'); eq($u['menu']['remoteURL'] ?? null, $ours, 'everything else is sent back as it was');
+    thrown(fn() => mobius_update_menu($cfg, 'e1', 'x', '*8899#', false), 'does not call this portal', 'a menu of something else is never changed'); thrown(fn() => mobius_update_menu($cfg, $id, 'x', '*8800#', false), 'already used', 'a short code taken by another menu is refused'); thrown(fn() => mobius_update_menu($cfg, $id, 'x', 'abc', false), 'looks like', 'a bad code is refused');
+    thrown(fn() => mobius_create_menu(['token' => 'OTHER'] + $cfg, 'Z', '*8803#'), 'No menu in Mobius calls this portal yet', 'with no menu of ours to copy from it says so, and creates nothing'); eq(count(mobius_list_menus($cfg)['menus']), 3, 'so Mobius holds exactly the three');
+    @unlink($store);
+});
+t('a menu is renamed in the portal: short code and name together', function () use ($db) {
+    $clean = fn() => array_map(fn($t) => $db->exec("DELETE FROM $t WHERE short_code IN ('*8811#','*8812#','*8813#')"), ['ussd_menu_nodes', 'ussd_menu_versions', 'portal_short_codes']);
+    $clean();
+    try {
+        menu_create('*8811#', 'Old name', "A\nB"); menu_create('*8813#', 'Taken', 'C');
+        menu_update_identity('*8811#', '*8812', 'New name'); ok(!in_array('*8811#', menu_shortcodes(), true) && in_array('*8812#', menu_shortcodes(), true), 'the short code moved'); eq(count(menu_nodes_flat('*8812#')), 2, 'with its items');
+        $st = shortcode_state('*8812#'); eq($st['registered']['service_name'] ?? null, 'New name', 'the register entry follows, with the new name'); ok(shortcode_state('*8811#')['registered'] === null, 'and nothing is left under the old code');
+        menu_update_identity('*8812#', '*8812#', 'Only the name'); eq(shortcode_state('*8812#')['registered']['service_name'] ?? null, 'Only the name', 'a name can change on its own');
+        thrown(fn() => menu_update_identity('*8812#', '*8813#', 'x'), 'already exists', 'a code in use is refused'); thrown(fn() => menu_update_identity('*8812#', 'abc', 'x'), 'looks like', 'a bad code is refused'); thrown(fn() => menu_update_identity('*8812#', '*8814#', ''), 'name', 'a name is needed'); thrown(fn() => menu_update_identity('*8899#', '*8898#', 'x'), 'not a menu of this portal', 'an unknown menu is refused');
+        ok(count(menu_nodes_flat('*8812#')) === 2, 'a refused change leaves the menu as it was');
+    } finally { $clean(); }
+});
+
 // ------------------------------------------------------------------ summary
 $cleanup();
 echo "\n".($fail === 0 ? "ALL PASSED" : "FAILED")."  —  $pass tests ok".($fail ? ", $fail check(s) failed:\n  - ".implode("\n  - ", array_slice($failures, 0, 40)) : '')."\n";
