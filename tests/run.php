@@ -549,6 +549,25 @@ t('a menu is renamed in the portal: short code and name together', function () u
     } finally { $clean(); }
 });
 
+t('refunds: self or buy-for-other, once, only when live and settled', function () use ($cfgFor, $stub, $lastBody, $db) {
+    ussd_purchase_table(); $db->exec("DELETE FROM ussd_purchases WHERE call_id LIKE 'ZT-rf%'");
+    $ins = $db->prepare("INSERT INTO ussd_purchases(call_id,offer_code,msisdn,recipient,offer_name,price,mode,status,created_at) VALUES(?,?,?,?,?,?,?,?,?)");
+    $ins->execute(['ZT-rf1', 'ZT001', '2206704843', null, 'ZT Alpha', '10', 'live', 'ok', '2025-08-08 15:30:18']); $ins->execute(['ZT-rf2', 'ZT001', '2206600770', '2206704843', 'ZT Alpha', '10', 'live', 'ok', '2025-08-09 10:00:00']);
+    $ins->execute(['ZT-rf3', 'ZT001', '2206704843', null, 'ZT Alpha', '10', 'live', 'lowbal', '2025-08-08 15:30:18']); $ins->execute(['ZT-rf4', 'ZT001', '2206704843', null, 'ZT Alpha', '10', 'test', 'test', '2025-08-08 15:30:18']); $ins->execute(['ZT-rf5', 'ZT001', '2206704843', null, 'ZT Alpha', '10', 'live', 'failed', '2025-08-08 15:30:18']);
+    $id = fn($c) => (int)$db->query("SELECT id FROM ussd_purchases WHERE call_id='$c'")->fetchColumn(); $row = fn($c) => $db->query("SELECT * FROM ussd_purchases WHERE call_id='$c'")->fetch();
+    $cfg = fn(string $scn, string $mode = 'live') => $cfgFor(['refund_mode' => $mode, 'refund_url' => "$stub/refund/$scn/BundleSubscription", 'purchase_auth' => encrypt_secret("X-API-KEY: k-9\nX-USERNAME: USSD")]);
+    eq(ussd_refund_body(USSD_REFUND_BODY, ['offer_code' => '40004', 'created_at' => '2025-08-08 15:30:18', 'msisdn' => '2206704843', 'recipient' => '', 'call_id' => 'x'], 'huawei'), '{"offerCode":"40004","date":"2025-08-08 15:30:18","vendor":"huawei","msisdn":"6704843","channel":"REF"}', 'the body is the one Hera showed');
+    thrown(fn() => ussd_refund_purchase($cfg('ok', 'off'), $id('ZT-rf1')), 'switched off', 'off refuses'); thrown(fn() => ussd_refund_purchase($cfg('ok'), $id('ZT-rf3')), 'Only a live purchase', 'a low-balance purchase is not refundable'); thrown(fn() => ussd_refund_purchase($cfg('ok'), $id('ZT-rf4')), 'Only a live purchase', 'nor a test one'); thrown(fn() => ussd_refund_purchase($cfg('ok'), 999999), 'not in the ledger', 'nor one that does not exist');
+    $r = ussd_refund_purchase($cfg('ok'), $id('ZT-rf1'), 'tester'); eq($r['status'], 'ok', 'a refund for oneself goes through'); $sent = $lastBody('/refund/ok/BundleSubscription'); eq($sent['json'], ['offerCode' => 'ZT001', 'date' => '2025-08-08 15:30:18', 'vendor' => 'huawei', 'msisdn' => '6704843', 'channel' => 'REF'], 'with the offer, the purchase time, the vendor and the local number'); eq($sent['headers']['x-username'] ?? null, 'USSD', 'and the saved headers');
+    $ledger = $row('ZT-rf1'); eq([$ledger['refund_status'], $ledger['refund_by']], ['ok', 'tester'], 'the ledger remembers who and what'); thrown(fn() => ussd_refund_purchase($cfg('ok'), $id('ZT-rf1')), 'already been refunded', 'a refund that went through is never repeated');
+    $r2 = ussd_refund_purchase($cfg('ok'), $id('ZT-rf2')); eq($r2['status'], 'ok', 'a buy-for-other can be refunded'); eq($lastBody('/refund/ok/BundleSubscription')['json']['msisdn'] ?? null, '6704843', 'for the number that got the bundle (the other number), not the buyer');
+    $d = ussd_refund_purchase($cfg('deny'), $id('ZT-rf5')); eq($d['status'], 'failed', 'Hera refusing is recorded as failed'); has($d['note'], 'No such transaction', 'with Hera\'s own words'); $r3 = ussd_refund_purchase($cfg('ok'), $id('ZT-rf5')); eq($r3['status'], 'ok', 'and a failed one can be tried again');
+    $db->exec("UPDATE ussd_purchases SET refund_status=NULL WHERE call_id='ZT-rf1'"); @unlink(sys_get_temp_dir().'/zt_stub_last_'.md5('/refund/ok/BundleSubscription').'.json');
+    $t = ussd_refund_purchase($cfg('ok', 'test'), $id('ZT-rf1')); eq($t['status'], 'test', 'test mode records it'); eq($lastBody('/refund/ok/BundleSubscription')['raw'], '', 'and sends nothing'); $r4 = ussd_refund_purchase($cfg('ok'), $id('ZT-rf1')); eq($r4['status'], 'ok', 'a test can be followed by the real refund');
+    thrown(fn() => save_refund_config(['refund_mode' => 'live', 'refund_url' => '', 'refund_body' => USSD_REFUND_BODY]), 'need the refund address', 'live needs an address'); thrown(fn() => save_refund_config(['refund_mode' => 'test', 'refund_url' => 'https://h/x', 'refund_body' => '{"a":']), 'not valid JSON', 'a broken body is refused');
+    $db->exec("DELETE FROM ussd_purchases WHERE call_id LIKE 'ZT-rf%'");
+});
+
 // ------------------------------------------------------------------ summary
 $cleanup();
 echo "\n".($fail === 0 ? "ALL PASSED" : "FAILED")."  —  $pass tests ok".($fail ? ", $fail check(s) failed:\n  - ".implode("\n  - ", array_slice($failures, 0, 40)) : '')."\n";

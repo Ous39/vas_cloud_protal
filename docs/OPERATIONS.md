@@ -37,6 +37,10 @@ Everything the portal owns lives in the **`vas_portal`** database (users, audit 
 - **The dump contains secrets** (encrypted) — store it as carefully as a password. Set `APP_ENCRYPTION_KEY` in the Kubernetes secret so the encrypted values (Mobius password, Hera headers) can be read after a restore on a new server; without it a new key is generated and they must be entered again.
 - Menus can also be saved on their own: **Menu Builder → Export JSON** (and **Import** brings it back).
 
+## Refunds
+
+USSD Proxy → **Buying offers** → **Refunds** (off / test / live) and a **Refund** button on each live purchase in the table, for purchases made for oneself and for another number. A refund is Hera's `…/hera/prepaid/BundleSubscription` with `"channel":"REF"`, the offer code, its vendor, the time it was bought and the number that got the bundle (the other number, for a buy-for-other); the headers are the purchase headers. Hera is asked once: a refund that goes through is never repeated, a failed or test one can be tried again; each is in the ledger (who, when, Hera's reply) and the audit trail. Start in **Test** (nothing is sent), then **Live**. The pods must be able to resolve the refund host (check with `kubectl -n vas-cloud exec deploy/vas-cloud-app -- getent hosts vas-preprod.comium.gm`; if it prints nothing, add it under `hostAliases` as for `vas-testing`).
+
 ## Secrets
 
 Never paste keys, passwords or logs containing them into chat or tickets. System Status lists the four secrets and flags any not changed in 90 days. To rotate:

@@ -56,4 +56,13 @@ if ($parts[0] === 'mobius') {
     }
     exit;
 }
+// /refund/<scenario>/BundleSubscription   (Hera BundleSubscription with channel REF; the reply shape here is a stand-in, the real one has not been seen)
+if ($parts[0] === 'refund') {
+    switch ($parts[1] ?? 'ok') {
+        case 'deny': $j(['resultCode' => '000', 'resultDescription' => 'Success', 'result' => ['resultCode' => '-1', 'resultDescription' => 'No such transaction']]); break;
+        case 'err500': http_response_code(500); $j(['status' => 500, 'error' => 'Internal Server Error']); break;
+        default: $j(['resultCode' => '000', 'resultDescription' => 'Success', 'result' => ['resultCode' => '0', 'resultDescription' => 'Refund done']]);
+    }
+    exit;
+}
 http_response_code(404); $j(['error' => 'unknown']);
