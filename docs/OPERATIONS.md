@@ -46,6 +46,8 @@ Everything the portal owns lives in the **`vas_portal`** database (users, audit 
 
 Hera is asked once per number + offer + time: a refund that went through is never sent again (typing the number with or without 220 makes no difference); a failed or test one can be tried again. Every request, who sent it, and Hera's reply are in the history at the bottom and in the audit trail; a refund started from a purchase also shows on that purchase in USSD Proxy → Buying offers.
 
+**Headers for refunds:** the refund has its own headers box (same place; encrypted, never shown again). Left empty, the purchase headers are used — but those belong to the *test* Hera, so against the production Hera the refund is answered `success: false, message: Api user does not exist`. Save the production API user's headers there (`X-API-KEY`, `X-USERNAME`, `X-HASHED-PASSWORD`). Hera's answer is read as `success` true/false or by its result code; an answer that is neither is recorded as **sent** and is not sent again until someone has looked at the raw reply in the history.
+
 Mode (off / test / live) and the address are set under USSD Proxy → Buying offers → Refunds. Start in **Test** (recorded, nothing sent). The refund address is the production Hera (`https://vas-prod.comium.gm/hera/prepaid/BundleSubscription`). The pods must be able to resolve the refund host (`kubectl -n vas-cloud exec deploy/vas-cloud-app -- getent hosts vas-prod.comium.gm`; if nothing prints, add it under `hostAliases` as for `vas-testing`). The page reads the database currently selected at the top (use HeraProduction for real customers).
 
 ## Secrets

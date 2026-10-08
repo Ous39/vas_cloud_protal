@@ -913,7 +913,7 @@ if ($page==='refunds') {
         try {
             if ($doR==='send') {
                 $rr=refund_send($cfg,$F,$by,$purchaseId);
-                flash($rr['status']==='ok'?'success':($rr['status']==='test'?'info':'danger'),'Refund '.['ok'=>'accepted by Hera','test'=>'recorded as a TEST (nothing was sent)','failed'=>'was NOT accepted'][$rr['status']].': '.$rr['note']);
+                flash($rr['status']==='ok'?'success':($rr['status']==='test'?'info':($rr['status']==='sent'?'warning':'danger')),'Refund '.['ok'=>'accepted by Hera','test'=>'recorded as a TEST (nothing was sent)','failed'=>'was NOT accepted','sent'=>'was sent, but Hera\'s answer is unclear'][$rr['status']].': '.$rr['note']);
                 redirect('?page=refunds&msisdn='.urlencode($F['msisdn']));
             }
             $n=refund_normalize($F); refund_tables(); $pv=portal_pdo()->prepare("SELECT status, created_at, note FROM refund_requests WHERE msisdn=? AND offer_code=? AND sub_date=? ORDER BY id DESC LIMIT 3"); $pv->execute([$n['msisdn'],$n['offer_code'],$n['date']]);
@@ -977,7 +977,7 @@ if ($page==='refunds') {
         <?php endif;?></div>
     <div class="cardx table-card mt-3"><h3 class="px-3 pt-3 mb-2">Refund history</h3>
         <?php if(!$hist):?><p class="text-muted px-3 pb-3 mb-0">No refunds yet.</p><?php else:?><div class="table-scroll"><table class="table table-sm align-middle mb-0"><thead><tr><th>When</th><th>By</th><th>Number</th><th>Offer</th><th>Vendor</th><th>Bought</th><th>Mode</th><th>Result</th><th>Hera said</th></tr></thead><tbody>
-            <?php foreach($hist as $h):?><tr><td class="text-nowrap"><?=e($h['created_at'])?></td><td><?=e($h['created_by'])?></td><td><?=e($h['msisdn'])?></td><td><?=e($h['offer_code'])?></td><td><?=e($h['vendor'])?></td><td class="text-nowrap"><?=e($h['sub_date'])?></td><td><?=e($h['mode'])?></td><td><span class="badge <?=['ok'=>'bg-success','test'=>'bg-info text-dark','failed'=>'bg-danger','pending'=>'bg-warning text-dark'][$h['status']]??'bg-secondary'?>"><?=e($h['status'])?></span></td><td class="small" title="<?=e((string)$h['request_body'])?>"><?=e((string)$h['note'])?></td></tr><?php endforeach;?></tbody></table></div><?php endif;?></div>
+            <?php foreach($hist as $h):?><tr><td class="text-nowrap"><?=e($h['created_at'])?></td><td><?=e($h['created_by'])?></td><td><?=e($h['msisdn'])?></td><td><?=e($h['offer_code'])?></td><td><?=e($h['vendor'])?></td><td class="text-nowrap"><?=e($h['sub_date'])?></td><td><?=e($h['mode'])?></td><td><span class="badge <?=['ok'=>'bg-success','test'=>'bg-info text-dark','failed'=>'bg-danger','pending'=>'bg-warning text-dark','sent'=>'bg-warning text-dark'][$h['status']]??'bg-secondary'?>"><?=e($h['status'])?></span></td><td class="small" title="<?=e((string)$h['request_body'])?> → <?=e((string)$h['response'])?>"><?=e((string)$h['note'])?></td></tr><?php endforeach;?></tbody></table></div><?php endif;?></div>
     <script nonce="<?=e(csp_nonce())?>">
     document.querySelectorAll('[data-fill]').forEach(function(b){b.addEventListener('click',function(){var d=JSON.parse(b.dataset.fill),f=document.getElementById('rf');['offer_code','vendor','msisdn','date'].forEach(function(k){if(d[k]!==undefined&&d[k]!=='')f.elements[k].value=d[k];});f.elements['purchase_id'].value=d.purchase_id||'';document.getElementById('refundForm').scrollIntoView({behavior:'smooth'});f.elements['vendor'].focus();});});
     </script>
@@ -1206,6 +1206,9 @@ if ($page==='ussd_proxy') {
         <form method="post"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="save_refund">
             <div class="row g-2"><div class="col-md-3"><label class="small text-muted mb-0">Mode</label><select class="form-select" name="refund_mode"><?php foreach(['off'=>'Off — the button is hidden','test'=>'Test — record it, send nothing','live'=>'Live — ask Hera'] as $k=>$l):?><option value="<?=$k?>" <?=$cfg['refund_mode']===$k?'selected':''?>><?=e($l)?></option><?php endforeach;?></select></div>
                 <div class="col-md-9"><label class="small text-muted mb-0">Refund address (POST, JSON)</label><input class="form-control" name="refund_url" value="<?=e($cfg['refund_url'])?>"></div>
+                <div class="col-12"><label class="small text-muted mb-0">Headers for refunds <small>(one per line — <code>X-API-KEY: …</code>, <code>X-USERNAME: …</code>, <code>X-HASHED-PASSWORD: …</code>; kept encrypted, never shown again. Leave empty to use the purchase headers. The refund address and its API user must belong together: the test purchase user does not exist on the production Hera.)</small></label>
+                    <textarea class="form-control code" rows="3" name="refund_auth" autocomplete="off" placeholder="<?=$cfg['refund_auth']!==''?'saved — leave blank to keep':"X-API-KEY: …\nX-USERNAME: …\nX-HASHED-PASSWORD: …"?>"></textarea>
+                    <?php if($cfg['refund_auth']!==''):?><div class="form-check mt-1"><input class="form-check-input" type="checkbox" name="refund_auth_clear" value="1" id="rac"><label class="form-check-label small" for="rac">Remove the saved refund headers (use the purchase headers again)</label></div><?php endif;?></div>
                 </div>
             <button class="btn btn-primary mt-2">Save refund settings</button></form></div>
     </div>

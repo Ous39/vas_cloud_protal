@@ -59,6 +59,9 @@ if ($parts[0] === 'mobius') {
 // /refund/<scenario>/BundleSubscription   (Hera BundleSubscription with channel REF; the reply shape here is a stand-in, the real one has not been seen)
 if ($parts[0] === 'refund') {
     switch ($parts[1] ?? 'ok') {
+        case 'nouser': $j(['success' => false, 'message' => 'Api user does not exist']); break;
+        case 'yes': $j(['success' => true, 'message' => 'Refund accepted']); break;
+        case 'weird': header('Content-Type: text/html'); echo '<html>maintenance</html>'; break;
         case 'deny': $j(['resultCode' => '000', 'resultDescription' => 'Success', 'result' => ['resultCode' => '-1', 'resultDescription' => 'No such transaction']]); break;
         case 'err500': http_response_code(500); $j(['status' => 500, 'error' => 'Internal Server Error']); break;
         default: $j(['resultCode' => '000', 'resultDescription' => 'Success', 'result' => ['resultCode' => '0', 'resultDescription' => 'Refund done']]);

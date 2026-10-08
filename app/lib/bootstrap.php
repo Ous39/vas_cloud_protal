@@ -3385,7 +3385,7 @@ function refund_send(array $cfg, array $in, string $by = '', ?int $purchaseId = 
     $n = refund_normalize($in); refund_tables(); $db = portal_pdo(); $body = refund_body($n);
     $lock = 'refund:'.md5($n['msisdn'].'|'.$n['offer_code'].'|'.$n['date']); $got = (int)$db->query('SELECT GET_LOCK('.$db->quote($lock).', 5)')->fetchColumn();
     try {
-        $done = $db->prepare("SELECT created_at FROM refund_requests WHERE msisdn=? AND offer_code=? AND sub_date=? AND status IN ('ok','pending') LIMIT 1"); $done->execute([$n['msisdn'], $n['offer_code'], $n['date']]);
+        $done = $db->prepare("SELECT created_at FROM refund_requests WHERE msisdn=? AND offer_code=? AND sub_date=? AND status IN ('ok','pending','sent') LIMIT 1"); $done->execute([$n['msisdn'], $n['offer_code'], $n['date']]);
         if ($d = $done->fetch()) throw new RuntimeException('A refund for this number, offer and time was already sent ('.$d['created_at'].'). It is not sent twice.');
         $ins = $db->prepare("INSERT INTO refund_requests(msisdn,offer_code,vendor,channel,sub_date,mode,status,request_body,purchase_id,created_by) VALUES(?,?,?,?,?,?,'pending',?,?,?)");
         $ins->execute([$n['msisdn'], $n['offer_code'], $n['vendor'], $n['channel'], $n['date'], $mode, $body, $purchaseId, mb_substr($by, 0, 80)]); $id = (int)$db->lastInsertId();
@@ -3393,14 +3393,26 @@ function refund_send(array $cfg, array $in, string $by = '', ?int $purchaseId = 
     $http = null; $resp = null;
     if ($mode === 'test') { $status = 'test'; $note = 'TEST: nothing was sent to Hera.'; }
     else {
-        $r = ussd_hera_post($cfg, $body, (string)$cfg['refund_url']); $http = $r['code']; $resp = $r['error'] !== '' ? 'error: '.$r['error'] : mb_substr($r['raw'], 0, 1000);
-        $status = flow_classify(['ok_code' => '0', 'lowbal' => ''], $r)['outcome'] === 'success' ? 'ok' : 'failed';
-        $note = $r['error'] !== '' ? 'No answer from Hera: '.$r['error'] : (($t = ussd_share_text(json_decode((string)$r['raw'], true), (string)$r['raw'])) !== '' ? mb_substr($t, 0, 200) : 'HTTP '.$r['code']);
+        $hc = $cfg; if (($cfg['refund_auth'] ?? '') !== '') $hc['purchase_auth'] = $cfg['refund_auth']; // the refund's own headers, when saved
+        $r = ussd_hera_post($hc, $body, (string)$cfg['refund_url']); $http = $r['code']; $resp = $r['error'] !== '' ? 'error: '.$r['error'] : mb_substr($r['raw'], 0, 1000);
+        [$status, $note] = refund_read_reply($r);
     }
     $db->prepare('UPDATE refund_requests SET status=?, http_code=?, response=?, note=? WHERE id=?')->execute([$status, $http, $resp, mb_substr($note, 0, 255), $id]);
     if ($purchaseId) { ussd_purchase_table(); $db->prepare("UPDATE ussd_purchases SET refund_status=?, refund_at=NOW(), refund_by=?, refund_request=?, refund_response=?, refund_note=? WHERE id=?")->execute([$status, mb_substr($by, 0, 80), $body, $resp, mb_substr($note, 0, 255), $purchaseId]); }
     audit('refund_send', null, 'refund_requests', (string)$id, json_encode(['mode' => $mode, 'status' => $status, 'offer' => $n['offer_code'], 'msisdn' => $n['msisdn'], 'date' => $n['date'], 'http' => $http]));
     return ['id' => $id, 'status' => $status, 'note' => $note, 'mode' => $mode, 'sent' => $body];
+}
+// What Hera's answer means: ok / failed, or sent when it answered in a way that cannot be read as either (then the refund is NOT sent again until
+// somebody has looked — the history shows the raw reply). Understands {"success":true|false,"message":…} and the resultCode shapes.
+function refund_read_reply(array $r): array {
+    if ($r['error'] !== '') return ['failed', 'No answer from Hera: '.$r['error']];
+    $j = json_decode((string)$r['raw'], true); $ok2xx = $r['code'] >= 200 && $r['code'] < 300;
+    $text = is_array($j) ? trim((string)($j['message'] ?? $j['errorMessage'] ?? '')) : ''; if ($text === '') $text = ussd_share_text(is_array($j) ? $j : null, (string)$r['raw']);
+    $text = mb_substr(trim(preg_replace('/\s+/', ' ', $text)), 0, 200);
+    if (!$ok2xx) return ['failed', 'HTTP '.$r['code'].($text !== '' ? ': '.$text : '')];
+    if (is_array($j) && array_key_exists('success', $j)) { $good = $j['success'] === true || strtolower((string)$j['success']) === 'true'; return [$good ? 'ok' : 'failed', $text !== '' ? $text : ($good ? 'Accepted.' : 'Refused.')]; }
+    if (is_array($j) && (isset($j['resultCode']) || is_array($j['result'] ?? null))) return [flow_classify(['ok_code' => '0', 'lowbal' => ''], $r)['outcome'] === 'success' ? 'ok' : 'failed', $text !== '' ? $text : 'HTTP '.$r['code']];
+    return ['sent', 'Hera answered, but the reply is not one the portal recognises — check it before trying again: '.mb_substr(trim(preg_replace('/\s+/', ' ', (string)$r['raw'])), 0, 120)];
 }
 // A purchase of the USSD menu where Hera said nothing was taken (deduction failed, balance too low) has nothing to refund: the ledger offers no link for it.
 function ussd_refund_not_charged(array $p): bool { return (bool)preg_match('/deduction|insufficient|low balance|not enough/i', (string)($p['response'] ?? '').' '.(string)($p['reply_text'] ?? '')); }
@@ -3412,7 +3424,9 @@ function save_refund_config(array $d): void {
     $mode = in_array($d['refund_mode'] ?? '', ['test', 'live'], true) ? $d['refund_mode'] : 'off'; $url = trim((string)($d['refund_url'] ?? ''));
     if ($url !== '' && (!preg_match('#^https?://#i', $url) || !filter_var($url, FILTER_VALIDATE_URL) || mb_strlen($url) > 500)) throw new RuntimeException('The refund address must be a full http:// or https:// URL.');
     if ($mode === 'live' && $url === '') throw new RuntimeException('Live refunds need the refund address. Use Test until you have it.');
-    ussd_proxy_set(['refund_mode' => $mode, 'refund_url' => $url]); audit('ussd_refund_save', null, 'ussd_proxy_config', null, 'mode='.$mode.' url='.parse_url($url, PHP_URL_HOST));
+    $vals = ['refund_mode' => $mode, 'refund_url' => $url]; $auth = trim((string)($d['refund_auth'] ?? ''));
+    if (!empty($d['refund_auth_clear'])) $vals['refund_auth'] = ''; elseif ($auth !== '') $vals['refund_auth'] = encrypt_secret(ussd_clean_header_text($auth));
+    ussd_proxy_set($vals); audit('ussd_refund_save', null, 'ussd_proxy_config', null, 'mode='.$mode.' url='.parse_url($url, PHP_URL_HOST).' headers='.(isset($vals['refund_auth']) ? ($vals['refund_auth'] === '' ? 'removed' : 'changed') : 'unchanged'));
 }
 // ---- Shared Bundle (Seddo): the ShareBundle calls under .../hera/prepaid/ShareBundle/ ----
 // share_mode: off = the service says it is not switched on; test = every answer is simulated and nothing is sent;
@@ -3566,6 +3580,24 @@ function hera_ask(array $cfg, string $op, string $msisdn, string $offerCode, str
     audit('hera_ask', null, 'ussd_proxy_config', null, $op.' '.($op === 'chooseOffer' ? $offerCode : $subCategory).' HTTP '.$r['code']);
     return ['sent' => $body, 'code' => $r['code'], 'error' => $r['error'], 'raw' => mb_substr((string)$r['raw'], 0, 3000)];
 }
+// Headers as pasted ("Name: value" per line) -> the clean lines to store. Forgiving about what a paste brings along: a comma or quotes on the end, odd spaces
+// or dashes, and headers with no value (Mobius sends X-HASHED-PASSWORD empty — such a line is simply skipped). A wrong line is reported by number only,
+// never echoed back, because it may hold the key itself.
+function ussd_clean_header_text(string $auth): string {
+    $lines = [];
+    foreach (preg_split('/\r\n|\n|\r/', $auth) as $n => $l) {
+        $l = trim(str_replace(["\xC2\xA0", "\xE2\x80\x90", "\xE2\x80\x91", "\xE2\x80\x93", "\xE2\x80\x94"], [' ', '-', '-', '-', '-'], $l));
+        if ($l === '') continue;
+        if (!preg_match('/^([A-Za-z0-9\-]{1,40})\s*:\s*(.*)$/', $l, $m)) throw new RuntimeException('Line '.($n + 1).' of the headers has no "Name: value" shape — write each one like  X-USERNAME: USSD');
+        $v = trim(rtrim(trim($m[2]), ','), " \t\"'");
+        if ($v === '') continue;
+        if (mb_strlen($v) > 400) throw new RuntimeException('The value on line '.($n + 1).' of the headers is too long.');
+        $lines[] = $m[1].': '.$v;
+    }
+    if (count($lines) > 6) throw new RuntimeException('At most 6 headers.');
+    if (!$lines) throw new RuntimeException('None of the header lines had a value. Write them like  X-API-KEY: your-key');
+    return implode("\n", $lines);
+}
 function save_purchase_config(array $d): void {
     $mode = in_array($d['purchase_mode'] ?? '', ['test', 'test_low', 'live'], true) ? $d['purchase_mode'] : 'off';
     $url = trim((string)($d['purchase_url'] ?? ''));
@@ -3581,22 +3613,7 @@ function save_purchase_config(array $d): void {
     $auth = trim((string)($d['purchase_auth'] ?? ''));
     if (!empty($d['purchase_auth_clear'])) $vals['purchase_auth'] = '';
     elseif ($auth !== '') {
-        // Forgiving about what a paste brings along: a comma or quotes on the end, odd spaces or dashes, and headers with
-        // no value (Mobius sends X-HASHED-PASSWORD empty — such a line is simply skipped). A wrong line is reported by
-        // number only, never echoed back, because it may hold the key itself.
-        $lines = [];
-        foreach (preg_split('/\r\n|\n|\r/', $auth) as $n => $l) {
-            $l = trim(str_replace(["\xC2\xA0", "\xE2\x80\x90", "\xE2\x80\x91", "\xE2\x80\x93", "\xE2\x80\x94"], [' ', '-', '-', '-', '-'], $l));
-            if ($l === '') continue;
-            if (!preg_match('/^([A-Za-z0-9\-]{1,40})\s*:\s*(.*)$/', $l, $m)) throw new RuntimeException('Line '.($n + 1).' of the headers has no "Name: value" shape — write each one like  X-USERNAME: USSD');
-            $v = trim(rtrim(trim($m[2]), ','), " \t\"'");
-            if ($v === '') continue;
-            if (mb_strlen($v) > 400) throw new RuntimeException('The value on line '.($n + 1).' of the headers is too long.');
-            $lines[] = $m[1].': '.$v;
-        }
-        if (count($lines) > 6) throw new RuntimeException('At most 6 headers.');
-        if (!$lines) throw new RuntimeException('None of the header lines had a value. Write them like  X-API-KEY: your-key');
-        $vals['purchase_auth'] = encrypt_secret(implode("\n", $lines));
+        $vals['purchase_auth'] = encrypt_secret(ussd_clean_header_text($auth));
     }
     ussd_proxy_set($vals);
     audit('ussd_purchase_save', null, 'ussd_proxy_config', null, 'mode='.$mode.' url='.($url !== '' ? parse_url($url, PHP_URL_HOST) : '-').' header_changed='.(isset($vals['purchase_auth']) ? 'yes' : 'no'));
@@ -3631,7 +3648,7 @@ const SHARE_OLD_DEFAULTS = [
 const USSD_PURCHASE_BODY_OTHER = '{"callID":"{txn}","originalRequest":"{shortcode}","localAddress":{local_address_json},"remoteAddress":{remote_address_json},"msisdn":"{msisdn}","imsi":"{imsi}","localDialogID":{local_dialog_id},"remoteDialogID":{remote_dialog_id},"isMobileOriginated":true,"mobileRequestIdentifier":1,"isInitial":false,"isProxy":false,"chargesWithCurrency":"{price_d}","offerCode":"{offer_code}","vendor":"{vendor}","channel":"USSD","otherMsisdn":"{other_msisdn}","otherOfferCode":"{other_offer_code}","operation":"purchaseOffer"}';
 const USSD_PURCHASE_BODY_V1 = '{"msisdn":"{msisdn}","offer_code":"{offer_code}","transaction_id":"{txn}","channel":"USSD"}';
 const USSD_PROXY_DEFAULTS = [
-    'refund_mode' => 'off', 'refund_url' => 'https://vas-prod.comium.gm/hera/prepaid/BundleSubscription',
+    'refund_mode' => 'off', 'refund_url' => 'https://vas-prod.comium.gm/hera/prepaid/BundleSubscription', 'refund_auth' => '',
     'enabled' => '0', 'token' => '', 'mode' => 'capture', 'allow_ips' => '',
     'shortcode_proxy' => '*9606*9090#', 'shortcode_ms_initiated' => '*9606*9090#',
     'f_msisdn' => '', 'f_session' => '', 'f_input' => '', 'f_shortcode' => '',
