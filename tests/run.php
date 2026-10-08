@@ -636,6 +636,23 @@ t('everyone deducted and not received in a date range', function () use ($db) {
     } finally { $d->exec("DELETE FROM audit_log WHERE msisdn IN ('866060456','866777777','866888888')"); if ($made) $d->exec('DROP TABLE audit_log'); $db->exec("DELETE FROM refund_requests WHERE msisdn IN ('866060456','866777777')"); }
 });
 
+t('how much the charging system took, from its own answer', function () {
+    $xml = <<<'XML'
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"><soapenv:Body><bcs:FeeDeductionResultMsg xmlns:bcs="http://www.huawei.com/bme/cbsinterface/bcservices" xmlns:cbs="http://www.huawei.com/bme/cbsinterface/cbscommon" xmlns:bcc="http://www.huawei.com/bme/cbsinterface/bccommon">
+<ResultHeader><cbs:Version>1</cbs:Version><cbs:ResultCode>0</cbs:ResultCode><cbs:ResultDesc>Operation successfully.</cbs:ResultDesc></ResultHeader>
+<FeeDeductionResult><bcs:DeductSerialNo>333064700</bcs:DeductSerialNo><bcs:AcctBalanceChangeList><bcs:AcctKey>220250317103902269252</bcs:AcctKey><bcs:BalanceChgInfo><bcc:BalanceType>C_MAIN_ACCOUNT</bcc:BalanceType><bcc:BalanceID>124700000024179320</bcc:BalanceID><bcc:BalanceTypeName>PPS_Main_Account</bcc:BalanceTypeName><bcc:OldBalanceAmt>1900000000</bcc:OldBalanceAmt><bcc:NewBalanceAmt>0</bcc:NewBalanceAmt><bcc:CurrencyID>1056</bcc:CurrencyID></bcs:BalanceChgInfo></bcs:AcctBalanceChangeList></FeeDeductionResult>
+</bcs:FeeDeductionResultMsg></soapenv:Body></soapenv:Envelope>
+XML;
+    $p = refund_parse_ocs_output($xml); eq([$p['code'], $p['desc'], $p['serial'], $p['old_d'], $p['new_d'], $p['taken_d']], ['0', 'Operation successfully.', '333064700', 190.0, 0.0, 190.0], 'the answer says: taken D190, balance 190 to 0, with the serial number');
+    ok(refund_parse_ocs_output('<html>nothing</html>') === null && refund_parse_ocs_output(null) === null, 'an answer that is not a deduction gives nothing');
+    $two = str_replace('<bcc:OldBalanceAmt>1900000000</bcc:OldBalanceAmt><bcc:NewBalanceAmt>0</bcc:NewBalanceAmt>', '<bcc:OldBalanceAmt>500000000</bcc:OldBalanceAmt><bcc:NewBalanceAmt>150000000</bcc:NewBalanceAmt></bcs:BalanceChgInfo><bcs:BalanceChgInfo><bcc:OldBalanceAmt>100000000</bcc:OldBalanceAmt><bcc:NewBalanceAmt>100000000</bcc:NewBalanceAmt>', $xml);
+    eq(refund_parse_ocs_output($two)['taken_d'], 35.0, 'several balances are added together (D35 taken from one, none from the other)');
+    $rows = [['transaction_id' => '20261008155509-HERA-0353-USSD-866060456-40101', 'create_date' => '2026-10-08 15:55:09', 'msisdn' => '866060456', 'vendor_entity_name' => 'OcsProduction', 'result_status' => '0', 'result_description' => 'Operation successfully.', 'output_text' => $xml],
+             ['transaction_id' => '20261008155509-HERA-0952', 'create_date' => '2026-10-08 15:55:09', 'msisdn' => '866060456', 'vendor_entity_name' => 'PcrfProduction', 'result_status' => '90398', 'result_description' => 'Exceeds the limit', 'output_text' => '']];
+    $e = refund_assess($rows)[0]; eq([$e['verdict'], $e['taken_d'], $e['serial']], ['deducted_not_received', 190.0, '333064700'], 'a charged-and-refused purchase carries the amount taken');
+});
+
 // ------------------------------------------------------------------ summary
 $cleanup();
 echo "\n".($fail === 0 ? "ALL PASSED" : "FAILED")."  —  $pass tests ok".($fail ? ", $fail check(s) failed:\n  - ".implode("\n  - ", array_slice($failures, 0, 40)) : '')."\n";

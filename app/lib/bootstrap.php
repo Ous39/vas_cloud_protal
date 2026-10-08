@@ -3350,13 +3350,16 @@ function refund_hints(?string $payload): array {
     elseif (preg_match('/"offerCode"\s*:\s*"([^"]+)"/i', (string)$payload, $m)) $out['offer_code'] = $m[1];
     return $out;
 }
-function refund_vendor_for(string $schema, string $offer): string {
-    static $seen = []; if (isset($seen[$schema.'|'.$offer])) return $seen[$schema.'|'.$offer]; $seen[$schema.'|'.$offer] = '';
+// The catalogue row of an offer: ['vendor' => …, 'price' => number|null] (the schema in use first, then the test catalogue). Asked once per request.
+function refund_offer_row(string $schema, string $offer): array {
+    static $seen = []; $k = $schema.'|'.$offer; if (isset($seen[$k])) return $seen[$k]; $seen[$k] = ['vendor' => '', 'price' => null];
     foreach (array_unique([$schema, USSD_OFFER_SCHEMA]) as $s) {
-        try { if (!table_exists($s, 'vas_offers')) continue; $st = pdo($s)->prepare('SELECT vendor FROM vas_offers WHERE offer_code=? ORDER BY id DESC LIMIT 1'); $st->execute([$offer]); $v = (string)$st->fetchColumn(); if ($v !== '') return $seen[$schema.'|'.$offer] = $v; } catch (Throwable $e) {}
+        try { if (!table_exists($s, 'vas_offers')) continue; $st = pdo($s)->prepare('SELECT vendor, one_time_price FROM vas_offers WHERE offer_code=? ORDER BY id DESC LIMIT 1'); $st->execute([$offer]); $r = $st->fetch();
+            if ($r && (string)$r['vendor'] !== '') return $seen[$k] = ['vendor' => (string)$r['vendor'], 'price' => is_numeric($r['one_time_price']) ? (float)$r['one_time_price'] : null]; } catch (Throwable $e) {}
     }
-    return '';
+    return $seen[$k];
 }
+function refund_vendor_for(string $schema, string $offer): string { return refund_offer_row($schema, $offer)['vendor']; }
 // ---- Was it deducted? Was the bundle received? ----
 // A purchase leaves two traces in the platform log. OcsProduction is the charge; its transaction id says what it was:
 //   20261008155509-HERA-0353-USSD-866060456-40101  = time, sequence, channel, number, offer. Status 0 = taken, 20000005 = balance too low.
@@ -3367,7 +3370,17 @@ function refund_parse_ocs_txn(string $txn): ?array {
     if (!preg_match('/^(\d{14})-HERA-(\d+)-([A-Za-z]+)-(\d{7,15})-([A-Za-z0-9_]+)$/', trim($txn), $m)) return null;
     return ['seq' => $m[2], 'channel' => strtoupper($m[3]), 'msisdn' => $m[4], 'offer_code' => $m[5]];
 }
-// $rows: platform-log rows (transaction_id, create_date, msisdn, vendor_entity_name, result_status, result_description). Returns one entry per OCS purchase (or refund).
+// The charging system's answer is a SOAP message (FeeDeductionResultMsg): result code/text, a deduction serial number and the balance before and after.
+// Amounts are in units of 1/10,000,000 of a dalasi (a D190 purchase takes 190 → 0 shown as 1900000000 → 0).
+const OCS_UNITS_PER_D = 10000000;
+function refund_parse_ocs_output(?string $xml): ?array {
+    $xml = (string)$xml; if ($xml === '' || !str_contains($xml, 'FeeDeduction')) return null;
+    $tag = function (string $name) use ($xml): ?string { return preg_match('~<(?:\w+:)?'.$name.'>\s*([^<]*?)\s*</~', $xml, $m) ? $m[1] : null; };
+    preg_match_all('~<(?:\w+:)?OldBalanceAmt>\s*(-?\d+)\s*</~', $xml, $o); preg_match_all('~<(?:\w+:)?NewBalanceAmt>\s*(-?\d+)\s*</~', $xml, $n);
+    $old = 0.0; $new = 0.0; foreach ($o[1] as $k => $v) { $old += (float)$v; $new += (float)($n[1][$k] ?? $v); }
+    return ['code' => $tag('ResultCode'), 'desc' => $tag('ResultDesc'), 'serial' => $tag('DeductSerialNo'), 'old_d' => $o[1] ? $old / OCS_UNITS_PER_D : null, 'new_d' => $o[1] ? $new / OCS_UNITS_PER_D : null, 'taken_d' => $o[1] ? ($old - $new) / OCS_UNITS_PER_D : null];
+}
+// $rows: platform-log rows (transaction_id, create_date, msisdn, vendor_entity_name, result_status, result_description, output_text). Returns one entry per OCS purchase (or refund).
 function refund_assess(array $rows): array {
     $isVendor = fn($r, $k) => stripos((string)($r['vendor_entity_name'] ?? ''), $k) !== false; $pcrf = []; $refs = [];
     foreach ($rows as $r) {
@@ -3378,7 +3391,8 @@ function refund_assess(array $rows): array {
     foreach ($rows as $r) {
         if (!$isVendor($r, 'ocs') || !($p = refund_parse_ocs_txn((string)$r['transaction_id']))) continue;
         $e = ['date' => (string)$r['create_date'], 'msisdn' => $p['msisdn'], 'offer_code' => $p['offer_code'], 'channel' => $p['channel'], 'transaction_id' => (string)$r['transaction_id'], 'ocs_result' => trim((string)($r['result_description'] ?? '')),
-            'deducted' => null, 'received' => null, 'verdict' => '', 'reason' => '', 'refunded' => false];
+            'deducted' => null, 'received' => null, 'verdict' => '', 'reason' => '', 'refunded' => false, 'taken_d' => null, 'old_d' => null, 'new_d' => null, 'serial' => ''];
+        if ($ocs = refund_parse_ocs_output($r['output_text'] ?? null)) { $e['taken_d'] = $ocs['taken_d']; $e['old_d'] = $ocs['old_d']; $e['new_d'] = $ocs['new_d']; $e['serial'] = (string)$ocs['serial']; }
         if ($p['channel'] === 'REF') { $e['verdict'] = 'refund'; $e['deducted'] = is_success_status($r['result_status']); $out[] = $e; continue; }
         if (!is_success_status($r['result_status'])) { $e['deducted'] = false; $e['verdict'] = 'not_deducted'; $e['reason'] = $e['ocs_result']; $out[] = $e; continue; }
         $e['deducted'] = true; $t = strtotime($e['date']); $good = false; $bad = null;
@@ -3408,7 +3422,7 @@ function refund_missing(string $schema, string $from, string $to, int $limit = 1
     $db = pdo($schema);
     $st = $db->prepare("SELECT create_date, msisdn, result_status, result_description FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date BETWEEN ? AND ? AND vendor_entity_name LIKE 'Pcrf%' AND NOT (".AUDIT_SUCCESS_SQL.") ORDER BY create_date DESC LIMIT ".(int)($limit * 2));
     $st->execute([$f['date_from'].' 00:00:00', $f['date_to'].' 23:59:59']); $fails = $st->fetchAll();
-    $oc = $db->prepare("SELECT create_date, transaction_id, result_status, result_description, vendor_entity_name, msisdn FROM ".ident(AUDIT_LOG_TABLE)." WHERE msisdn = ? AND create_date BETWEEN ? AND ? AND vendor_entity_name LIKE 'Ocs%' ORDER BY create_date");
+    $oc = $db->prepare("SELECT create_date, transaction_id, result_status, result_description, vendor_entity_name, msisdn, CONVERT(output USING utf8mb4) AS output_text FROM ".ident(AUDIT_LOG_TABLE)." WHERE msisdn = ? AND create_date BETWEEN ? AND ? AND vendor_entity_name LIKE 'Ocs%' ORDER BY create_date");
     $out = []; $seen = [];
     foreach ($fails as $x) {
         $m = trim((string)$x['msisdn']); $t = strtotime((string)$x['create_date']); $key = $m.'|'.$x['create_date']; if (isset($seen[$key])) continue; $seen[$key] = 1;
@@ -3434,7 +3448,7 @@ function refund_lookup(string $schema, string $msisdnFull, string $from, string 
         foreach ($forms as $m) { $rows = search_subscriptions($schema, ['msisdn' => $m, 'transaction_id' => '', 'subscription_type' => '', 'channel' => '', 'date_from' => date('Y-m-d', $subFrom), 'date_to' => $to], 1, 30)['rows']; if ($rows) { $out['subscriptions'] = $rows; $out['form']['subscriptions'] = $m; break; } } }
     catch (Throwable $e) { $out['errors']['subscriptions'] = $e->getMessage(); }
     try { foreach ($forms as $m) { $rows = search_audit_log($schema, ['date_from' => date('Y-m-d', $logFrom), 'date_to' => $to, 'msisdn' => $m, 'transaction_id' => '', 'result_status' => '', 'vendor' => '', 'channel' => '', 'result_desc' => ''], 1, 100)['rows'];
-            if ($rows) { foreach ($rows as $r) { $h = refund_hints($r['input_text'] ?? ''); $out['transactions'][] = ['transaction_id' => $r['transaction_id'], 'create_date' => $r['create_date'], 'msisdn' => $r['msisdn'], 'channel' => $r['channel'], 'vendor_entity_name' => $r['vendor_entity_name'], 'result_status' => $r['result_status'], 'result_description' => $r['result_description']] + $h; }
+            if ($rows) { foreach ($rows as $r) { $h = refund_hints($r['input_text'] ?? ''); $out['transactions'][] = ['transaction_id' => $r['transaction_id'], 'create_date' => $r['create_date'], 'msisdn' => $r['msisdn'], 'channel' => $r['channel'], 'vendor_entity_name' => $r['vendor_entity_name'], 'result_status' => $r['result_status'], 'result_description' => $r['result_description'], 'output_text' => mb_substr((string)($r['output_text'] ?? ''), 0, 4000)] + $h; }
                 $out['assessed'] = refund_mark_done(refund_assess($out['transactions'])); $out['form']['transactions'] = $m; break; } } }
     catch (Throwable $e) { $out['errors']['transactions'] = $e->getMessage(); }
     try { ussd_purchase_table(); $st = portal_pdo()->prepare('SELECT * FROM ussd_purchases WHERE msisdn IN (?,?) OR recipient IN (?,?) ORDER BY id DESC LIMIT 15'); $st->execute([$msisdnFull, $local, $msisdnFull, $local]); $out['purchases'] = $st->fetchAll(); }
