@@ -36,6 +36,9 @@ $sha = (git rev-parse --short HEAD).Trim()
 Write-Host "== Build $sha ==" -ForegroundColor Cyan
 docker build -q -t "${image}:latest" -t "${image}:$sha" --build-arg GIT_SHA=$sha .
 if ($LASTEXITCODE -ne 0) { exit 1 }
+Write-Host "== Check the built image ==" -ForegroundColor Cyan
+docker run --rm -v "${PWD}/scripts/image-check.php:/tmp/image-check.php:ro" --entrypoint php "${image}:$sha" /tmp/image-check.php
+if ($LASTEXITCODE -ne 0) { Write-Host "The built image is incomplete - not pushing." -ForegroundColor Red; exit 1 }
 Write-Host "== Push ==" -ForegroundColor Cyan
 docker push "${image}:latest" | Select-Object -Last 1
 if ($LASTEXITCODE -ne 0) { exit 1 }
