@@ -25,7 +25,7 @@ Changing the deployment itself (probes, host aliases) is `kubectl apply -f deplo
 
 ## Tests
 
-`php tests/run.php` (needs MySQL; it creates and removes its own data and restores the USSD settings it touches). It covers the menu engine, the building tools, the quiz, purchases and the Shared Bundle calls against a stand-in for Hera, using the real reply shapes we have seen. Run it before any change to `app/lib/bootstrap.php`. Add a test whenever you fix a bug — the file is organised by area.
+Two scripts, both needing MySQL, both run by CI and by `scripts/release.ps1` (a failure stops the release): `php tests/smoke.php` starts the real app on a local port, signs in as test users, opens every page (a new page file is picked up automatically), checks that a viewer is refused the admin pages, that a form without its security token is refused, the login rules, the security headers and the public endpoints, and walks the menu-creation and refund-preview forms. And `php tests/run.php` (the logic; it creates and removes its own data and restores the USSD settings it touches). It covers the menu engine, the building tools, the quiz, purchases and the Shared Bundle calls against a stand-in for Hera, using the real reply shapes we have seen. Run it before any change to `app/lib/bootstrap.php`. Add a test whenever you fix a bug — the file is organised by area.
 
 ## Backups and restore
 

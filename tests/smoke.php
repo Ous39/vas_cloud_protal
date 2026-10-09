@@ -68,8 +68,8 @@ $PHP_ERR = '/Warning:|Fatal error|Parse error|Notice:|Deprecated:|Stack trace|Un
 $text = fn(string $html): string => trim(preg_replace('/\s+/', ' ', strip_tags((string)preg_replace('#<script.*?</script>#s', '', $html))));
 
 // every page the app has (found in index.php, so a new page is covered the day it is added)
-$src = (string)file_get_contents($docroot.'/index.php'); foreach (glob(dirname($docroot).'/pages/*.php') ?: [] as $pf) $src .= "\n".basename($pf, '.php');
-preg_match_all("/\\\$page===?'([a-z_]+)'/", (string)file_get_contents($docroot.'/index.php'), $m); $pages = array_values(array_unique($m[1]));
+// the pages that stay in index.php (login, logout, ...) and every file in app/pages/
+preg_match_all('~\$page===?\'([a-z_]+)\'~', (string)file_get_contents($docroot.'/index.php'), $m); $pages = $m[1]; foreach (glob(dirname($docroot).'/pages/*.php') ?: [] as $pf) $pages[] = basename($pf, '.php'); $pages = array_values(array_unique($pages));
 $skip = ['login', 'logout', 'switch_schema', 'alert_cron', 'confirm', 'copy_record', 'sync', 'form', 'investigate_detail']; // these need a token or a record id
 $pages = array_values(array_filter($pages, fn($p) => !in_array($p, $skip, true) && !str_contains($p, 'export')));
 

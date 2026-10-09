@@ -16,6 +16,8 @@ if (-not $SkipTests) {
     Write-Host "== Tests ==" -ForegroundColor Cyan
     docker exec vas-enterprise-app sh -c "rm -rf /tmp/vt && mkdir -p /tmp/vt" | Out-Null
     docker cp app/lib/. vas-enterprise-app:/var/www/lib/ | Out-Null
+    docker exec vas-enterprise-app mkdir -p /var/www/pages | Out-Null
+    docker cp app/pages/. vas-enterprise-app:/var/www/pages/ | Out-Null
     docker cp app/public/. vas-enterprise-app:/var/www/html/ | Out-Null
     docker cp tests vas-enterprise-app:/tmp/vt/tests | Out-Null
     docker exec vas-enterprise-app php /tmp/vt/tests/run.php

@@ -1,5 +1,15 @@
 # Architecture
 
+## Code layout
+
+Everything is plain PHP, no framework. The code is small files with one job each:
+
+- `app/public/` — what the web server serves: `index.php` (the single entry point: sign-in, CSRF check, then the requested page), `ussd.php` (the endpoint Mobius calls), `api.php` (partner API), `health.php`, `style.css`, `txviewer.js`.
+- `app/pages/<name>.php` — **one file per screen** (`?page=<name>`), 48 of them. `index.php` includes the file named by `?page=` (the name is checked against `^[a-z0-9_]+$`, so only a file in that folder can run). A page reads its input, checks the permission with `require_perm()`, prints HTML with `layout_start()` … `layout_end()`, and ends with `exit`. To add a screen, add one file here.
+- `app/lib/` — the logic, loaded by `bootstrap.php` in a fixed order: `core.php` (config, sessions, schema self-heal, login, permissions), `table_tools.php`, `investigation.php`, `subscriptions.php`, `promotions.php`, `dashboard.php`, `offer_health.php`, `maintenance.php`, `status.php`, `reports.php`, `partner.php`, `integrations.php`, the USSD set (`ussd_menus.php`, `ussd_engine.php`, `ussd_quiz.php`, `ussd_purchases.php`, `refunds.php`, `ussd_share.php`, `ussd_proxy.php`, `mobius.php`), `monitoring.php`, then `flows.php`. `layout.php` (the page frame) is loaded by `index.php` only.
+- `app/config/config.php` — settings from the environment.
+- `tests/run.php` (logic, against a stand-in Hera/Mobius) and `tests/smoke.php` (the real app over HTTP: every page, permissions, CSRF, login rules, security headers) — both run in CI and in `scripts/release.ps1` before an image is built.
+
 ## Components
 
 - **app**: PHP 8.2 Apache web application.

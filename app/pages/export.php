@@ -1,0 +1,4 @@
+<?php
+declare(strict_types=1);
+// Page: ?page=export — included by index.php inside its try/catch, after the sign-in, CSRF and $page checks.
+ $schema=current_schema(); $table=$_GET['table']??''; require_perm('view_tables'); if(!table_exists($schema,$table)) throw new RuntimeException('Table not found'); $filters=parse_table_filters($_GET); $guard=large_table_guard($schema,$table,$filters); if($guard && $guard['level']==='block') throw new RuntimeException($guard['message']); audit('export',$schema,$table,null,'CSV export'.($filters?' (filtered)':'')); $rows=export_records($schema,$table,$filters,10000); header('Content-Type:text/csv'); header('Content-Disposition: attachment; filename="'.$schema.'_'.$table.'_export.csv"'); $out=fopen('php://output','w'); $first=true; foreach($rows as $row){ $row=redact_row($row); if($first){fputcsv($out,array_keys($row));$first=false;} fputcsv($out,csv_safe_row($row));} exit;
