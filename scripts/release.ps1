@@ -20,6 +20,9 @@ if (-not $SkipTests) {
     docker cp tests vas-enterprise-app:/tmp/vt/tests | Out-Null
     docker exec vas-enterprise-app php /tmp/vt/tests/run.php
     if ($LASTEXITCODE -ne 0) { Write-Host "Tests failed - not releasing." -ForegroundColor Red; exit 1 }
+    Write-Host "== Smoke test (every page over HTTP) ==" -ForegroundColor Cyan
+    docker exec vas-enterprise-app php /tmp/vt/tests/smoke.php
+    if ($LASTEXITCODE -ne 0) { Write-Host "Smoke test failed - not releasing." -ForegroundColor Red; exit 1 }
 }
 
 $dirty = git status --porcelain

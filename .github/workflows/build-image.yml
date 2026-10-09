@@ -66,6 +66,8 @@ jobs:
           for f in $(find app tests -name '*.php'); do php -l "$f" > /dev/null || exit 1; done
       - name: Run the tests
         run: php tests/run.php
+      - name: Smoke-test every page over HTTP (sign in, permissions, forms, security headers)
+        run: php tests/smoke.php
 
   build:
     needs: test
