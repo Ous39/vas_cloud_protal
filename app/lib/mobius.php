@@ -308,6 +308,7 @@ function ussd_proxy_endpoint(): never {
     $ok = $cfg['enabled'] === '1' && $cfg['token'] !== '' && hash_equals($cfg['token'], (string)($_GET['t'] ?? '')) && $mode !== null;
     try { $ok = $ok && ussd_proxy_ip_allowed($cfg['allow_ips'], $ip); } catch (Throwable $e) { $ok = false; }
     if (!$ok) { http_response_code(404); header('Content-Type: text/plain'); exit('Not found'); }
+    menu_apply_schedules_tick(); // scheduled items go live / switch off on time, even when nobody is using the portal
     $raw = (string)file_get_contents('php://input', false, null, 0, 65536);
     $get = $_GET; unset($get['t'], $get['m']);
     $flat = ussd_proxy_flatten((string)($_SERVER['CONTENT_TYPE'] ?? ''), $raw, $get, $_POST);

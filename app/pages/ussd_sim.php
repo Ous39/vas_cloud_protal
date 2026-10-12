@@ -11,7 +11,7 @@ declare(strict_types=1);
     $dres=ussd_resolve_dialled($sc,$known); if($dres && $dres[1]){ $sc=$dres[0]; $replies=array_merge($dres[1],$replies); }
     if(count($replies)>30) $replies=array_slice($replies,-30);
     $fsim=(string)($_GET['fsim']??'success'); if(!in_array($fsim,['success','lowbal,success','lowbal,fail','lowbal','fail'],true)) $fsim='success';
-    $scr=ussd_screen($sc,$replies,$withDraft?['active','draft']:['active'],null,['seed'=>$seed,'share'=>'ussd_share_sim','msisdn'=>'2200000000','flow_sim'=>$fsim]);
+    $scr=ussd_screen($sc,$replies,$withDraft?['active','draft','scheduled']:['active'],null,['seed'=>$seed,'share'=>'ussd_share_sim','msisdn'=>'2200000000','flow_sim'=>$fsim]);
     $trail=implode(',',$replies);
     layout_start('USSD Simulator'); ussd_subnav('ussd_sim');
     ?>

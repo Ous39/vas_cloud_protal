@@ -113,6 +113,8 @@ t('a menu is created through the Menus page', function () use ($admin, $text) {
     $p = $admin['go']('index.php?page=ussd_menus'); $r = $admin['go']('index.php?page=ussd_menus', ['csrf' => $admin['csrf']($p['body']), 'name' => 'ZT Smoke', 'short_code' => '*8861', 'items' => "A\nB", 'copy_from' => '']);
     has($text($r['body']), 'Menu *8861# created', 'it says so'); has($text($r['body']), 'Set up *8861#', 'and opens its setup checklist'); $l = $admin['go']('index.php?page=ussd_menus'); has($text($l['body']), 'ZT Smoke', 'it is in the list');
     $e = $admin['go']('index.php?page=ussd_menu&short_code='.urlencode('*8861#')); has($text($e['body']), 'Menu check', 'and the Builder opens it');
+    $when = date('Y-m-d\TH:i', time() + 86400); $sp = $admin['go']('index.php?page=ussd_menu&short_code='.urlencode('*8861#')); $sc = $admin['go']('index.php?page=ussd_menu', ['csrf' => $admin['csrf']($sp['body']), 'do' => 'schedule_drafts', 'short_code' => '*8861#', 'live_from' => $when, 'live_until' => '']);
+    has($text($sc['body']), 'scheduled', 'scheduling the drafts is acknowledged'); has($text($sc['body']), 'goes live', 'and the tree shows when each item goes live'); has($text($admin['go']('index.php?page=ussd_menus')['body']), 'scheduled', 'the Menus list shows the scheduled items');
 });
 t('refunds: preview shows the exact request, a test send is recorded', function () use ($admin, $text, $db) {
     ussd_proxy_set(['refund_mode' => 'test', 'refund_url' => 'https://h.example/x']); $p = $admin['go']('index.php?page=refunds'); has($text($p['body']), 'Test mode', 'the page says refunds are in test mode');

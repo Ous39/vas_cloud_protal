@@ -9,6 +9,7 @@ if ($page==='alert_cron') {
     if (!hash_equals(alert_cron_token(), (string)($_GET['token']??''))) { http_response_code(403); header('Content-Type: text/plain'); exit('forbidden'); }
     foreach (['HeraProduction','HeraTesting'] as $s) dispatch_pending_alert_notifications($s);
     portal_housekeeping();
+    try { menu_apply_schedules(); } catch (Throwable $e) { error_log('menu schedule: '.$e->getMessage()); }
     if (in_array('HeraProduction', allowed_schemas(), true)) { try { maybe_send_daily_summary('HeraProduction'); } catch (Throwable $e) { error_log('daily summary: '.$e->getMessage()); } }
     header('Content-Type: text/plain'); exit('OK');
 }

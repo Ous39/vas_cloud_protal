@@ -81,6 +81,18 @@ Every step says where to go next; `@exit` leaves the flow and returns to the men
 - **Try it** (right side of the flow page) walks the whole flow, pretending Hera says success / low balance then success / failure, so every branch can be seen before any phone is used. The **USSD Simulator** has the same choice for flows inside a menu.
 - Every call is recorded (outcome, the request we sent with the IMSI shortened, Hera's reply) under **Recent calls**, and every change is in **History**.
 
+## Schedule a change (go live tomorrow, switch off on Friday)
+
+Build the items as **Drafts**, then tell the portal when they should appear — it does the rest, with nobody there on the day and no restart.
+
+- **Everything at once:** in the Builder, under the Menu check, **"Or let the N drafts go live by themselves at …"** — pick the date and time (and, if you like, when they switch off) and press **Schedule**.
+- **One item:** in its form, fill **Go live at** and/or **Switch off at**. With a go-live time the item waits (status *scheduled*) and turns on at that time; with a switch-off time a live item turns off at that time. A time that has already passed just turns the item on (or off) now.
+- **See and test:** the tree shows *goes live 2026-10-13 08:00* next to a waiting item, the Menu check says how many are waiting, the Menus list shows *N scheduled*, and the **Simulator** (with "Include draft items") already shows scheduled items so you can try the menu as it will be.
+- **Change your mind:** press the on/off button on the item (or edit it and clear the times) — that cancels the schedule. Every change is in **History**, including "Schedule: items went live".
+- **Times are the portal's clock, which is UTC** (the Gambia is on UTC, so it is local time). The form shows the current time.
+- **How it happens on time:** the portal checks the schedule at most every 15 seconds while the USSD endpoint is being called, every 5 minutes from the alert cron, and whenever the Menus or Builder pages are opened. A customer dialling after the time sees the new menu; there is no gap to wait for.
+- Schedules work for menu items. Service flows, offers in the catalogue and refunds are not scheduled by this (ask if you need that).
+
 ## Direct codes
 
 Every item in the main menu can be dialled straight from the phone: put the number(s) you would have typed after the short code, each after a `*`.

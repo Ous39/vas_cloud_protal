@@ -2,7 +2,7 @@
 declare(strict_types=1);
 // Page: ?page=ussd_menus — included by index.php inside its try/catch, after the sign-in, CSRF and $page checks.
 
-    require_perm('view_tables'); $canEdit=can('manage_ussd_menus'); $canUrl=can('manage_api_keys'); $db=portal_pdo(); $cfg=ussd_proxy_config();
+    require_perm('view_tables'); try { menu_apply_schedules(); } catch (Throwable $e) { error_log('menu schedule: '.$e->getMessage()); } $canEdit=can('manage_ussd_menus'); $canUrl=can('manage_api_keys'); $db=portal_pdo(); $cfg=ussd_proxy_config();
     $form=['short_code'=>'','name'=>'','items'=>'','copy_from'=>'']; $formOpen=isset($_GET['add']);
     if ($_SERVER['REQUEST_METHOD']==='POST') {
         require_perm('manage_ussd_menus'); $do=(string)($_POST['do']??'create');
@@ -113,7 +113,7 @@ declare(strict_types=1);
     <?php foreach($codes as $c): $m=$ov[$c]??null; $rg=$reg[$c]??null; $stt=shortcode_state($c,$cfg,$reg); $ms=$mobOk?mobius_menu_state($c,$mob['menus'],$cfg):null;?>
         <tr><td><?php if($rg):?><strong><?=e($rg['service_name'])?></strong><?php else:?><span class="text-muted">(no name yet)</span> <a class="small" href="?page=shortcodes&new=<?=urlencode($c)?>">name it</a><?php endif;?></td>
             <td><code><?=e($c)?></code></td><td>PROXY</td>
-            <td><?php if(!$m):?><span class="badge bg-secondary">empty</span> <a class="small" href="?page=ussd_menu&short_code=<?=urlencode($c)?>">build</a><?php else:?><?=$m['active']?> on<?=$m['draft']?' · '.$m['draft'].' draft':''?> <?php if($m['errors']):?><span class="badge bg-danger"><?=$m['errors']?> to fix</span><?php elseif($m['warns']):?><span class="badge bg-warning text-dark"><?=$m['warns']?> to check</span><?php else:?><span class="badge bg-success">ok</span><?php endif;?><?php endif;?></td>
+            <td><?php if(!$m):?><span class="badge bg-secondary">empty</span> <a class="small" href="?page=ussd_menu&short_code=<?=urlencode($c)?>">build</a><?php else:?><?=$m['active']?> on<?=$m['draft']?' · '.$m['draft'].' draft':''?><?=$m['scheduled']?' · <span class="text-info" title="Go live by themselves"><i class="fa-regular fa-clock"></i> '.$m['scheduled'].' scheduled</span>':''?> <?php if($m['errors']):?><span class="badge bg-danger"><?=$m['errors']?> to fix</span><?php elseif($m['warns']):?><span class="badge bg-warning text-dark"><?=$m['warns']?> to check</span><?php else:?><span class="badge bg-success">ok</span><?php endif;?><?php endif;?></td>
             <td><?php if(!$m):?><span class="text-muted">—</span><?php elseif($stt['live']):?><span class="badge bg-success">answering</span><?php else:?><span class="badge bg-secondary" title="<?=e($stt['why'])?>">not live</span><?php endif;?></td>
             <td><?php if($rg):?><span class="badge status-<?=e(strtolower($rg['status']))?>"><?=e($rg['status'])?></span><?php else:?><span class="text-muted">—</span><?php endif;?></td>
             <?php if($mobOk):?><td><?php if($ms['state']==='ours'):?><span class="badge bg-success" title="<?=e(($ms['menu']['name']??'').' · '.($ms['menu']['shortcodeType']??''))?>">in Mobius</span><?=!empty($ms['menu']['isExtendable'])?' <span class="badge bg-info text-dark">extendable</span>':''?>

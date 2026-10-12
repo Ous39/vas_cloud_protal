@@ -237,7 +237,9 @@ function ensure_portal_runtime_schema(): void {
             catalog_filter TEXT NULL,
             body_text TEXT NULL,
             action_key VARCHAR(80) NULL,
-            status ENUM('active','inactive','draft') NOT NULL DEFAULT 'draft',
+            status ENUM('active','inactive','draft','scheduled') NOT NULL DEFAULT 'draft',
+            live_from DATETIME NULL,
+            live_until DATETIME NULL,
             created_by VARCHAR(80) NULL,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
@@ -486,6 +488,7 @@ function ensure_portal_runtime_schema(): void {
         $nodeTypeDef = (string)$db->query("SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ussd_menu_nodes' AND COLUMN_NAME='node_type'")->fetchColumn();
         if ($nodeTypeDef !== '' && stripos($nodeTypeDef, "'flow'") === false) $safeExec("ALTER TABLE ussd_menu_nodes MODIFY node_type ENUM('menu','offer','action','end','catalog','recipient','quiz','sharedbundle','flow') NOT NULL DEFAULT 'menu'");
         if (!$columnExists('ussd_menu_nodes','body_text')) $safeExec("ALTER TABLE ussd_menu_nodes ADD COLUMN body_text TEXT NULL AFTER catalog_filter");
+        try { menu_schedule_ready(); } catch (Throwable $e) { error_log('menu schedule columns: '.$e->getMessage()); }
         if (!$columnExists('portal_projects','short_code')) $safeExec("ALTER TABLE portal_projects ADD COLUMN short_code VARCHAR(80) NULL AFTER project_name");
         if (!$columnExists('portal_projects','start_date')) $safeExec("ALTER TABLE portal_projects ADD COLUMN start_date DATE NULL AFTER status");
         if (!$columnExists('portal_projects','launch_date')) $safeExec("ALTER TABLE portal_projects ADD COLUMN launch_date DATE NULL AFTER start_date");

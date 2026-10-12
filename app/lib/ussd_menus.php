@@ -23,7 +23,7 @@ function menu_overview(): array {
     $out = [];
     foreach (menu_shortcodes() as $code) {
         $flat = menu_nodes_flat($code); $h = menu_health($code);
-        $out[$code] = ['items' => count($flat), 'active' => count(array_filter($flat, fn($n) => $n['status'] === 'active')), 'draft' => count(array_filter($flat, fn($n) => $n['status'] === 'draft')),
+        $out[$code] = ['items' => count($flat), 'active' => count(array_filter($flat, fn($n) => $n['status'] === 'active')), 'draft' => count(array_filter($flat, fn($n) => $n['status'] === 'draft')), 'scheduled' => count(array_filter($flat, fn($n) => $n['status'] === 'scheduled')),
             'errors' => count(array_filter($h, fn($x) => $x['level'] === 'error')), 'warns' => count(array_filter($h, fn($x) => $x['level'] === 'warn'))];
     }
     return $out;
@@ -123,6 +123,59 @@ function menu_tree(string $shortCode): array {
     };
     return $build(0);
 }
+// ---- Scheduled changes: an item is told when to go live and, if wanted, when to switch off; the portal does it by itself ----
+// Status "scheduled" = waiting for live_from. It turns Active at that time (and an Active item with live_until turns Off at that time). The change is made
+// by menu_apply_schedules(), which runs (a) at most every 15 seconds while the USSD endpoint is being called, (b) every 5 minutes from the alert cron, and
+// (c) when the Menus / Builder pages are opened — so it happens on time even if nobody is using the portal, and no restart is needed.
+const MENU_STATUSES = ['active', 'inactive', 'draft', 'scheduled'];
+// "2026-10-13T08:00" (a browser's date-time box) or "2026-10-13 08:00[:00]" -> "2026-10-13 08:00:00"; empty -> null. Times are the portal's own clock (UTC).
+function menu_parse_when(string $s): ?string {
+    $s = trim($s); if ($s === '') return null;
+    if (!preg_match('/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})(:\d{2})?$/', $s, $m) || strtotime($m[1].' '.$m[2]) === false) throw new RuntimeException('The time must look like 2026-10-13 08:00.');
+    return $m[1].' '.$m[2].($m[3] ?? ':00');
+}
+// What status and times an item really gets, from what was asked: [status, live_from, live_until].
+function menu_resolve_schedule(string $status, ?string $from, ?string $until, string $now): array {
+    if ($from && $until && $until <= $from) throw new RuntimeException('The switch-off time must be after the go-live time.');
+    if ($status === 'scheduled' && !$from) throw new RuntimeException('Pick the time this item should go live.');
+    if ($from && $status !== 'inactive') $status = $from > $now ? 'scheduled' : 'active';   // a time in the future waits; one already past just turns it on
+    if ($until && $until <= $now && in_array($status, ['active', 'scheduled'], true)) $status = 'inactive';  // it would already be over
+    if (in_array($status, ['draft', 'inactive'], true)) { $from = null; $until = null; }
+    return [$status, $from, $until];
+}
+// Makes sure the table has the two time columns and the "scheduled" status (older installs get them here, once).
+function menu_schedule_ready(): void {
+    static $done = false; if ($done) return; $db = portal_pdo();
+    if (!$db->query("SHOW COLUMNS FROM ussd_menu_nodes LIKE 'live_from'")->fetch()) $db->exec('ALTER TABLE ussd_menu_nodes ADD COLUMN live_from DATETIME NULL, ADD COLUMN live_until DATETIME NULL');
+    $def = (string)$db->query("SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ussd_menu_nodes' AND COLUMN_NAME='status'")->fetchColumn();
+    if ($def !== '' && stripos($def, "'scheduled'") === false) $db->exec("ALTER TABLE ussd_menu_nodes MODIFY status ENUM('active','inactive','draft','scheduled') NOT NULL DEFAULT 'draft'");
+    $done = true;
+}
+// Turns on what is due and switches off what is over. Safe to run from several places at once (a second run finds nothing left to do).
+function menu_apply_schedules(?string $now = null): array {
+    menu_schedule_ready(); $db = portal_pdo(); $now = $now ?? date('Y-m-d H:i:s');
+    $q = $db->prepare("SELECT DISTINCT short_code FROM ussd_menu_nodes WHERE (status='scheduled' AND live_from IS NOT NULL AND live_from<=?) OR (status='active' AND live_until IS NOT NULL AND live_until<=?)"); $q->execute([$now, $now]);
+    $codes = array_column($q->fetchAll(), 'short_code'); if (!$codes) return ['on' => 0, 'off' => 0, 'codes' => []];
+    $on = $db->prepare("UPDATE ussd_menu_nodes SET status='active' WHERE status='scheduled' AND live_from IS NOT NULL AND live_from<=?"); $on->execute([$now]);
+    $off = $db->prepare("UPDATE ussd_menu_nodes SET status='inactive' WHERE status='active' AND live_until IS NOT NULL AND live_until<=?"); $off->execute([$now]);
+    $r = ['on' => $on->rowCount(), 'off' => $off->rowCount(), 'codes' => array_values(array_filter($codes, fn($c) => !str_contains((string)$c, ' [archived')))];
+    if ($r['on'] + $r['off'] === 0) return $r;
+    foreach ($r['codes'] as $c) menu_snapshot($c, 'Schedule: '.($r['on'] ? 'items went live' : '').($r['on'] && $r['off'] ? ', ' : '').($r['off'] ? 'items switched off' : ''));
+    try { audit('menu_schedule_applied', null, 'ussd_menu_nodes', null, json_encode($r)); } catch (Throwable $e) {}
+    return $r;
+}
+// The USSD endpoint calls this on every request; the work itself is done at most once every 15 seconds.
+function menu_apply_schedules_tick(): void {
+    try { cached('menu_schedule_tick', 15, fn() => menu_apply_schedules()); } catch (Throwable $e) { error_log('menu schedule: '.$e->getMessage()); }
+}
+// Turns every Draft of a menu into "goes live at $when" (and off at $until, if given). A time already past turns them on now.
+function menu_schedule_drafts(string $code, string $when, ?string $until = null): array {
+    menu_schedule_ready(); $from = menu_parse_when($when) ?? throw new RuntimeException('Pick the time the drafts should go live.'); $until = menu_parse_when((string)$until);
+    [$status, $from, $until] = menu_resolve_schedule('scheduled', $from, $until, date('Y-m-d H:i:s'));
+    $st = portal_pdo()->prepare("UPDATE ussd_menu_nodes SET status=?, live_from=?, live_until=? WHERE short_code=? AND status='draft'"); $st->execute([$status, $from, $until, $code]); $n = $st->rowCount();
+    if ($n) menu_snapshot($code, $n.' draft items '.($status === 'scheduled' ? 'scheduled for '.$from : 'turned on'));
+    return ['count' => $n, 'status' => $status, 'from' => $from, 'until' => $until];
+}
 function save_menu_node(array $data, ?int $id = null, bool $snapshot = true): int {
     $shortCode = trim((string)($data['short_code'] ?? ''));
     $prompt = trim((string)($data['prompt_text'] ?? ''));
@@ -133,9 +186,11 @@ function save_menu_node(array $data, ?int $id = null, bool $snapshot = true): in
     $type = in_array($data['node_type'] ?? '', ['menu','offer','action','end','catalog','recipient','quiz','sharedbundle','flow'], true) ? $data['node_type'] : 'menu';
     $body = in_array($type, ['menu', 'catalog', 'end'], true) ? trim((string)($data['body_text'] ?? '')) : '';
     if (mb_strlen($body) > 400) throw new RuntimeException('Screen text is at most 400 characters (a phone screen holds about 180).');
+    menu_schedule_ready();
+    [$status, $liveFrom, $liveUntil] = menu_resolve_schedule(in_array($data['status'] ?? '', MENU_STATUSES, true) ? (string)$data['status'] : 'draft', menu_parse_when((string)($data['live_from'] ?? '')), menu_parse_when((string)($data['live_until'] ?? '')), date('Y-m-d H:i:s'));
     $fields = [$parentId, $shortCode, (int)($data['display_order'] ?? 0), $prompt, $type,
         normalize_value($data['offer_code'] ?? ''), normalize_value($data['action_key'] ?? ''),
-        in_array($data['status'] ?? '', ['active','inactive','draft'], true) ? $data['status'] : 'draft',
+        $status,
         in_array($type, ['catalog', 'sharedbundle'], true) ? menu_catalog_filter($data['catalog_filter'] ?? '') : null,
         $body !== '' ? $body : null];
     if ($type === 'sharedbundle' && $fields[8] === '') $fields[8] = 'Seddo';
@@ -152,10 +207,10 @@ function save_menu_node(array $data, ?int $id = null, bool $snapshot = true): in
     }
     $db = portal_pdo();
     if ($id) {
-        $db->prepare('UPDATE ussd_menu_nodes SET parent_id=?,short_code=?,display_order=?,prompt_text=?,node_type=?,offer_code=?,action_key=?,status=?,catalog_filter=?,body_text=? WHERE id=?')->execute([...$fields, $id]);
+        $db->prepare('UPDATE ussd_menu_nodes SET parent_id=?,short_code=?,display_order=?,prompt_text=?,node_type=?,offer_code=?,action_key=?,status=?,catalog_filter=?,body_text=?,live_from=?,live_until=? WHERE id=?')->execute([...$fields, $liveFrom, $liveUntil, $id]);
     } else {
         if ($fields[2] === 0) { $mx = $db->prepare('SELECT COALESCE(MAX(display_order),0)+1 FROM ussd_menu_nodes WHERE short_code=? AND parent_id <=> ?'); $mx->execute([$shortCode, $parentId]); $fields[2] = (int)$mx->fetchColumn(); }
-        $db->prepare('INSERT INTO ussd_menu_nodes(parent_id,short_code,display_order,prompt_text,node_type,offer_code,action_key,status,catalog_filter,body_text,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?)')->execute([...$fields, user()['username'] ?? null]);
+        $db->prepare('INSERT INTO ussd_menu_nodes(parent_id,short_code,display_order,prompt_text,node_type,offer_code,action_key,status,catalog_filter,body_text,live_from,live_until,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)')->execute([...$fields, $liveFrom, $liveUntil, user()['username'] ?? null]);
         $id = (int)$db->lastInsertId();
     }
     audit('save_menu_node', null, 'ussd_menu_nodes', (string)$id, json_encode(['short_code'=>$shortCode,'prompt'=>$prompt]));
@@ -178,7 +233,7 @@ function menu_export_tree(string $code): array {
         $out = [];
         foreach ($by[$pid] ?? [] as $n) {
             $x = ['prompt_text' => $n['prompt_text'], 'node_type' => $n['node_type'], 'status' => $n['status'], 'display_order' => (int)$n['display_order']];
-            foreach (['offer_code', 'action_key', 'catalog_filter', 'body_text'] as $k) if (isset($n[$k]) && $n[$k] !== '') $x[$k] = $n[$k];
+            foreach (['offer_code', 'action_key', 'catalog_filter', 'body_text', 'live_from', 'live_until'] as $k) if (isset($n[$k]) && $n[$k] !== '') $x[$k] = $n[$k];
             $c = $build((int)$n['id']); if ($c) $x['children'] = $c; $out[] = $x;
         }
         return $out;
@@ -214,7 +269,7 @@ function menu_set_status(int $id, string $status, bool $branch = false): string 
     if (!in_array($status, ['active', 'inactive', 'draft'], true)) throw new RuntimeException('Unknown status.');
     $n = menu_node($id) ?: throw new RuntimeException('That item is gone.'); $db = portal_pdo(); $ids = [$id];
     if ($branch) { $by = []; foreach (menu_nodes_flat($n['short_code']) as $x) $by[$x['parent_id'] === null ? 0 : (int)$x['parent_id']][] = (int)$x['id']; $stack = [$id]; while ($stack) { $c = array_pop($stack); foreach ($by[$c] ?? [] as $k) { $ids[] = $k; $stack[] = $k; } } }
-    $db->prepare('UPDATE ussd_menu_nodes SET status=? WHERE id IN ('.implode(',', array_map('intval', $ids)).')')->execute([$status]);
+    menu_schedule_ready(); $db->prepare('UPDATE ussd_menu_nodes SET status=?, live_from=NULL, live_until=NULL WHERE id IN ('.implode(',', array_map('intval', $ids)).')')->execute([$status]); // pressing on/off overrides any schedule
     menu_snapshot($n['short_code'], '"'.mb_substr($n['prompt_text'], 0, 50).'" set to '.$status.($branch ? ' (with everything under it)' : ''));
     return $n['short_code'];
 }
@@ -277,7 +332,7 @@ function menu_copy_to(string $from, string $to, bool $confirmReplace): int {
     $to = trim($to); if ($to === '' || $to === $from) throw new RuntimeException('Enter a different short code to copy to.');
     if (menu_nodes_flat($to) && !$confirmReplace) throw new RuntimeException($to.' already has a menu. Tick the box to replace it (the old one is kept, inactive, as an archive).');
     $tree = menu_export_tree($from); if (!$tree) throw new RuntimeException('There is nothing to copy.');
-    $draft = function (array $nodes) use (&$draft): array { foreach ($nodes as &$n) { $n['status'] = 'draft'; if (!empty($n['children'])) $n['children'] = $draft($n['children']); } return $nodes; };
+    $draft = function (array $nodes) use (&$draft): array { foreach ($nodes as &$n) { $n['status'] = 'draft'; unset($n['live_from'], $n['live_until']); if (!empty($n['children'])) $n['children'] = $draft($n['children']); } return $nodes; };
     $r = import_menu_json($to, json_encode($draft($tree)));
     audit('copy_menu', null, 'ussd_menu_nodes', null, $from.' -> '.$to);
     return $r['nodes'];
@@ -293,6 +348,9 @@ function menu_health(string $code): array {
     if (!array_filter($kids[0] ?? [], $isActive)) $add('error', null, 'Nothing is Active, so customers hear "No menu is set up" for this code.');
     if ($drafts) $add('warn', null, $drafts.' item'.($drafts > 1 ? 's are' : ' is').' still Draft — customers do not see '.($drafts > 1 ? 'them' : 'it').' until set Active (use "Activate all drafts").');
     if ($offs) $add('info', null, $offs.' item'.($offs > 1 ? 's are' : ' is').' switched off.');
+    $sched = array_values(array_filter($flat, fn($n) => $n['status'] === 'scheduled')); $ending = array_values(array_filter($flat, fn($n) => $n['status'] === 'active' && !empty($n['live_until'])));
+    if ($sched) { $first = min(array_column($sched, 'live_from')); $add('info', null, count($sched).' item'.(count($sched) > 1 ? 's are' : ' is').' scheduled to go live by themselves — the first on '.$first.' (the portal\'s clock, UTC). Nothing to do on the day.'); }
+    if ($ending) { $soon = min(array_column($ending, 'live_until')); $add('info', null, count($ending).' live item'.(count($ending) > 1 ? 's' : '').' will switch off by themselves — the first on '.$soon.'.'); }
     $cfg = ussd_proxy_config();
     if (!($cfg['enabled'] === '1' && $cfg['mode'] === 'live' && $cfg['push_enabled'] === '1')) $add('warn', null, 'The USSD Proxy is not fully live (endpoint on, Live mode, answering through Mobius) — phones will not get this menu yet.');
     $walked = 0; $siblingsSeen = [];
@@ -378,26 +436,27 @@ function import_menu_json(string $shortCode, string $json): array {
             if (++$count > 150) throw new RuntimeException('At most 150 nodes per import.');
             $prompt = trim((string)($n['prompt_text'] ?? '')); if ($prompt === '' || mb_strlen($prompt) > 300) throw new RuntimeException('Every node needs prompt_text (up to 300 characters).');
             $type = (string)($n['node_type'] ?? 'menu'); if (!in_array($type, ['menu', 'offer', 'action', 'end', 'catalog', 'recipient', 'quiz', 'sharedbundle', 'flow'], true)) throw new RuntimeException('"'.$type.'" is not a node type.');
-            $status = (string)($n['status'] ?? 'draft'); if (!in_array($status, ['active', 'inactive', 'draft'], true)) throw new RuntimeException('"'.$status.'" is not a status.');
+            $status = (string)($n['status'] ?? 'draft'); if (!in_array($status, MENU_STATUSES, true)) throw new RuntimeException('"'.$status.'" is not a status.');
+            [$status, $lFrom, $lUntil] = menu_resolve_schedule($status, menu_parse_when((string)($n['live_from'] ?? '')), menu_parse_when((string)($n['live_until'] ?? '')), date('Y-m-d H:i:s'));
             $filter = in_array($type, ['catalog', 'sharedbundle'], true) ? menu_catalog_filter($n['catalog_filter'] ?? '') : null;
             if ($type === 'sharedbundle' && $filter === '') $filter = 'Seddo';
             if ($type === 'catalog' && $filter === '') throw new RuntimeException('"'.$prompt.'": a catalogue list needs catalog_filter (its sub-categories).');
             $bodyTxt = in_array($type, ['menu', 'catalog', 'end'], true) ? trim((string)($n['body_text'] ?? '')) : '';
             $key = count($flat); $flat[$key] = ['parent' => $parent, 'order' => (int)($n['display_order'] ?? ($i + 1)), 'prompt' => $prompt, 'type' => $type, 'body' => $bodyTxt !== '' ? mb_substr($bodyTxt, 0, 400) : null,
-                'offer' => mb_substr(trim((string)($n['offer_code'] ?? '')), 0, 80) ?: null, 'action' => mb_substr(trim((string)($n['action_key'] ?? '')), 0, 80) ?: null, 'status' => $status, 'filter' => $filter];
+                'offer' => mb_substr(trim((string)($n['offer_code'] ?? '')), 0, 80) ?: null, 'action' => mb_substr(trim((string)($n['action_key'] ?? '')), 0, 80) ?: null, 'status' => $status, 'filter' => $filter, 'from' => $lFrom, 'until' => $lUntil];
             if (!empty($n['children'])) { if (!is_array($n['children'])) throw new RuntimeException('children must be a list.'); $walk($n['children'], $key, $depth + 1); }
         }
     };
     $walk($tree, null, 1);
-    flow_tables(); menu_versions_table();
+    flow_tables(); menu_versions_table(); menu_schedule_ready();
     $db = portal_pdo(); $db->beginTransaction();
     try {
         $archived = $db->prepare("UPDATE ussd_menu_nodes SET short_code=CONCAT(short_code,' [archived ',DATE_FORMAT(NOW(),'%m-%d %H:%i'),']'), status='inactive' WHERE short_code=?");
         $archived->execute([$shortCode]); $old = $archived->rowCount();
-        $ins = $db->prepare('INSERT INTO ussd_menu_nodes(parent_id,short_code,display_order,prompt_text,node_type,offer_code,action_key,status,catalog_filter,body_text,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?)');
+        $ins = $db->prepare('INSERT INTO ussd_menu_nodes(parent_id,short_code,display_order,prompt_text,node_type,offer_code,action_key,status,catalog_filter,body_text,live_from,live_until,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)');
         $ids = [];
         foreach ($flat as $k => $n) {
-            $ins->execute([$n['parent'] === null ? null : $ids[$n['parent']], $shortCode, $n['order'], $n['prompt'], $n['type'], $n['offer'], $n['action'], $n['status'], $n['filter'], $n['body'], user()['username'] ?? null]);
+            $ins->execute([$n['parent'] === null ? null : $ids[$n['parent']], $shortCode, $n['order'], $n['prompt'], $n['type'], $n['offer'], $n['action'], $n['status'], $n['filter'], $n['body'], $n['from'], $n['until'], user()['username'] ?? null]);
             $ids[$k] = (int)$db->lastInsertId();
         }
         $db->commit();
