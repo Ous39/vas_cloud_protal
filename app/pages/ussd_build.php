@@ -50,7 +50,7 @@ declare(strict_types=1);
     if ($at && (!isset($byId[$at]) || $byId[$at]['node_type'] !== 'menu')) $at = 0;
     $cont = $at ?: ($welcome ? (int)$welcome['id'] : 0);               // where new blocks are added
     $digits = ($at && isset($visById[$at])) ? ussd_path_to($visById[$at], $visKids, $visById, $welcome) : [];
-    $phone = $flat ? ussd_screen($code, $digits ?? [], ['active', 'draft', 'scheduled'], null, ['seed' => 'build']) : null;
+    $phone = $flat ? ussd_screen($code, $digits ?? [], ['active', 'draft', 'scheduled'], null, ['seed' => 'build', 'share' => 'ussd_share_sim', 'msisdn' => '2200000000', 'flow_sim' => 'success']) : null;
     $options = $kids[$cont] ?? [];                                      // every item on this screen, whatever its state
     $shown = $visKids[$cont] ?? [];                                     // what the phone numbers 1, 2, 3 …
     $crumbs = []; for ($x = $cont ?: null, $g = 0; $x && $g < 8; $g++) { array_unshift($crumbs, $byId[$x]); $x = $byId[$x]['parent_id'] !== null ? (int)$byId[$x]['parent_id'] : null; }
