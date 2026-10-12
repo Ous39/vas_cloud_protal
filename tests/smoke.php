@@ -99,7 +99,8 @@ t('every page opens without a PHP error', function () use ($pages, $admin, $PHP_
         $r = $admin['go']('index.php?page='.$p); ok($r['code'] === 200, "page $p answers 200 (got {$r['code']})");
         ok(!preg_match($PHP_ERR, $r['body'], $mm), "page $p shows no PHP or SQL error".(isset($mm[0]) ? ' — found "'.$mm[0].'" in: '.mb_substr($text($r['body']), 0, 200) : ''));
         ok(str_contains($r['body'], '</html>'), "page $p is a whole page");
-        if (str_contains($r['body'], 'Something went wrong')) $odd[] = $p;
+        if (str_contains($r['body'], 'Something went wrong')) { $odd[] = $p; if (getenv('SMOKE_DEBUG')) echo '        [debug '.$p.'] '.mb_substr($text($r["body"]), strpos($text($r["body"]), "Something went wrong") - 300, 700)."
+"; }
     }
     echo '        ('.count($pages).' pages opened'.($odd ? '; refused with a message here, which is expected without Hera data: '.implode(', ', $odd) : '').")\n";
 });
@@ -115,6 +116,14 @@ t('a menu is created through the Menus page', function () use ($admin, $text) {
     $e = $admin['go']('index.php?page=ussd_menu&short_code='.urlencode('*8861#')); has($text($e['body']), 'Menu check', 'and the Builder opens it');
     $when = date('Y-m-d\TH:i', time() + 86400); $sp = $admin['go']('index.php?page=ussd_menu&short_code='.urlencode('*8861#')); $sc = $admin['go']('index.php?page=ussd_menu', ['csrf' => $admin['csrf']($sp['body']), 'do' => 'schedule_drafts', 'short_code' => '*8861#', 'live_from' => $when, 'live_until' => '']);
     has($text($sc['body']), 'scheduled', 'scheduling the drafts is acknowledged'); has($text($sc['body']), 'goes live', 'and the tree shows when each item goes live'); has($text($admin['go']('index.php?page=ussd_menus')['body']), 'scheduled', 'the Menus list shows the scheduled items');
+});
+t('the Easy Builder: blocks are added as drafts, shown on the phone, and published', function () use ($admin, $text) {
+    $u = 'index.php?page=ussd_build&short_code='.urlencode('*8861#'); $p = $admin['go']($u); has($text($p['body']), 'Add to this screen', 'the page opens'); has($text($p['body']), 'Ask &amp; call a service', 'with its blocks');
+    has($text($admin['go']($u.'&add=message')['body']), 'The message customers read', 'a block opens its small form');
+    $r = $admin['go']('index.php?page=ussd_build', ['csrf' => $admin['csrf']($p['body']), 'do' => 'add_block', 'short_code' => '*8861#', 'at' => 0, 'block' => 'message', 'parent_id' => '', 'b' => ['label' => 'How it works', 'body' => 'Dial and press 1.']]);
+    has($text($r['body']), 'Added a message as a draft', 'adding says so'); has($text($r['body']), 'How it works', 'and it shows on the screen'); has($text($r['body']), 'Publish now', 'with a Publish button for what is new');
+    $bad = $admin['go']('index.php?page=ussd_build', ['csrf' => $admin['csrf']($r['body']), 'do' => 'add_block', 'short_code' => '*8861#', 'at' => 0, 'block' => 'message', 'parent_id' => '', 'b' => ['label' => 'No text']]); has($text($bad['body']), 'Type the message', 'a block with a gap is refused in plain words');
+    $pub = $admin['go']('index.php?page=ussd_build', ['csrf' => $admin['csrf']($r['body']), 'do' => 'publish', 'short_code' => '*8861#', 'at' => 0]); has($text($pub['body']), 'published', 'publishing says so'); lacks($text($pub['body']), 'Publish now', 'and nothing new is left waiting');
 });
 t('refunds: preview shows the exact request, a test send is recorded', function () use ($admin, $text, $db) {
     ussd_proxy_set(['refund_mode' => 'test', 'refund_url' => 'https://h.example/x']); $p = $admin['go']('index.php?page=refunds'); has($text($p['body']), 'Test mode', 'the page says refunds are in test mode');

@@ -58,6 +58,20 @@ function menu_direct_codes(string $code): array {
     };
     $walk($top, []); return $out;
 }
+// The digits a customer would press from the main menu to reach one screen (null when it cannot be reached: switched off, or inside a list that builds itself).
+function ussd_path_to(array $target, array $kids, array $byId, ?array $welcome): ?array {
+    $chain = []; $x = $target;
+    for ($g = 0; $x && $g < 12; $g++) { array_unshift($chain, $x); $pid = $x['parent_id']; if ($pid === null) break; $x = $byId[(int)$pid] ?? null; if (!$x) return null; }
+    if ($welcome && $chain && (int)$chain[0]['id'] === (int)$welcome['id']) array_shift($chain);
+    $digits = [];
+    foreach ($chain as $c) {
+        $sibs = $kids[$c['parent_id'] === null ? 0 : (int)$c['parent_id']] ?? []; $at = null;
+        foreach ($sibs as $i => $s) if ((int)$s['id'] === (int)$c['id']) { $at = $i + 1; break; }
+        if ($at === null) return null;
+        $digits[] = (string)$at;
+    }
+    return $digits;
+}
 // A number as a customer reads it on a phone screen: without the 220 country code.
 function ussd_local_number(string $n): string {
     $d = preg_replace('/\D+/', '', $n);
@@ -76,7 +90,7 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
     $offerLookup = $hooks['offer'] ?? 'ussd_offer_lookup'; $catalogLookup = $hooks['catalog'] ?? 'ussd_catalog_offers';
     $nodes = array_values(array_filter($nodes, fn($n) => in_array($n['status'], $statuses, true)));
     $kids = [];
-    foreach ($nodes as $n) $kids[$n['parent_id'] === null ? 0 : (int)$n['parent_id']][] = $n;
+    $byId = []; foreach ($nodes as $n) { $kids[$n['parent_id'] === null ? 0 : (int)$n['parent_id']][] = $n; $byId[(int)$n['id']] = $n; }
     if (!$nodes) return ussd_result('No menu is set up for '.$shortCode.' yet.', true, [], 'empty');
     // A single root "menu" node acts as the welcome screen (its text is the header, its children the options);
     // otherwise the root nodes themselves are the options under a plain header.
@@ -219,6 +233,14 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
         if ($more && $r === (string)(USSD_PAGE_SIZE + 1)) { $page++; $note = null; continue; }
         if (!ctype_digit($r) || (int)$r < 1 || (int)$r > count($options)) { $note = 'Invalid choice.'; continue; }
         $pick = $options[(int)$r - 1]; $path[] = (int)$r; $note = null;
+        // a "go to" item: carry on from another screen, as if the customer had pressed the digits that lead there (what they type next goes on from that screen)
+        if ($pick['node_type'] === 'goto') {
+            $tg = trim((string)$pick['offer_code']); $hops = (int)($hooks['_goto'] ?? 0); $dest = null;
+            if ($tg === '@top') $dest = [];
+            else foreach ($nodes as $x) if ((string)($x['ref'] ?? '') === $tg) { $dest = ussd_path_to($x, $kids, $byId, $cur); break; }
+            if ($dest === null || $hops >= 3) { array_pop($path); $note = 'This option is not available right now.'; continue; }
+            return ussd_screen($shortCode, array_merge($dest, array_slice($replies, $ix + 1)), $statuses, $nodes, ['_goto' => $hops + 1] + $hooks);
+        }
         if (($pick['node_type'] === 'menu' && !empty($kids[(int)$pick['id']])) || in_array($pick['node_type'], ['catalog', 'recipient', 'quiz', 'sharedbundle'], true)) { $cur = $pick; $trail[] = $cur; $page = 0; if ($pick['node_type'] === 'quiz') $quiz = $quizNew($pick); if ($pick['node_type'] === 'sharedbundle') $sb = $sbNew(); continue; }
         // an Action item whose flow is ready (Live for customers; in the Simulator whatever its mode) is opened as that flow
         if ($pick['node_type'] === 'action') { $ak = ussd_action_flow_key($pick); $afl = $ak !== '' ? flow_get($ak) : null; if ($afl && $afl['status'] === 'active' && ($afl['mode'] === 'live' || isset($hooks['flow_sim']))) { $pick['node_type'] = 'flow'; $pick['offer_code'] = $ak; } }

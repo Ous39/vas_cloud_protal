@@ -8,7 +8,7 @@ function nav_can_see(string $page): bool {
     if ($page==='sql') return can('run_sql');
     if ($page==='users') return can('manage_users');
     if ($page==='audit') return can('view_audit');
-    if ($page==='ussd_sim' || $page==='ussd_quiz' || $page==='ussd_flows') return can('manage_ussd_menus');
+    if ($page==='ussd_sim' || $page==='ussd_quiz' || $page==='ussd_flows' || $page==='ussd_build') return can('manage_ussd_menus');
     if ($page==='ussd_proxy') return can('manage_api_keys');
     if ($page==='api_keys') return can('manage_api_keys');
     if ($page==='promotions') return can('manage_promotions');
@@ -23,7 +23,7 @@ function nav_can_see(string $page): bool {
 
 // The tab bar every USSD page shows under its title, so Menus, Flows, Simulator, Proxy, Short Codes and Routing read as one platform.
 function ussd_subnav(string $current): void {
-    $tabs = [['ussd_menus','fa-list','Menus'],['ussd_menu','fa-sitemap','Builder'],['ussd_flows','fa-diagram-project','Service Flows'],['ussd_quiz','fa-circle-question','Quiz'],['ussd_sim','fa-mobile-screen','Simulator'],['ussd_proxy','fa-plug','Proxy'],['shortcodes','fa-hashtag','Short Codes'],['ussd_ivr','fa-route','Routing & IVR'],['refunds','fa-rotate-left','Refunds']];
+    $tabs = [['ussd_menus','fa-list','Menus'],['ussd_build','fa-wand-magic-sparkles','Easy Builder'],['ussd_menu','fa-sitemap','Advanced'],['ussd_flows','fa-diagram-project','Service Flows'],['ussd_quiz','fa-circle-question','Quiz'],['ussd_sim','fa-mobile-screen','Simulator'],['ussd_proxy','fa-plug','Proxy'],['shortcodes','fa-hashtag','Short Codes'],['ussd_ivr','fa-route','Routing & IVR'],['refunds','fa-rotate-left','Refunds']];
     echo '<ul class="nav nav-pills ussd-subnav mb-3">';
     foreach ($tabs as [$p,$ic,$lb]) { if (!nav_can_see($p)) continue; echo '<li class="nav-item"><a class="nav-link'.($p===$current?' active':'').'" href="?page='.$p.'"><i class="fa-solid '.$ic.' me-1"></i>'.e($lb).'</a></li>'; }
     echo '</ul>';
@@ -35,7 +35,7 @@ function layout_start(string $title): void {
         ['dashboard','fa-gauge','Dashboard'],
         ['monitoring','fa-heart-pulse','Monitoring'],
         ['group','fa-layer-group','Operations',[['refunds','fa-rotate-left','Refunds'],['subscriptions','fa-user-check','Subscriptions'],['offers','fa-tags','Offer Management'],['offer_health','fa-stethoscope','Offer Health'],['esim','fa-sim-card','eSIM Profiles'],['sales','fa-file-invoice-dollar','Sales & Invoices'],['friends_family','fa-user-group','Friends & Family'],['voting','fa-square-poll-vertical','Voting Service']]],
-        ['group','fa-tower-broadcast','Infrastructure',[['ussd_ivr','fa-mobile-screen-button','USSD & IVR'],['ussd_menus','fa-list','USSD Menus'],['ussd_menu','fa-sitemap','USSD Menu Builder'],['ussd_sim','fa-mobile-screen','USSD Simulator'],['ussd_quiz','fa-circle-question','USSD Quiz'],['ussd_flows','fa-diagram-project','Service Flows'],['ussd_proxy','fa-plug','USSD Proxy'],['integrations','fa-plug-circle-check','Integrations']]],
+        ['group','fa-tower-broadcast','Infrastructure',[['ussd_ivr','fa-mobile-screen-button','USSD & IVR'],['ussd_menus','fa-list','USSD Menus'],['ussd_build','fa-wand-magic-sparkles','Easy Builder'],['ussd_menu','fa-sitemap','USSD Menu Builder'],['ussd_sim','fa-mobile-screen','USSD Simulator'],['ussd_quiz','fa-circle-question','USSD Quiz'],['ussd_flows','fa-diagram-project','Service Flows'],['ussd_proxy','fa-plug','USSD Proxy'],['integrations','fa-plug-circle-check','Integrations']]],
         ['group','fa-chart-line','Reports',[['investigate','fa-headset','Complaint Investigation'],['timeline','fa-timeline','Customer Timeline'],['alerts','fa-triangle-exclamation','Alerts'],['offer_report','fa-bullhorn','Offer Performance'],['reports','fa-chart-line','Reports'],['sql','fa-code','SQL Console']]],
         ['group','fa-gears','Admin',[['tables','fa-database','Database Tables'],['promotions','fa-bullhorn','Promotions'],['projects','fa-diagram-project','Projects'],['shortcodes','fa-hashtag','Short Codes'],['api_keys','fa-key','Partner API Keys'],['alert_settings','fa-bell','Alert Settings'],['retention','fa-database','Data Retention'],['status','fa-server','System Status'],['audit','fa-shield-halved','Audit Trail'],['users','fa-users-gear','Users']]],
     ];

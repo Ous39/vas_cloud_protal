@@ -12,6 +12,26 @@ The next screen is a **setup checklist** with the exact values to type in **Mobi
 
 **Mobius, from the same page.** Press **Check Mobius** (admins with the settings permission): the portal reads Mobius' own list of menus (the same list as Mobius → USSD Shortcodes) and adds an **In Mobius** column — *in Mobius* (it calls this portal), *points elsewhere* (a menu with that short code exists but belongs to something else) or *not in Mobius*, with a **Create** button that makes the PROXY menu there for you, copying the address and destinations from the menu that already calls this portal. The ✎ button on a row changes the **name and short code** (and, for a menu that is in Mobius, *Extendable*) in the portal and, if you leave the box ticked, in Mobius too. Safety rules: the portal only ever changes a Mobius menu whose address is this portal's own; the other menus of the operator (airtime recharge, data usage…) are listed read-only; nothing is ever deleted from here; and every change is in the audit trail. If Mobius refuses something, its message is shown.
 
+## The easiest way: the Easy Builder (Infrastructure → Easy Builder)
+
+Pick a short code. You see a **phone** on the left showing the screen you are building (drafts included, so you can check before customers can). **Click a line on the phone** to go into that menu; **0. Back** goes up.
+
+On the right, **On this screen** lists what is on the screen you are on (move up/down, go inside, edit, turn on/off), and **Add to this screen** has the blocks:
+
+| Block | What it makes |
+|---|---|
+| **Message** | Shows some text and ends the session |
+| **Menu** | A list of more options (you step inside it to fill it) |
+| **List of offers** | Offers from the catalogue, kept up to date by themselves — tick the groups |
+| **Sell an offer** | One bundle, with the 1. Confirm / 2. Cancel step before anything is bought |
+| **Ask & call a service** | Ask for a number (or digits, or text), optionally ask to confirm, call a service, show the result or say it worked / balance too low / failed. It builds the whole service for you, in **test mode** (simulated answers) until you press **Go live** |
+| **Go to** | A shortcut to another screen, or back to the start. What the customer types next carries on from there |
+| More blocks | Check balance, Buy for another number, Shared Bundle, Quiz, a service you already built |
+
+Everything you add is a **draft** — customers cannot see it. When you are happy, press **Publish now**, or **Publish at this time** to let it go live by itself (see *Schedule a change*). The bar also shows what the **Menu check** found, with a *fix* link. Editing an item that is already live changes it for customers straight away.
+
+The old Builder is still there as **Advanced** for long lists (Quick add), copy, import/export and History.
+
 ## The 5-minute way (in the Builder)
 
 1. **Pick the short code** at the top (or type a new one, e.g. `*123#`, and press *Switch / Start*).

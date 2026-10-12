@@ -678,6 +678,58 @@ t('scheduled items: they wait, go live on their own, and switch off on their own
     $db->exec("DELETE FROM ussd_menu_nodes WHERE short_code LIKE '*ZT15#%' OR short_code LIKE '*ZT16#%'"); $db->exec("DELETE FROM ussd_menu_versions WHERE short_code LIKE '*ZT15#%' OR short_code LIKE '*ZT16#%'");
 });
 
+t('go to: a menu item can jump to another screen, and keeps working after a copy or a restore', function () use ($db) {
+    $db->exec("DELETE FROM ussd_menu_nodes WHERE short_code IN ('*ZT17#','*ZT18#')");
+    $mk = fn(array $d) => save_menu_node($d + ['short_code' => '*ZT17#', 'status' => 'active']);
+    $b = $mk(['prompt_text' => 'Bundles', 'node_type' => 'menu']); $news = $mk(['prompt_text' => 'News', 'node_type' => 'end', 'body_text' => 'News body']);
+    $mk(['prompt_text' => 'Help', 'node_type' => 'end', 'body_text' => 'Help body']); $mk(['prompt_text' => 'Hello', 'node_type' => 'end', 'body_text' => 'Hello body', 'parent_id' => $b]);
+    $home = $mk(['prompt_text' => 'Main menu', 'node_type' => 'goto', 'goto_target' => '@top', 'parent_id' => $b]);
+    $jump = $mk(['prompt_text' => 'Read the news', 'node_type' => 'goto', 'goto_target' => (string)$news, 'parent_id' => $b]);
+    eq(menu_node($home)['offer_code'], '@top', 'the main menu is stored as @top'); $ref = menu_node($jump)['offer_code']; ok(preg_match('/^[0-9a-f]{8}$/', $ref) === 1, 'the news is stored by a stable ref, not a row number'); eq(menu_node($news)['ref'], $ref, 'the target carries that ref');
+    has(screen('*ZT17#', ['1'])['text'], 'Read the news', 'the jump item shows as a normal option');
+    $r = screen('*ZT17#', ['1', '3']); eq([$r['end'], $r['text']], [true, 'News body'], 'pressing it lands on the news screen');
+    $r = screen('*ZT17#', ['1', '2']); has($r['text'], 'Bundles', 'jumping to the main menu shows the first screen again'); has($r['text'], 'News', 'with its options'); eq($r['end'], false, 'and the call goes on');
+    $r = screen('*ZT17#', ['1', '2', '2']); eq($r['text'], 'News body', 'what is typed next carries on from the screen it jumped to');
+    $r = screen('*ZT17#', ['1', '3', '9']); ok(!$r['end'] || $r['text'] !== '', 'extra input after a message is harmless');
+    // copy / export / import keep the link
+    $exp = menu_export_tree('*ZT17#'); import_menu_json('*ZT18#', json_encode($exp)); $r = screen('*ZT18#', ['1', '3']); eq($r['text'], 'News body', 'an import (History restore) keeps the jump working');
+    menu_copy_to('*ZT17#', '*ZT18#', true); menu_activate_drafts('*ZT18#'); $r = screen('*ZT18#', ['1', '3']); eq($r['text'], 'News body', 'a copy to another short code keeps it too');
+    // refused
+    thrown(fn() => save_menu_node(['short_code' => '*ZT17#', 'prompt_text' => 'Self', 'node_type' => 'goto', 'goto_target' => (string)$jump, 'parent_id' => $b, 'status' => 'active'], $jump), 'itself', 'cannot jump to itself');
+    thrown(fn() => $mk(['prompt_text' => 'Chain', 'node_type' => 'goto', 'goto_target' => (string)$home, 'parent_id' => $b]), 'real screen', 'cannot jump to another jump');
+    thrown(fn() => $mk(['prompt_text' => 'Nowhere', 'node_type' => 'goto', 'goto_target' => '', 'parent_id' => $b]), 'Choose the screen', 'needs a target');
+    thrown(fn() => $mk(['prompt_text' => 'Gone', 'node_type' => 'goto', 'goto_target' => '99999999', 'parent_id' => $b]), 'gone', 'target must exist');
+    // target off: the customer is told, stays where they were, and the check says why
+    menu_set_status($news, 'inactive'); $r = screen('*ZT17#', ['1', '3']); has($r['text'], 'not available', 'a switched-off target says so'); has($r['text'], 'Hello', 'and stays on the same screen'); eq($r['end'], false, 'without ending the call');
+    has(implode(' ', array_column(menu_health('*ZT17#'), 'msg')), 'not Active', 'the Menu check names it');
+    portal_pdo()->prepare('DELETE FROM ussd_menu_nodes WHERE id=?')->execute([$news]); has(implode(' ', array_column(menu_health('*ZT17#'), 'msg')), 'no longer exists', 'and when the target is deleted');
+    $db->exec("DELETE FROM ussd_menu_nodes WHERE short_code LIKE '*ZT17#%' OR short_code LIKE '*ZT18#%'"); $db->exec("DELETE FROM ussd_menu_versions WHERE short_code LIKE '*ZT17#%' OR short_code LIKE '*ZT18#%'");
+});
+
+t('Easy Builder blocks: each makes a draft that only shows after publishing; the service block makes a whole flow in test mode', function () use ($db) {
+    $db->exec("DELETE FROM ussd_menu_nodes WHERE short_code='*ZT19#'"); $db->exec("DELETE FROM ussd_flows WHERE flow_key LIKE 'w_zt%'"); $db->exec("DELETE FROM ussd_connections WHERE conn_key='zt_conn'");
+    $db->prepare('INSERT INTO ussd_connections(conn_key,title,base_url,headers_enc,ok_code,lowbal,timeout) VALUES(?,?,?,?,?,?,?)')->execute(['zt_conn', 'ZT connection', 'http://127.0.0.1:1/', null, '0', 'insufficient', 3]);
+    [$sub] = menu_build_block('*ZT19#', null, 'menu', ['label' => 'Services', 'body' => 'Pick one:']); eq(menu_node($sub)['status'], 'draft', 'a new block is a draft');
+    lacks(screen('*ZT19#', [])['text'], 'Services', 'customers do not see a draft');
+    [$m] = menu_build_block('*ZT19#', $sub, 'message', ['label' => 'About', 'body' => 'We are Comium.']); eq([menu_node($m)['node_type'], menu_node($m)['body_text']], ['end', 'We are Comium.'], 'a message block');
+    thrown(fn() => menu_build_block('*ZT19#', $sub, 'message', ['label' => 'No text']), 'Type the message', 'a message needs its text');
+    thrown(fn() => menu_build_block('*ZT19#', $sub, 'list', ['label' => 'Empty list']), 'Tick at least one', 'a list needs a group of offers');
+    [$l] = menu_build_block('*ZT19#', $sub, 'list', ['label' => 'ZT bundles', 'subs' => ['ZT Cat A']]); eq(menu_node($l)['catalog_filter'], 'ZT Cat A', 'a list block keeps its groups');
+    [$o] = menu_build_block('*ZT19#', $sub, 'offer', ['offer_code' => 'ZT001']); eq(menu_node($o)['prompt_text'], 'ZT Alpha', 'an offer block is named after the offer');
+    [$g] = menu_build_block('*ZT19#', $sub, 'goto', ['label' => 'Home', 'target' => '@top']); eq(menu_node($g)['offer_code'], '@top', 'a go-to block');
+    [$bal] = menu_build_block('*ZT19#', $sub, 'balance', ['label' => 'Balance']); eq(menu_node($bal)['offer_code'], 'check_balance', 'a balance block uses the check_balance service'); ok(flow_get('check_balance') !== null, 'and creates it when missing');
+    thrown(fn() => menu_build_block('*ZT19#', $sub, 'service', ['label' => 'ZT Top up', 'connection' => 'nope']), 'Choose which service', 'a service needs a real connection');
+    [$sv] = menu_build_block('*ZT19#', $sub, 'service', ['label' => 'ZT Top up', 'what' => 'act', 'ask' => 'phone', 'ask_text' => 'Who?', 'confirm' => '1', 'connection' => 'zt_conn', 'path' => 'do', 'ok_text' => 'Sent to {number_local}']);
+    $fk = menu_node($sv)['offer_code']; $fl = flow_get($fk); eq($fl['mode'], 'test', 'the service starts in test mode'); eq($fl['def']['start'], 'ask', 'it starts by asking');
+    eq([$fl['def']['steps']['ask']['next'], $fl['def']['steps']['sure']['yes'], $fl['def']['steps']['do']['type']], ['sure', 'do', 'call'], 'ask, then confirm, then call');
+    eq($fl['def']['steps']['do']['outcomes'], ['success' => 'ok', 'lowbal' => 'low', 'fail' => 'bad'], 'with the three outcomes'); has($fl['def']['steps']['do']['body'], '{number_local}', 'and a body that carries the number');
+    ok(!array_filter(flow_validate($fl['def']), fn($x) => $x['level'] === 'error'), 'the generated flow has nothing to fix');
+    [$sv2] = menu_build_block('*ZT19#', $sub, 'service', ['label' => 'ZT Top up', 'what' => 'show', 'connection' => 'zt_conn', 'path' => 'bal', 'ok_text' => 'Balance D{result}']); ok(menu_node($sv2)['offer_code'] !== $fk, 'a second service with the same name gets its own key');
+    eq(flow_get(menu_node($sv2)['offer_code'])['def']['steps']['do']['type'], 'lookup', 'information services read and show');
+    menu_activate_drafts('*ZT19#'); $r = screen('*ZT19#', []); has($r['text'], 'About', 'after publishing customers see the menu');
+    $db->exec("DELETE FROM ussd_menu_nodes WHERE short_code='*ZT19#'"); $db->exec("DELETE FROM ussd_flows WHERE flow_key LIKE 'w_zt%'"); $db->exec("DELETE FROM ussd_connections WHERE conn_key='zt_conn'"); $db->exec("DELETE FROM ussd_menu_versions WHERE short_code='*ZT19#'");
+});
+
 // ------------------------------------------------------------------ summary
 $cleanup();
 echo "\n".($fail === 0 ? "ALL PASSED" : "FAILED")."  —  $pass tests ok".($fail ? ", $fail check(s) failed:\n  - ".implode("\n  - ", array_slice($failures, 0, 40)) : '')."\n";

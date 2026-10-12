@@ -483,3 +483,35 @@ function flow_template_connections(string $tpl): void {
     portal_pdo()->prepare('INSERT IGNORE INTO ussd_connections(conn_key,title,base_url,headers_enc,ok_code,lowbal,timeout) VALUES(?,?,?,?,?,?,?)')
         ->execute(['sharebundle', 'Hera ShareBundle', $c['share_base'], $c['purchase_auth'] !== '' ? $c['purchase_auth'] : null, $c['share_ok_code'], $c['purchase_lowbal'] ?: 'insufficient,low balance,not enough', 8]);
 }
+
+// ---- The Easy Builder's "ask / call a service" block: a few plain answers become a complete flow --------------------------
+// $d: label, what (show = read something and show it | act = do something and report the outcome), ask (none|phone|digits|text), ask_text,
+// confirm (0|1), confirm_text, connection, path, body, ok_text, low_text, bad_text. Returns the finished flow definition.
+function flow_wizard_def(array $d): array {
+    $t = fn(string $k, int $max = 300) => mb_substr(trim((string)($d[$k] ?? '')), 0, $max);
+    $conn = trim((string)($d['connection'] ?? '')); if ($conn === '' || !flow_connection($conn)) throw new RuntimeException('Choose which service to call (add it first under Service Flows → Connections).');
+    $what = ($d['what'] ?? '') === 'act' ? 'act' : 'show'; $ask = in_array($d['ask'] ?? '', ['phone', 'digits', 'text'], true) ? $d['ask'] : 'none';
+    $var = $ask === 'phone' ? 'number' : 'input'; $body = trim((string)($d['body'] ?? ''));
+    if ($body === '') $body = '{"msisdn":"{msisdn_local}"'.($ask === 'phone' ? ',"other":"{number_local}"' : ($ask !== 'none' ? ',"input":"{input}"' : '')).'}';
+    if (mb_strlen($body) > 2000) throw new RuntimeException('The request is too long.');
+    $steps = []; $first = 'do'; $confirm = !empty($d['confirm']);
+    if ($confirm) { $steps['sure'] = ['type' => 'confirm', 'text' => $t('confirm_text') ?: 'Please confirm. Press 1 to continue or 0 to go back.', 'yes' => 'do', 'no' => '@exit']; $first = 'sure'; }
+    if ($ask !== 'none') { $steps['ask'] = ['type' => 'ask', 'text' => $t('ask_text') ?: ($ask === 'phone' ? 'Enter the phone number:' : 'Enter the number:'), 'kind' => $ask, 'var' => $var, 'next' => $first]; $first = 'ask'; }
+    if ($what === 'show') {
+        $steps['do'] = ['type' => 'lookup', 'text' => $t('ok_text') ?: '{reply_text}', 'connection' => $conn, 'path' => $t('path', 200), 'body' => $body];
+    } else {
+        $steps['do'] = ['type' => 'call', 'connection' => $conn, 'path' => $t('path', 200), 'body' => $body, 'outcomes' => ['success' => 'ok', 'lowbal' => 'low', 'fail' => 'bad']];
+        $steps['ok'] = ['type' => 'message', 'text' => $t('ok_text') ?: 'Done. Thank you.'];
+        $steps['low'] = ['type' => 'message', 'text' => $t('low_text') ?: 'Sorry, your balance is too low. Please top up and try again.'];
+        $steps['bad'] = ['type' => 'message', 'text' => $t('bad_text') ?: 'Sorry, this could not be completed. Please try again later.'];
+    }
+    return ['start' => $first, 'steps' => $steps, 'wizard' => array_intersect_key($d, array_flip(['label', 'what', 'ask', 'ask_text', 'confirm', 'confirm_text', 'connection', 'path', 'body', 'ok_text', 'low_text', 'bad_text']))];
+}
+// Makes the flow (in TEST mode, so nothing real is sent until someone goes live) and returns its key.
+function flow_wizard_create(array $d): string {
+    flow_tables(); $label = trim((string)($d['label'] ?? '')); if ($label === '') throw new RuntimeException('Give it a name.');
+    $def = flow_wizard_def($d); $db = portal_pdo(); $base = 'w_'.(trim(preg_replace('/[^a-z0-9]+/', '_', strtolower($label)), '_') ?: 'service'); $base = substr($base, 0, 30);
+    $key = $base; for ($i = 2; flow_get($key); $i++) $key = substr($base, 0, 30 - strlen((string)$i) - 1).'_'.$i;
+    save_flow(['flow_key' => $key, 'title' => mb_substr($label, 0, 80)]); flow_save_def($key, $def, 'Built with the Easy Builder');
+    return $key;
+}

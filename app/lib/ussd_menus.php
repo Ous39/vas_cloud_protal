@@ -104,6 +104,15 @@ function menu_node(int $id): ?array {
     $st = portal_pdo()->prepare('SELECT * FROM ussd_menu_nodes WHERE id=?'); $st->execute([$id]);
     return $st->fetch() ?: null;
 }
+// The stable name of an item that a "go to" points at: kept through History, copies and imports, unlike the row number.
+function menu_node_ref(int $id): string {
+    menu_schema_ready(); $db = portal_pdo(); $n = menu_node($id) ?: throw new RuntimeException('That item is gone.');
+    if (!empty($n['ref'])) return (string)$n['ref'];
+    $ex = $db->prepare('SELECT 1 FROM ussd_menu_nodes WHERE short_code=? AND ref=?');
+    do { $ref = bin2hex(random_bytes(4)); $ex->execute([$n['short_code'], $ref]); } while ($ex->fetchColumn());
+    $db->prepare('UPDATE ussd_menu_nodes SET ref=? WHERE id=?')->execute([$ref, $id]);
+    return $ref;
+}
 function menu_nodes_flat(string $shortCode): array {
     $st = portal_pdo()->prepare('SELECT * FROM ussd_menu_nodes WHERE short_code=? ORDER BY parent_id IS NULL DESC, parent_id, display_order, id');
     $st->execute([$shortCode]);
@@ -143,9 +152,12 @@ function menu_resolve_schedule(string $status, ?string $from, ?string $until, st
     if (in_array($status, ['draft', 'inactive'], true)) { $from = null; $until = null; }
     return [$status, $from, $until];
 }
-// Makes sure the table has the two time columns and the "scheduled" status (older installs get them here, once).
-function menu_schedule_ready(): void {
+// Makes sure the table has the two time columns, the "scheduled" status, the stable `ref` and the "goto" item type (older installs get them here, once).
+function menu_schema_ready(): void {
     static $done = false; if ($done) return; $db = portal_pdo();
+    if (!$db->query("SHOW COLUMNS FROM ussd_menu_nodes LIKE 'ref'")->fetch()) $db->exec('ALTER TABLE ussd_menu_nodes ADD COLUMN ref VARCHAR(24) NULL');
+    $nt = (string)$db->query("SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ussd_menu_nodes' AND COLUMN_NAME='node_type'")->fetchColumn();
+    if ($nt !== '' && stripos($nt, "'goto'") === false) $db->exec("ALTER TABLE ussd_menu_nodes MODIFY node_type ENUM('menu','offer','action','end','catalog','recipient','quiz','sharedbundle','flow','goto') NOT NULL DEFAULT 'menu'");
     if (!$db->query("SHOW COLUMNS FROM ussd_menu_nodes LIKE 'live_from'")->fetch()) $db->exec('ALTER TABLE ussd_menu_nodes ADD COLUMN live_from DATETIME NULL, ADD COLUMN live_until DATETIME NULL');
     $def = (string)$db->query("SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ussd_menu_nodes' AND COLUMN_NAME='status'")->fetchColumn();
     if ($def !== '' && stripos($def, "'scheduled'") === false) $db->exec("ALTER TABLE ussd_menu_nodes MODIFY status ENUM('active','inactive','draft','scheduled') NOT NULL DEFAULT 'draft'");
@@ -153,7 +165,7 @@ function menu_schedule_ready(): void {
 }
 // Turns on what is due and switches off what is over. Safe to run from several places at once (a second run finds nothing left to do).
 function menu_apply_schedules(?string $now = null): array {
-    menu_schedule_ready(); $db = portal_pdo(); $now = $now ?? date('Y-m-d H:i:s');
+    menu_schema_ready(); $db = portal_pdo(); $now = $now ?? date('Y-m-d H:i:s');
     $q = $db->prepare("SELECT DISTINCT short_code FROM ussd_menu_nodes WHERE (status='scheduled' AND live_from IS NOT NULL AND live_from<=?) OR (status='active' AND live_until IS NOT NULL AND live_until<=?)"); $q->execute([$now, $now]);
     $codes = array_column($q->fetchAll(), 'short_code'); if (!$codes) return ['on' => 0, 'off' => 0, 'codes' => []];
     $on = $db->prepare("UPDATE ussd_menu_nodes SET status='active' WHERE status='scheduled' AND live_from IS NOT NULL AND live_from<=?"); $on->execute([$now]);
@@ -170,7 +182,7 @@ function menu_apply_schedules_tick(): void {
 }
 // Turns every Draft of a menu into "goes live at $when" (and off at $until, if given). A time already past turns them on now.
 function menu_schedule_drafts(string $code, string $when, ?string $until = null): array {
-    menu_schedule_ready(); $from = menu_parse_when($when) ?? throw new RuntimeException('Pick the time the drafts should go live.'); $until = menu_parse_when((string)$until);
+    menu_schema_ready(); $from = menu_parse_when($when) ?? throw new RuntimeException('Pick the time the drafts should go live.'); $until = menu_parse_when((string)$until);
     [$status, $from, $until] = menu_resolve_schedule('scheduled', $from, $until, date('Y-m-d H:i:s'));
     $st = portal_pdo()->prepare("UPDATE ussd_menu_nodes SET status=?, live_from=?, live_until=? WHERE short_code=? AND status='draft'"); $st->execute([$status, $from, $until, $code]); $n = $st->rowCount();
     if ($n) menu_snapshot($code, $n.' draft items '.($status === 'scheduled' ? 'scheduled for '.$from : 'turned on'));
@@ -183,10 +195,10 @@ function save_menu_node(array $data, ?int $id = null, bool $snapshot = true): in
     if (mb_strlen($prompt) > 120) throw new RuntimeException('The label is at most 120 characters — it is a line in a menu. Put longer wording in "Screen text".');
     $parentId = trim((string)($data['parent_id'] ?? '')) !== '' ? (int)$data['parent_id'] : null;
     if ($id && $parentId === $id) throw new RuntimeException('An item cannot be its own parent.');
-    $type = in_array($data['node_type'] ?? '', ['menu','offer','action','end','catalog','recipient','quiz','sharedbundle','flow'], true) ? $data['node_type'] : 'menu';
+    $type = in_array($data['node_type'] ?? '', ['menu','offer','action','end','catalog','recipient','quiz','sharedbundle','flow','goto'], true) ? $data['node_type'] : 'menu';
     $body = in_array($type, ['menu', 'catalog', 'end'], true) ? trim((string)($data['body_text'] ?? '')) : '';
     if (mb_strlen($body) > 400) throw new RuntimeException('Screen text is at most 400 characters (a phone screen holds about 180).');
-    menu_schedule_ready();
+    menu_schema_ready();
     [$status, $liveFrom, $liveUntil] = menu_resolve_schedule(in_array($data['status'] ?? '', MENU_STATUSES, true) ? (string)$data['status'] : 'draft', menu_parse_when((string)($data['live_from'] ?? '')), menu_parse_when((string)($data['live_until'] ?? '')), date('Y-m-d H:i:s'));
     $fields = [$parentId, $shortCode, (int)($data['display_order'] ?? 0), $prompt, $type,
         normalize_value($data['offer_code'] ?? ''), normalize_value($data['action_key'] ?? ''),
@@ -204,6 +216,19 @@ function save_menu_node(array $data, ?int $id = null, bool $snapshot = true): in
         $fields[5] = trim((string)($data['quiz_key'] ?? $data['offer_code'] ?? ''));
         ussd_quiz_tables(); $ex = portal_pdo()->prepare('SELECT 1 FROM ussd_quizzes WHERE quiz_key=?'); $ex->execute([$fields[5]]);
         if ($fields[5] === '' || !$ex->fetchColumn()) throw new RuntimeException('Choose which quiz this item plays (create it on the USSD Quiz page first).');
+    }
+    if ($type === 'goto') {
+        $tg = trim((string)($data['goto_target'] ?? $data['offer_code'] ?? ''));
+        if ($id && ($tg === (string)$id)) throw new RuntimeException('An item cannot take the customer to itself.');
+        if ($tg === '') throw new RuntimeException('Choose the screen this item takes the customer to.');
+        if ($tg !== '@top') {
+            $tn = ctype_digit($tg) ? menu_node((int)$tg) : null;
+            if (!$tn) { $q = portal_pdo()->prepare('SELECT * FROM ussd_menu_nodes WHERE short_code=? AND ref=?'); $q->execute([$shortCode, $tg]); $tn = $q->fetch() ?: null; }
+            if (!$tn || $tn['short_code'] !== $shortCode) throw new RuntimeException('The screen you chose is gone — pick another.');
+            if ($tn['node_type'] === 'goto') throw new RuntimeException('Choose a real screen, not another "go to" item.');
+            $tg = menu_node_ref((int)$tn['id']);
+        }
+        $fields[5] = $tg;
     }
     $db = portal_pdo();
     if ($id) {
@@ -233,7 +258,7 @@ function menu_export_tree(string $code): array {
         $out = [];
         foreach ($by[$pid] ?? [] as $n) {
             $x = ['prompt_text' => $n['prompt_text'], 'node_type' => $n['node_type'], 'status' => $n['status'], 'display_order' => (int)$n['display_order']];
-            foreach (['offer_code', 'action_key', 'catalog_filter', 'body_text', 'live_from', 'live_until'] as $k) if (isset($n[$k]) && $n[$k] !== '') $x[$k] = $n[$k];
+            foreach (['offer_code', 'action_key', 'catalog_filter', 'body_text', 'live_from', 'live_until', 'ref'] as $k) if (isset($n[$k]) && $n[$k] !== '') $x[$k] = $n[$k];
             $c = $build((int)$n['id']); if ($c) $x['children'] = $c; $out[] = $x;
         }
         return $out;
@@ -269,7 +294,7 @@ function menu_set_status(int $id, string $status, bool $branch = false): string 
     if (!in_array($status, ['active', 'inactive', 'draft'], true)) throw new RuntimeException('Unknown status.');
     $n = menu_node($id) ?: throw new RuntimeException('That item is gone.'); $db = portal_pdo(); $ids = [$id];
     if ($branch) { $by = []; foreach (menu_nodes_flat($n['short_code']) as $x) $by[$x['parent_id'] === null ? 0 : (int)$x['parent_id']][] = (int)$x['id']; $stack = [$id]; while ($stack) { $c = array_pop($stack); foreach ($by[$c] ?? [] as $k) { $ids[] = $k; $stack[] = $k; } } }
-    menu_schedule_ready(); $db->prepare('UPDATE ussd_menu_nodes SET status=?, live_from=NULL, live_until=NULL WHERE id IN ('.implode(',', array_map('intval', $ids)).')')->execute([$status]); // pressing on/off overrides any schedule
+    menu_schema_ready(); $db->prepare('UPDATE ussd_menu_nodes SET status=?, live_from=NULL, live_until=NULL WHERE id IN ('.implode(',', array_map('intval', $ids)).')')->execute([$status]); // pressing on/off overrides any schedule
     menu_snapshot($n['short_code'], '"'.mb_substr($n['prompt_text'], 0, 50).'" set to '.$status.($branch ? ' (with everything under it)' : ''));
     return $n['short_code'];
 }
@@ -391,6 +416,13 @@ function menu_health(string $code): array {
                 if ($fl['mode'] !== 'live') $add('info', $id, $label.': the flow is in TEST mode — every call is simulated ('.$fl['test_outcome'].'), nothing is sent.');
             }
         }
+        if ($t === 'goto') {
+            $tg = trim((string)$n['offer_code']); $dest = null;
+            if ($tg !== '@top') { foreach ($flat as $x) if ((string)($x['ref'] ?? '') === $tg) { $dest = $x; break; } }
+            if ($tg === '') $add('error', $id, $label.' does not say where it goes.');
+            elseif ($tg !== '@top' && !$dest) $add('error', $id, $label.' takes the customer to a screen that no longer exists.');
+            elseif ($dest && !$isActive($dest)) $add('error', $id, $label.' takes the customer to "'.mb_substr($dest['prompt_text'], 0, 40).'", which is not Active — customers hear "not available".');
+        }
         if ($t === 'recipient') {
             $actKids = []; foreach ($flat as $x) if ($x['status'] === 'active') $actKids[$x['parent_id'] === null ? 0 : (int)$x['parent_id']][] = $x;
             $top = $actKids[0] ?? []; if (count($top) === 1 && $top[0]['node_type'] === 'menu') $top = $actKids[(int)$top[0]['id']] ?? [];
@@ -435,7 +467,7 @@ function import_menu_json(string $shortCode, string $json): array {
             if (!is_array($n)) throw new RuntimeException('Every node must be an object.');
             if (++$count > 150) throw new RuntimeException('At most 150 nodes per import.');
             $prompt = trim((string)($n['prompt_text'] ?? '')); if ($prompt === '' || mb_strlen($prompt) > 300) throw new RuntimeException('Every node needs prompt_text (up to 300 characters).');
-            $type = (string)($n['node_type'] ?? 'menu'); if (!in_array($type, ['menu', 'offer', 'action', 'end', 'catalog', 'recipient', 'quiz', 'sharedbundle', 'flow'], true)) throw new RuntimeException('"'.$type.'" is not a node type.');
+            $type = (string)($n['node_type'] ?? 'menu'); if (!in_array($type, ['menu','offer','action','end','catalog','recipient','quiz','sharedbundle','flow','goto'], true)) throw new RuntimeException('"'.$type.'" is not a node type.');
             $status = (string)($n['status'] ?? 'draft'); if (!in_array($status, MENU_STATUSES, true)) throw new RuntimeException('"'.$status.'" is not a status.');
             [$status, $lFrom, $lUntil] = menu_resolve_schedule($status, menu_parse_when((string)($n['live_from'] ?? '')), menu_parse_when((string)($n['live_until'] ?? '')), date('Y-m-d H:i:s'));
             $filter = in_array($type, ['catalog', 'sharedbundle'], true) ? menu_catalog_filter($n['catalog_filter'] ?? '') : null;
@@ -443,20 +475,22 @@ function import_menu_json(string $shortCode, string $json): array {
             if ($type === 'catalog' && $filter === '') throw new RuntimeException('"'.$prompt.'": a catalogue list needs catalog_filter (its sub-categories).');
             $bodyTxt = in_array($type, ['menu', 'catalog', 'end'], true) ? trim((string)($n['body_text'] ?? '')) : '';
             $key = count($flat); $flat[$key] = ['parent' => $parent, 'order' => (int)($n['display_order'] ?? ($i + 1)), 'prompt' => $prompt, 'type' => $type, 'body' => $bodyTxt !== '' ? mb_substr($bodyTxt, 0, 400) : null,
-                'offer' => mb_substr(trim((string)($n['offer_code'] ?? '')), 0, 80) ?: null, 'action' => mb_substr(trim((string)($n['action_key'] ?? '')), 0, 80) ?: null, 'status' => $status, 'filter' => $filter, 'from' => $lFrom, 'until' => $lUntil];
+                'offer' => mb_substr(trim((string)($n['offer_code'] ?? '')), 0, 80) ?: null, 'action' => mb_substr(trim((string)($n['action_key'] ?? '')), 0, 80) ?: null, 'status' => $status, 'filter' => $filter, 'from' => $lFrom, 'until' => $lUntil,
+                'ref' => substr(preg_replace('/[^A-Za-z0-9]/', '', (string)($n['ref'] ?? '')), 0, 24) ?: null];
+            if ($type === 'goto' && trim((string)$flat[$key]['offer']) === '') throw new RuntimeException('"'.$prompt.'": a "go to" item needs offer_code (the target\'s ref, or @top).');
             if (!empty($n['children'])) { if (!is_array($n['children'])) throw new RuntimeException('children must be a list.'); $walk($n['children'], $key, $depth + 1); }
         }
     };
     $walk($tree, null, 1);
-    flow_tables(); menu_versions_table(); menu_schedule_ready();
+    flow_tables(); menu_versions_table(); menu_schema_ready();
     $db = portal_pdo(); $db->beginTransaction();
     try {
         $archived = $db->prepare("UPDATE ussd_menu_nodes SET short_code=CONCAT(short_code,' [archived ',DATE_FORMAT(NOW(),'%m-%d %H:%i'),']'), status='inactive' WHERE short_code=?");
         $archived->execute([$shortCode]); $old = $archived->rowCount();
-        $ins = $db->prepare('INSERT INTO ussd_menu_nodes(parent_id,short_code,display_order,prompt_text,node_type,offer_code,action_key,status,catalog_filter,body_text,live_from,live_until,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)');
+        $ins = $db->prepare('INSERT INTO ussd_menu_nodes(parent_id,short_code,display_order,prompt_text,node_type,offer_code,action_key,status,catalog_filter,body_text,live_from,live_until,ref,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
         $ids = [];
         foreach ($flat as $k => $n) {
-            $ins->execute([$n['parent'] === null ? null : $ids[$n['parent']], $shortCode, $n['order'], $n['prompt'], $n['type'], $n['offer'], $n['action'], $n['status'], $n['filter'], $n['body'], $n['from'], $n['until'], user()['username'] ?? null]);
+            $ins->execute([$n['parent'] === null ? null : $ids[$n['parent']], $shortCode, $n['order'], $n['prompt'], $n['type'], $n['offer'], $n['action'], $n['status'], $n['filter'], $n['body'], $n['from'], $n['until'], $n['ref'], user()['username'] ?? null]);
             $ids[$k] = (int)$db->lastInsertId();
         }
         $db->commit();
@@ -477,12 +511,45 @@ function render_menu_preview(array $tree, int $depth = 0): string {
             : ($node['node_type'] === 'flow' ? ' → service flow '.e($node['offer_code'])
             : ($node['node_type'] === 'sharedbundle' ? ' → Shared Bundle service (offers: '.e(str_replace("\n", ', ', (string)($node['catalog_filter'] ?? ''))).')'
             : ($node['node_type'] === 'quiz' ? ' → quiz game '.e($node['offer_code'])
+            : ($node['node_type'] === 'goto' ? ' → jumps to another screen'
             : ($node['node_type'] === 'recipient' ? ' → asks for another number, then shows the main menu'
             : ($node['node_type'] === 'end' ? ' → END'
-            : ($node['node_type'] === 'catalog' ? ' → live list: '.e(str_replace("\n", ', ', (string)($node['catalog_filter'] ?? ''))) : '')))))));
+            : ($node['node_type'] === 'catalog' ? ' → live list: '.e(str_replace("\n", ', ', (string)($node['catalog_filter'] ?? ''))) : ''))))))));
         $out .= $indent.($depth===0 ? $i.'. ' : '- ').e($node['prompt_text']).$suffix."\n";
         if ($node['children']) $out .= render_menu_preview($node['children'], $depth + 1);
         $i++;
     }
     return $out;
+}
+
+// ---- The Easy Builder: add one block to a screen. Everything starts as a Draft (nobody sees it until it is published). ----
+// $block: message | menu | list | offer | service | goto | buyother | shared | quiz | flow | balance. Returns [new item id, what was made].
+function menu_build_block(string $code, ?int $parent, string $block, array $d): array {
+    $code = trim($code); if ($code === '') throw new RuntimeException('Pick a short code first.');
+    $label = trim((string)($d['label'] ?? '')); $body = trim((string)($d['body'] ?? ''));
+    $node = ['short_code' => $code, 'parent_id' => $parent, 'status' => 'draft', 'prompt_text' => $label];
+    $need = function (string $what) use ($label) { if ($label === '') throw new RuntimeException('Type the line customers will see in the menu ('.$what.').'); };
+    switch ($block) {
+        case 'message': $need('the title of the message'); if ($body === '') throw new RuntimeException('Type the message customers will read.'); $node += ['node_type' => 'end', 'body_text' => $body]; $what = 'message'; break;
+        case 'menu': $need('the name of the submenu'); $node += ['node_type' => 'menu', 'body_text' => $body]; $what = 'submenu'; break;
+        case 'list':
+            $need('the name of the list'); $subs = array_values(array_filter(array_map('trim', (array)($d['subs'] ?? [])))); if (!$subs) throw new RuntimeException('Tick at least one group of offers for the list.');
+            $node += ['node_type' => 'catalog', 'catalog_filter' => implode("\n", $subs), 'body_text' => $body]; $what = 'list of offers'; break;
+        case 'offer':
+            $oc = trim((string)($d['offer_code'] ?? '')); if ($oc === '') throw new RuntimeException('Choose the offer to sell.');
+            if ($label === '') { $o = ussd_offer_lookup($oc); $node['prompt_text'] = trim((string)($o['name'] ?? '')) ?: $oc; }
+            $node += ['node_type' => 'offer', 'offer_code' => $oc]; $what = 'offer'; break;
+        case 'goto': $need('the name of the shortcut'); $node += ['node_type' => 'goto', 'goto_target' => (string)($d['target'] ?? '')]; $what = 'shortcut to another screen'; break;
+        case 'buyother': $node['prompt_text'] = $label ?: 'Buy for another number'; $node += ['node_type' => 'recipient']; $what = '"buy for another number"'; break;
+        case 'shared': $node['prompt_text'] = $label ?: 'Shared Bundle'; $node += ['node_type' => 'sharedbundle', 'catalog_filter' => 'Seddo']; $what = 'Shared Bundle service'; break;
+        case 'quiz': $node['prompt_text'] = $label ?: 'Play and win'; $node += ['node_type' => 'quiz', 'quiz_key' => (string)($d['quiz_key'] ?? '')]; $what = 'quiz'; break;
+        case 'flow': $fk = trim((string)($d['flow_key'] ?? '')); $node['prompt_text'] = $label ?: ((flow_get($fk)['title'] ?? '') ?: $fk); $node += ['node_type' => 'flow', 'flow_key' => $fk]; $what = 'service'; break;
+        case 'balance':
+            flow_tables(); if (!flow_get('check_balance')) { save_flow(['flow_key' => 'check_balance', 'title' => 'Check balance', 'template' => 'check_balance']); }
+            $node['prompt_text'] = $label ?: 'Check balance'; $node += ['node_type' => 'flow', 'flow_key' => 'check_balance']; $what = 'check-balance service'; break;
+        case 'service':
+            $need('the name of the service'); $fk = flow_wizard_create($d); $node += ['node_type' => 'flow', 'flow_key' => $fk]; $what = 'service (in test mode: answers are simulated until you go live)'; break;
+        default: throw new RuntimeException('Unknown block.');
+    }
+    $id = save_menu_node($node); return [$id, $what];
 }
