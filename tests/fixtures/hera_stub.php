@@ -42,6 +42,7 @@ if ($parts[0] === 'mobius') {
     $menus = is_file($store) ? (json_decode((string)file_get_contents($store), true) ?: []) : [];
     if ($rest === 'auth/login') { $j(['status' => 'SUCCESS', 'sessionID' => 'sid-test']); exit; }
     if (($in['sessionID'] ?? '') !== 'sid-test') { $j(['status' => 'ERROR', 'errorMessage' => 'invalid session']); exit; }
+    $idOf = fn($m) => $m['menuID'] ?? ($m['_id']['$oid'] ?? null);
     switch ($rest) {
         case 'ussdmenues/count': $j(['status' => 'SUCCESS', 'data' => count($menus)]); break;
         case 'ussdmenues/list':
@@ -50,16 +51,19 @@ if ($parts[0] === 'mobius') {
             $nested = trim((string)@file_get_contents($dir.'/zt_stub_mobius_shape.txt')) === 'nested'; $q = $nested ? ($in['data'] ?? null) : $in;
             if ($nested && !is_array($q)) { $j(['status' => 'SUCCESS', 'data' => ['list' => []]]); break; }
             $size = (int)($q['pageSize'] ?? 100); if ($nested) $size = min($size, 50); $from = $q['firstKey'] ?? null; $rows = $menus;
-            if ($from !== null) { $at = array_search($from, array_column($rows, 'menuID'), true); $rows = $at === false ? [] : array_slice($rows, $at + 1); }
+            // menus may be stored as Mobius really holds them: {"_id": {"$oid": "…"}, "applicationDestinationID": {"$oid": "…"}, …}
+            if ($from !== null) { $at = array_search($from, array_map($idOf, $rows), true); $rows = $at === false ? [] : array_slice($rows, $at + 1); }
             $rows = array_slice($rows, 0, $size);
             if ($nested) { $rows = array_map(function ($m) { $m['id'] = $m['menuID']; unset($m['menuID']); return $m; }, $rows); $j(['status' => 'SUCCESS', 'data' => ['list' => $rows, 'total' => count($menus)]]); break; }
             $j(['status' => 'SUCCESS', 'data' => $rows]); break;
         case 'ussdmenues/set':
-            $d = $in['data'] ?? []; if (empty($d['shortcode'])) { $j(['status' => 'ERROR', 'errorMessage' => 'shortcode required']); break; }
+            $d = $in['data'] ?? []; if (empty($d['name'])) { $j(['status' => 'ERROR', 'errorMessage' => 'name required']); break; }
             // "strict" (file zt_stub_mobius_strict.txt): like a Mobius that refuses any field its menus do not have (HTTP 400 "Unrecognized field")
             if (is_file($dir.'/zt_stub_mobius_strict.txt') && $menus) { $known = array_keys($menus[0]); foreach (array_keys($d) as $f) if (!in_array($f, $known, true) && !in_array($f, ['id', 'menuID'], true)) { http_response_code(400); $j(['status' => 'ERROR', 'errorMessage' => 'Unrecognized field &quot;'.$f.'&quot; (class com.mobius.software.ims.ussd.gateway.c.B), not marked as ignorable']); break 2; } }
             if (isset($d['id'])) { $d['menuID'] = $d['id']; unset($d['id']); } if (array_key_exists('_raw', $d)) { $j(['status' => 'ERROR', 'errorMessage' => 'unknown field _raw']); break; }
-            if (!empty($d['menuID'])) { foreach ($menus as $k => $m) if ($m['menuID'] === $d['menuID']) $menus[$k] = $d; } else { $d['menuID'] = 'm'.(count($menus) + 1).substr(md5(uniqid('', true)), 0, 8); $menus[] = $d; }
+            if (isset($d['_id']) && !is_array($d['_id'])) { http_response_code(400); $j(['status' => 'ERROR', 'errorMessage' => 'Cannot deserialize _id from a string']); break; }
+            if ($idOf($d) !== null) { foreach ($menus as $k => $m) if ($idOf($m) === $idOf($d)) $menus[$k] = $d; }
+            else { $new = 'm'.(count($menus) + 1).substr(md5(uniqid('', true)), 0, 8); if ($menus && isset($menus[0]['_id'])) $d['_id'] = ['$oid' => $new]; else $d['menuID'] = $new; $menus[] = $d; }
             file_put_contents($store, json_encode($menus)); $j(['status' => 'SUCCESS', 'data' => $d]); break;
         default: $j(['status' => 'ERROR', 'errorMessage' => 'unknown call']);
     }

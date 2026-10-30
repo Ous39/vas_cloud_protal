@@ -574,6 +574,26 @@ t('Mobius menus: a Mobius that refuses fields it does not know (no destinationID
         $r = mobius_rest($cfg, 'ussdmenues/set', ['data' => ['name' => 'x', 'shortcode' => '*1#', 'bogus' => 1]]); has((string)($r['error'] ?? ''), 'field "bogus"', 'Mobius\' message is shown as plain text (no &quot;)');
     } finally { @unlink($store); @unlink($strict); }
 });
+t('Mobius menus: ids and destinations as MongoDB object ids ({"$oid": …}), as the real Mobius gives them - all 271 are read', function () use ($cfgFor, $stub) {
+    $tmp = sys_get_temp_dir(); $store = $tmp.'/zt_stub_mobius_menus.json'; $strict = $tmp.'/zt_stub_mobius_strict.txt'; $ours = 'https://x/portal/ussd.php?t=ZT-TOKEN&m=proxy';
+    $mk = fn($id, $name, $code, $url, $dest, $type = 'PROXY') => ['name' => $name, 'externalProtocol' => null, 'encodingType' => null, 'applicationDestinationID' => $dest ? ['$oid' => $dest] : null, 'dataConsumerID' => null, 'shortcodeType' => $type, 'shortcode' => $code, 'isExtendable' => true, 'remoteURL' => $url, 'tps' => 10, '_id' => ['$oid' => $id]];
+    $mm = [$mk('63b7134dce3ec6546ec5e17c', 'TestNI', null, null, null, 'NETWORK_INITIATED'), $mk('aa0000000000000000000001', 'Ours', '*8800#', $ours, 'dd01')];
+    for ($i = 2; $i < 271; $i++) $mm[] = $mk(sprintf('aa%022d', $i), "Svc $i", "*16$i", "https://vas-prod/hera/ussd/$i", 'dd02');
+    file_put_contents($store, json_encode($mm)); file_put_contents($strict, '1');
+    $cfg = $cfgFor(['mobius_base' => "$stub/mobius/rest/", 'mobius_user' => 'u', 'mobius_pass' => encrypt_secret(md5('p')), 'token' => 'ZT-TOKEN', 'shortcode_proxy' => '*8800#', 'mobius_session' => '', 'mobius_variant' => '0']);
+    try {
+        $l = mobius_list_menus($cfg); eq(count($l['menus'] ?? []), 271, 'every menu is read (before, all had the id "Array" and were counted as one)'); eq($l['count'], 271, 'as many as the count');
+        eq([$l['menus'][1]['menuID'], $l['menus'][1]['destinationID']], ['aa0000000000000000000001', ['dd01']], 'the id and the destination are read as text');
+        mobius_save_menu($cfg, null, ['name' => 'New', 'shortcode' => '*7898#', 'shortcodeType' => 'PROXY', 'remoteURL' => $ours, 'destinationID' => 'dd01']);
+        $row = array_values(array_filter(json_decode((string)file_get_contents($store), true), fn($m) => $m['shortcode'] === '*7898#'))[0];
+        eq($row['applicationDestinationID'] ?? null, ['$oid' => 'dd01'], 'a new menu gets its destination in the {"$oid": …} form');
+        $u = mobius_save_menu($cfg, '63b7134dce3ec6546ec5e17c', ['name' => 'TestNI2', 'shortcode' => '', 'shortcodeType' => 'NETWORK_INITIATED', 'remoteURL' => 'https://x/y', 'destinationID' => 'dd02'], 'TestNI');
+        thrown(fn() => mobius_save_menu($cfg, '63b7134dce3ec6546ec5e17c', ['name' => 'TestNI3', 'shortcode' => '', 'shortcodeType' => 'NETWORK_INITIATED', 'remoteURL' => 'https://x/y'], 'nope'), 'type its name', 'a menu with no short code is confirmed by typing its name');
+        $row = array_values(array_filter(json_decode((string)file_get_contents($store), true), fn($m) => ($m['_id']['$oid'] ?? '') === '63b7134dce3ec6546ec5e17c'))[0];
+        eq([$row['name'], $row['_id'], $row['shortcode'], $row['tps']], ['TestNI2', ['$oid' => '63b7134dce3ec6546ec5e17c'], null, 10], 'a change keeps the id as {"$oid"}, an empty code as null and every other field');
+        eq(mobius_restore_change($cfg, $u['change'])['menu']['name'] ?? null, 'TestNI', 'and Put back works');
+    } finally { @unlink($store); @unlink($strict); }
+});
 t('a menu is renamed in the portal: short code and name together', function () use ($db) {
     $clean = fn() => array_map(fn($t) => $db->exec("DELETE FROM $t WHERE short_code IN ('*8811#','*8812#','*8813#')"), ['ussd_menu_nodes', 'ussd_menu_versions', 'portal_short_codes']);
     $clean();
