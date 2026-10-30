@@ -45,11 +45,18 @@ if ($parts[0] === 'mobius') {
     switch ($rest) {
         case 'ussdmenues/count': $j(['status' => 'SUCCESS', 'data' => count($menus)]); break;
         case 'ussdmenues/list':
-            $size = (int)($in['pageSize'] ?? 100); $from = $in['firstKey'] ?? null; $rows = $menus;
+            // "nested" (file zt_stub_mobius_shape.txt): like an install whose list wants the paging fields inside data, answers {data: {list: […]}}
+            // with "id" instead of "menuID" and gives at most 50 rows a page. Asked any other way it answers an empty list.
+            $nested = trim((string)@file_get_contents($dir.'/zt_stub_mobius_shape.txt')) === 'nested'; $q = $nested ? ($in['data'] ?? null) : $in;
+            if ($nested && !is_array($q)) { $j(['status' => 'SUCCESS', 'data' => ['list' => []]]); break; }
+            $size = (int)($q['pageSize'] ?? 100); if ($nested) $size = min($size, 50); $from = $q['firstKey'] ?? null; $rows = $menus;
             if ($from !== null) { $at = array_search($from, array_column($rows, 'menuID'), true); $rows = $at === false ? [] : array_slice($rows, $at + 1); }
-            $j(['status' => 'SUCCESS', 'data' => array_slice($rows, 0, $size)]); break;
+            $rows = array_slice($rows, 0, $size);
+            if ($nested) { $rows = array_map(function ($m) { $m['id'] = $m['menuID']; unset($m['menuID']); return $m; }, $rows); $j(['status' => 'SUCCESS', 'data' => ['list' => $rows, 'total' => count($menus)]]); break; }
+            $j(['status' => 'SUCCESS', 'data' => $rows]); break;
         case 'ussdmenues/set':
             $d = $in['data'] ?? []; if (empty($d['shortcode'])) { $j(['status' => 'ERROR', 'errorMessage' => 'shortcode required']); break; }
+            if (isset($d['id'])) { $d['menuID'] = $d['id']; unset($d['id']); } if (array_key_exists('_raw', $d)) { $j(['status' => 'ERROR', 'errorMessage' => 'unknown field _raw']); break; }
             if (!empty($d['menuID'])) { foreach ($menus as $k => $m) if ($m['menuID'] === $d['menuID']) $menus[$k] = $d; } else { $d['menuID'] = 'm'.(count($menus) + 1).substr(md5(uniqid('', true)), 0, 8); $menus[] = $d; }
             file_put_contents($store, json_encode($menus)); $j(['status' => 'SUCCESS', 'data' => $d]); break;
         default: $j(['status' => 'ERROR', 'errorMessage' => 'unknown call']);

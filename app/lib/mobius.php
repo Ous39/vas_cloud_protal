@@ -107,7 +107,7 @@ function mobius_rest(array $cfg, string $path, array $data = []): array {
         foreach ($order as $n => $variant) {
             $r = mobius_call_variant($cfg, $base, $path, $data, $variant, $n > 0);
             $bad = $r['json'] !== null && (strtoupper((string)($r['json']['status'] ?? '')) === 'ERROR' || trim((string)($r['json']['errorMessage'] ?? '')) !== '');
-            if ($r['code'] === 200 && !$bad) { if ($variant !== $pref) { try { ussd_proxy_set(['mobius_variant' => (string)$variant]); } catch (Throwable $e) {} } return ['ok' => true, 'json' => (array)$r['json'], 'base' => $base]; }
+            if ($r['code'] === 200 && !$bad) { if ($variant !== $pref) { try { ussd_proxy_set(['mobius_variant' => (string)$variant]); } catch (Throwable $e) {} } return ['ok' => true, 'json' => (array)$r['json'], 'raw' => (string)$r['raw'], 'base' => $base]; }
             $errors[] = $base.' HTTP '.$r['code'].' '.($r['error'] !== '' ? $r['error'] : mb_substr((string)($r['json']['errorMessage'] ?? $r['raw']), 0, 160));
             if (!mobius_is_auth_error($r)) break;
         }
@@ -115,20 +115,112 @@ function mobius_rest(array $cfg, string $path, array $data = []): array {
     }
     return ['ok' => false, 'error' => $errors ? implode(' | ', array_slice($errors, -3)) : 'no Mobius address configured'];
 }
-// Every menu in Mobius: [['ok' => true, 'menus' => […], 'count' => N|null] | ['ok' => false, 'error' => …]]. Pages by key; duplicates are ignored.
+// ---- Reading Mobius' menu list, whatever shape the answer has ----
+// The documented shape is {status, data: [ {menuID, name, shortcode, …}, … ]}, but a Mobius install has been seen to answer the count (270) while
+// the list came back as "0 menus": the rows were somewhere else in the answer or carried other field names. So the rows are looked for anywhere in
+// the answer, each row's fields are matched by their usual names, and the row exactly as Mobius gave it is kept in _raw (that is what is sent back
+// when a menu is changed, with only the changed fields replaced, under the names Mobius itself used).
+const MOBIUS_MENU_FIELDS = [
+    'menuID' => ['menuID', 'menuId', 'menuid', 'id', 'ID', 'Id', '_id', 'menu_id'],
+    'name' => ['name', 'menuName', 'menu_name', 'title'],
+    'shortcode' => ['shortcode', 'shortCode', 'short_code', 'ussdCode', 'ussd_code', 'code'],
+    'shortcodeType' => ['shortcodeType', 'shortCodeType', 'shortcode_type', 'type', 'menuType'],
+    'isExtendable' => ['isExtendable', 'extendable', 'isExtandable', 'is_extendable'],
+    'remoteURL' => ['remoteURL', 'remoteUrl', 'remote_url', 'url', 'address', 'remoteAddress'],
+    'destinationID' => ['destinationID', 'destinationIDs', 'destinationId', 'destinationIds', 'destinations', 'destination_id'],
+];
+const MOBIUS_MENU_TYPES = ['PROXY', 'MS_INITIATED', 'NETWORK_INITIATED'];
+function mobius_field_key(array $raw, string $canon): ?string { foreach (MOBIUS_MENU_FIELDS[$canon] as $k) if (array_key_exists($k, $raw)) return $k; return null; }
+function mobius_menu_looks_like(array $row): bool { return mobius_field_key($row, 'shortcode') !== null || mobius_field_key($row, 'remoteURL') !== null; }
+// One menu with the portal's field names (and the original row in _raw).
+function mobius_menu_norm(array $raw): array {
+    if (isset($raw['_raw']) && is_array($raw['_raw'])) return $raw; // already done
+    $g = function (string $c, $def = null) use ($raw) { $k = mobius_field_key($raw, $c); return $k === null ? $def : $raw[$k]; };
+    $dest = $g('destinationID', []);
+    if (is_string($dest) || is_int($dest)) $dest = trim((string)$dest) === '' ? [] : [(string)$dest];
+    $dest = array_values(array_map(fn($d) => is_array($d) ? (string)($d['id'] ?? $d['destinationID'] ?? json_encode($d)) : (string)$d, (array)$dest));
+    $ext = $g('isExtendable', false); $ext = is_bool($ext) ? $ext : in_array(strtolower(trim((string)$ext)), ['1', 'true', 'yes', 'y'], true);
+    return ['menuID' => (string)($g('menuID', '') ?? ''), 'name' => (string)($g('name', '') ?? ''), 'shortcode' => trim((string)($g('shortcode', '') ?? '')), 'shortcodeType' => strtoupper((string)($g('shortcodeType', '') ?? '')),
+        'isExtendable' => $ext, 'remoteURL' => (string)($g('remoteURL', '') ?? ''), 'destinationID' => $dest, '_raw' => $raw];
+}
+// Back to what Mobius sent, with the portal's values put under Mobius' own field names. Fields Mobius did not have keep the documented names.
+function mobius_menu_denorm(array $m): array {
+    $raw = (array)($m['_raw'] ?? []); $out = $raw;
+    foreach (array_keys(MOBIUS_MENU_FIELDS) as $c) {
+        if (!array_key_exists($c, $m)) continue; if ($c === 'menuID' && (string)$m[$c] === '') continue;
+        $k = mobius_field_key($raw, $c) ?? $c; $v = $m[$c];
+        if ($c === 'destinationID' && $k !== $c && isset($raw[$k]) && is_string($raw[$k])) $v = implode(',', (array)$v); // Mobius gave one text: keep it one text
+        $out[$k] = $v;
+    }
+    return $out;
+}
+// The list of menu rows anywhere in an answer: data, data.list, data.items, a map keyed by id, … (null when there is none).
+function mobius_find_rows($j, int $depth = 0): ?array {
+    if (!is_array($j) || $depth > 4) return null;
+    if (array_is_list($j)) {
+        if ($j === []) return [];
+        $objs = array_values(array_filter($j, fn($r) => is_array($r) && !array_is_list($r)));
+        return $objs && count($objs) === count($j) ? $objs : null;
+    }
+    if (mobius_menu_looks_like($j) && $depth > 0) return null; // a single menu, not a list
+    $assoc = array_filter($j, fn($v) => is_array($v) && !array_is_list($v) && $v !== []);
+    if ($assoc && count($assoc) === count($j) && count(array_filter($assoc, 'mobius_menu_looks_like')) === count($assoc)) { // {"<id>": {menu}, …}
+        $rows = []; foreach ($assoc as $k => $v) { if (mobius_field_key($v, 'menuID') === null) $v['menuID'] = (string)$k; $rows[] = $v; } return $rows;
+    }
+    $found = null;
+    foreach (['data', 'list', 'items', 'rows', 'menus', 'ussdMenus', 'result', 'results', 'content', 'records', 'entities', 'values', 'page'] as $k) {
+        if (!array_key_exists($k, $j)) continue; $r = mobius_find_rows($j[$k], $depth + 1); if ($r) return $r; if ($r === [] && $found === null) $found = [];
+    }
+    foreach ($j as $v) { if (!is_array($v)) continue; $r = mobius_find_rows($v, $depth + 1); if ($r) return $r; if ($r === [] && $found === null) $found = []; }
+    return $found;
+}
+function mobius_find_count($j): ?int {
+    if (is_int($j) || (is_string($j) && ctype_digit($j))) return (int)$j;
+    if (!is_array($j)) return null;
+    foreach (['data', 'count', 'total', 'totalCount', 'size', 'result', 'value'] as $k) if (array_key_exists($k, $j)) { $n = mobius_find_count($j[$k]); if ($n !== null) return $n; }
+    return null;
+}
+// What Mobius answered, safe to show (session ids and anything that looks like a password or token cut).
+function mobius_redact(string $raw, int $max = 3000): string {
+    $raw = preg_replace('/("(?:sessionID|sessionId|password|pass|token|secret)"\s*:\s*")[^"]*(")/i', '$1…$2', $raw);
+    $raw = preg_replace('~([?&](?:t|token)=)[^&"\s]+~', '$1…', (string)$raw);
+    return mb_strimwidth((string)$raw, 0, $max, ' …(cut)');
+}
+// The ways the list may have to be asked for. The first that gives rows is used; each tried way is kept in 'diag' for the page to show.
+const MOBIUS_LIST_SHAPES = ['paging fields in the body', 'paging fields inside data', 'no paging fields'];
+function mobius_list_request(int $shape, int $size, ?string $first): array {
+    $p = ['pageSize' => $size, 'includePreviousKey' => false, 'reverse' => false] + ($first !== null ? ['firstKey' => $first] : []);
+    return match ($shape) { 0 => $p, 1 => ['data' => $p], default => [] };
+}
+// Every menu in Mobius: ['ok' => true, 'menus' => […], 'count' => N|null, 'shape' => …, 'diag' => […]] | ['ok' => false, 'error' => …].
 function mobius_list_menus(array $cfg): array {
     if ($cfg['mobius_user'] === '' || decrypt_secret($cfg['mobius_pass']) === '') return ['ok' => false, 'error' => 'The Mobius API user and password are not saved yet (Proxy → Connection).'];
-    $all = []; $first = null; $size = 100;
-    for ($page = 0; $page < 30; $page++) {
-        $r = mobius_rest($cfg, 'ussdmenues/list', ['pageSize' => $size, 'includePreviousKey' => false, 'reverse' => false] + ($first !== null ? ['firstKey' => $first] : []));
-        if (!$r['ok']) return ['ok' => false, 'error' => $r['error']];
-        $rows = array_values((array)($r['json']['data'] ?? [])); $new = 0;
-        foreach ($rows as $m) { $id = (string)($m['menuID'] ?? ''); if ($id !== '' && !isset($all[$id])) { $all[$id] = $m; $new++; } }
-        if (count($rows) < $size || $new === 0) break;
-        $first = (string)($rows[count($rows) - 1]['menuID'] ?? ''); if ($first === '') break;
+    $c = mobius_rest($cfg, 'ussdmenues/count', []); $count = $c['ok'] ? mobius_find_count($c['json']) : null;
+    $diag = [['call' => 'ussdmenues/count', 'answer' => $c['ok'] ? mobius_redact((string)($c['raw'] ?? json_encode($c['json'])), 400) : 'refused: '.$c['error']]];
+    $best = null; $firstError = null;
+    foreach (array_keys(MOBIUS_LIST_SHAPES) as $shape) {
+        $all = []; $first = null; $size = 100; $sample = null; $err = null;
+        for ($page = 0; $page < 60; $page++) {
+            $r = mobius_rest($cfg, 'ussdmenues/list', mobius_list_request($shape, $size, $first));
+            if (!$r['ok']) { $err = $r['error']; break; }
+            if ($sample === null) $sample = mobius_redact((string)($r['raw'] ?? json_encode($r['json'])));
+            $rows = mobius_find_rows($r['json']) ?? []; $new = 0; $last = null;
+            foreach ($rows as $row) {
+                $m = mobius_menu_norm($row); $key = $m['menuID'] !== '' ? 'id:'.$m['menuID'] : 'code:'.$m['shortcode'].'|'.$m['name'];
+                if (!isset($all[$key])) { $all[$key] = $m; $new++; } $last = $m;
+            }
+            if ($shape === 2 || $new === 0 || !$last || $last['menuID'] === '') break;
+            if ($count !== null ? count($all) >= $count : count($rows) < $size) break;
+            $first = $last['menuID'];
+        }
+        $diag[] = ['call' => 'ussdmenues/list ('.MOBIUS_LIST_SHAPES[$shape].')', 'answer' => $err !== null && $sample === null ? 'refused: '.$err : (string)$sample, 'rows' => count($all)];
+        if ($err !== null && $sample === null) { $firstError ??= $err; continue; }
+        if ($best === null || count($all) > count($best['menus'])) $best = ['menus' => array_values($all), 'shape' => MOBIUS_LIST_SHAPES[$shape]];
+        if ($all && ($count === null || count($all) >= $count)) break; // complete: no need to try other ways
+        if ($count === 0) break;
     }
-    $c = mobius_rest($cfg, 'ussdmenues/count', []); $count = $c['ok'] && isset($c['json']['data']) && is_numeric($c['json']['data']) ? (int)$c['json']['data'] : null;
-    return ['ok' => true, 'menus' => array_values($all), 'count' => $count];
+    if ($best === null) return ['ok' => false, 'error' => (string)$firstError, 'diag' => $diag];
+    return ['ok' => true, 'menus' => $best['menus'], 'count' => $count, 'shape' => $best['shape'], 'diag' => $diag];
 }
 function mobius_menu_is_ours(array $m, array $cfg): bool {
     $u = (string)($m['remoteURL'] ?? ''); return $cfg['token'] !== '' && str_contains($u, 'ussd.php') && str_contains($u, 't='.$cfg['token']);
@@ -168,12 +260,110 @@ function mobius_update_menu(array $cfg, string $menuId, string $name, string $co
     if (!$cur) throw new RuntimeException('That menu is no longer in Mobius.');
     if (!mobius_menu_is_ours($cur, $cfg)) throw new RuntimeException('That Mobius menu does not call this portal, so it is not changed from here.');
     foreach ($l['menus'] as $m) if ((string)($m['menuID'] ?? '') !== $menuId && rtrim(trim((string)($m['shortcode'] ?? '')), '#') === rtrim($code, '#')) throw new RuntimeException($code.' is already used by another menu in Mobius.');
-    $data = $cur; $data['name'] = $name; $data['shortcode'] = $code; $data['isExtendable'] = $extendable;
+    $data = mobius_menu_denorm(array_merge($cur, ['name' => $name, 'shortcode' => $code, 'isExtendable' => $extendable]));
     $r = mobius_rest($cfg, 'ussdmenues/set', ['data' => $data]); if (!$r['ok']) throw new RuntimeException('Mobius refused: '.$r['error']);
     audit('mobius_update_menu', null, 'mobius', $menuId, json_encode(['from' => $cur['shortcode'] ?? '', 'to' => $code, 'name' => $name, 'extendable' => $extendable]));
     $after = mobius_list_menus($cfg); $st = $after['ok'] ? mobius_menu_state($code, $after['menus'], $cfg) : ['state' => 'unknown', 'menu' => null];
+    try { mobius_record_change($menuId, $code, 'rename', $cur, $st['menu'] ?? $data, mobius_redact((string)($r['raw'] ?? ''), 1000)); } catch (Throwable $e) { error_log('mobius history: '.$e->getMessage()); }
     return ['state' => $st['state'], 'menu' => $st['menu']];
 }
+// ---- Managing every menu in Mobius (the Mobius Menus page) ----
+// Any menu can be created or changed from the portal, not only the ones that call it, with these guards:
+//  * only users with the settings permission (manage_api_keys) — checked by the page;
+//  * a menu that does NOT call this portal (airtime, data usage, …) is only changed when the user types its short code to confirm;
+//  * every change keeps the menu as it was before and after (mobius_menu_changes), so it can be put back with one click (Restore);
+//  * nothing is deleted from Mobius by the portal.
+function mobius_menu_tables(): void {
+    static $done = false; if ($done) return;
+    portal_pdo()->exec("CREATE TABLE IF NOT EXISTS mobius_menu_changes (
+        id INT NOT NULL AUTO_INCREMENT PRIMARY KEY, menu_id VARCHAR(120) NULL, shortcode VARCHAR(60) NULL, action VARCHAR(20) NOT NULL,
+        before_json MEDIUMTEXT NULL, after_json MEDIUMTEXT NULL, answer TEXT NULL, username VARCHAR(80) NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_menu (menu_id, created_at), INDEX idx_code (shortcode)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+    $done = true;
+}
+function mobius_bare_code(string $c): string { return rtrim(preg_replace('/\s+/', '', $c), '#'); }
+// Mobius holds codes with and without the closing # (*16, *9990*, *9606*7070#): any * / # / digits, starting with * or #.
+function mobius_valid_code(string $c): bool { return (bool)preg_match('/^[*#][0-9*#]{1,39}$/', $c) && preg_match('/\d/', $c); }
+function mobius_find_menu(array $menus, string $id): ?array { foreach ($menus as $m) if ((string)($m['menuID'] ?? '') === $id) return mobius_menu_norm($m); return null; }
+function mobius_menu_belongs(array $m, array $cfg): string { return mobius_menu_is_ours($m, $cfg) ? 'portal' : 'other'; }
+// Checks the form fields and gives the menu fields: name, shortcode, shortcodeType, isExtendable, remoteURL, destinationID.
+function mobius_menu_input(array $in, ?array $cur = null): array {
+    $name = trim((string)($in['name'] ?? '')); if ($name === '' || mb_strlen($name) > 150) throw new RuntimeException('Give the menu a name (up to 150 letters).');
+    $code = preg_replace('/\s+/', '', (string)($in['shortcode'] ?? '')); if (!mobius_valid_code($code)) throw new RuntimeException('A short code is * or #, then digits and * (for example *9606*7070# or *16).');
+    $type = strtoupper(trim((string)($in['shortcodeType'] ?? ($cur['shortcodeType'] ?? 'PROXY'))));
+    if (!in_array($type, MOBIUS_MENU_TYPES, true) && $type !== ($cur['shortcodeType'] ?? null)) throw new RuntimeException('The type is PROXY, MS_INITIATED or NETWORK_INITIATED.');
+    $url = trim((string)($in['remoteURL'] ?? ''));
+    if ($url !== '' && (!filter_var($url, FILTER_VALIDATE_URL) || !preg_match('~^https?://~i', $url))) throw new RuntimeException('The address must be a full http:// or https:// address.');
+    if ($type === 'PROXY' && $url === '') throw new RuntimeException('A PROXY menu needs the address Mobius should call.');
+    $dest = is_array($in['destinationID'] ?? null) ? $in['destinationID'] : preg_split('/[\s,;]+/', (string)($in['destinationID'] ?? ''), -1, PREG_SPLIT_NO_EMPTY);
+    $dest = array_values(array_unique(array_map(fn($d) => trim((string)$d), $dest)));
+    foreach ($dest as $d) if (!preg_match('/^[A-Za-z0-9._:@-]{1,100}$/', $d)) throw new RuntimeException('"'.$d.'" is not a valid destination id.');
+    if (count($dest) > 30) throw new RuntimeException('At most 30 destinations.');
+    return ['name' => $name, 'shortcode' => $code, 'shortcodeType' => $type, 'isExtendable' => !empty($in['isExtendable']), 'remoteURL' => $url, 'destinationID' => $dest];
+}
+function mobius_menu_public(array $m): array { $m = mobius_menu_norm($m); unset($m['_raw']); return $m; }
+function mobius_record_change(?string $id, string $code, string $action, ?array $before, ?array $after, string $answer): int {
+    mobius_menu_tables(); $u = function_exists('user') ? (user()['username'] ?? null) : null;
+    $st = portal_pdo()->prepare('INSERT INTO mobius_menu_changes(menu_id, shortcode, action, before_json, after_json, answer, username) VALUES(?,?,?,?,?,?,?)');
+    $st->execute([$id, $code, $action, $before === null ? null : json_encode($before['_raw'] ?? $before, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), $after === null ? null : json_encode($after['_raw'] ?? $after, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), mb_substr($answer, 0, 2000), $u]);
+    return (int)portal_pdo()->lastInsertId();
+}
+// Create ($menuId null) or change any menu. $confirm must be the short code when the menu does not (or will not) call this portal.
+// Returns ['menu' => the menu read back from Mobius (or null), 'change' => id of the History row].
+function mobius_save_menu(array $cfg, ?string $menuId, array $in, string $confirm = '', string $action = ''): array {
+    $l = mobius_list_menus($cfg); if (!$l['ok']) throw new RuntimeException('Could not read Mobius: '.$l['error']);
+    $cur = null; if ($menuId !== null && $menuId !== '') { $cur = mobius_find_menu($l['menus'], $menuId); if (!$cur) throw new RuntimeException('That menu is no longer in Mobius (refresh the list).'); }
+    $new = mobius_menu_input($in, $cur);
+    foreach ($l['menus'] as $m) if ((string)$m['menuID'] !== (string)($cur['menuID'] ?? "\0") && mobius_bare_code((string)$m['shortcode']) === mobius_bare_code($new['shortcode'])) throw new RuntimeException($new['shortcode'].' is already used in Mobius by “'.$m['name'].'”. Nothing was changed.');
+    $touchesOther = ($cur && !mobius_menu_is_ours($cur, $cfg)) || !mobius_menu_is_ours($new, $cfg);
+    if ($touchesOther) {
+        $need = $cur ? (string)$cur['shortcode'] : $new['shortcode'];
+        if (mobius_bare_code(trim($confirm)) !== mobius_bare_code($need)) throw new RuntimeException('This menu '.($cur ? 'belongs to another service' : 'will not call this portal').': type its short code '.$need.' in the confirmation box to go ahead. Nothing was changed.');
+    }
+    if ($cur) {
+        $same = true; foreach ($new as $k => $v) if ($v != $cur[$k]) $same = false;
+        if ($same) throw new RuntimeException('Nothing was changed: the values are the same as in Mobius.');
+    }
+    $data = mobius_menu_denorm($cur ? array_merge($cur, $new) : $new + ['_raw' => []]);
+    if (!$cur) foreach (MOBIUS_MENU_FIELDS['menuID'] as $k) unset($data[$k]);
+    $r = mobius_rest($cfg, 'ussdmenues/set', ['data' => $data]);
+    if (!$r['ok']) { mobius_record_change($menuId, $new['shortcode'], ($action ?: ($cur ? 'change' : 'create')).'-refused', $cur, $data, $r['error']); throw new RuntimeException('Mobius refused: '.$r['error']); }
+    $after = mobius_list_menus($cfg); $menu = null;
+    if ($after['ok']) { $menu = $cur ? mobius_find_menu($after['menus'], (string)$cur['menuID']) : null; if (!$menu) foreach ($after['menus'] as $m) if (mobius_bare_code((string)$m['shortcode']) === mobius_bare_code($new['shortcode'])) $menu = $m; }
+    $act = $action ?: ($cur ? 'change' : 'create');
+    $id = mobius_record_change($menu['menuID'] ?? $menuId, $new['shortcode'], $act, $cur, $menu ?? $data, mobius_redact((string)($r['raw'] ?? ''), 1000));
+    audit('mobius_menu_'.$act, null, 'mobius', $new['shortcode'], json_encode(['menu' => $menu['menuID'] ?? $menuId, 'from' => $cur ? mobius_menu_public($cur) : null, 'to' => $new], JSON_UNESCAPED_SLASHES));
+    return ['menu' => $menu, 'change' => $id];
+}
+// Point a menu at this portal: PROXY, the portal's address and the destinations of the menu that already calls the portal.
+function mobius_point_to_portal(array $cfg, string $menuId, string $confirm): array {
+    $l = mobius_list_menus($cfg); if (!$l['ok']) throw new RuntimeException('Could not read Mobius: '.$l['error']);
+    $cur = mobius_find_menu($l['menus'], $menuId); if (!$cur) throw new RuntimeException('That menu is no longer in Mobius.');
+    if (mobius_menu_is_ours($cur, $cfg)) throw new RuntimeException('That menu already calls this portal.');
+    $tpl = mobius_template_menu($l['menus'], $cfg); if (!$tpl) throw new RuntimeException('No menu in Mobius calls this portal yet, so there is no address to copy.');
+    return mobius_save_menu($cfg, $menuId, ['name' => $cur['name'], 'shortcode' => $cur['shortcode'], 'shortcodeType' => 'PROXY', 'isExtendable' => $cur['isExtendable'], 'remoteURL' => $tpl['remoteURL'], 'destinationID' => $tpl['destinationID']], $confirm, 'to-portal');
+}
+function mobius_changes(int $limit = 40, ?string $menuId = null): array {
+    mobius_menu_tables(); $limit = max(1, min(500, $limit));
+    if ($menuId !== null) { $st = portal_pdo()->prepare("SELECT * FROM mobius_menu_changes WHERE menu_id=? ORDER BY id DESC LIMIT $limit"); $st->execute([$menuId]); return $st->fetchAll(); }
+    return portal_pdo()->query("SELECT * FROM mobius_menu_changes ORDER BY id DESC LIMIT $limit")->fetchAll();
+}
+// Put a menu back as it was before a change. A creation cannot be undone from here (the portal does not delete in Mobius).
+function mobius_restore_change(array $cfg, int $changeId): array {
+    mobius_menu_tables(); $st = portal_pdo()->prepare('SELECT * FROM mobius_menu_changes WHERE id=?'); $st->execute([$changeId]); $ch = $st->fetch();
+    if (!$ch) throw new RuntimeException('That change is not in the history.');
+    if (str_ends_with((string)$ch['action'], '-refused')) throw new RuntimeException('Mobius refused that change, so there is nothing to put back.');
+    if ($ch['before_json'] === null) throw new RuntimeException('That was a new menu. The portal does not delete menus in Mobius: switch it to another address or remove it in Mobius itself.');
+    $before = mobius_menu_norm((array)json_decode((string)$ch['before_json'], true));
+    $l = mobius_list_menus($cfg); if (!$l['ok']) throw new RuntimeException('Could not read Mobius: '.$l['error']);
+    $cur = mobius_find_menu($l['menus'], (string)$ch['menu_id']); if (!$cur) throw new RuntimeException('That menu is no longer in Mobius.');
+    $in = mobius_menu_public($before);
+    return mobius_save_menu($cfg, (string)$ch['menu_id'], $in, (string)$cur['shortcode'], 'restore');
+}
+// For the export buttons: every menu exactly as Mobius gave it.
+function mobius_menus_export(array $menus): array { return array_map(fn($m) => mobius_menu_norm($m)['_raw'], $menus); }
+
 // Rename a menu in the portal: its short code (every item, its history, its register entry and the proxy setting) and its name.
 function menu_update_identity(string $old, string $newCode, string $newName): void {
     $newCode = menu_normalize_shortcode($newCode); $newName = trim($newName);

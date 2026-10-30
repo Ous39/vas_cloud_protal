@@ -536,6 +536,29 @@ t('menus inside Mobius: read, create, change - only ours', function () use ($cfg
     thrown(fn() => mobius_create_menu(['token' => 'OTHER'] + $cfg, 'Z', '*8803#'), 'No menu in Mobius calls this portal yet', 'with no menu of ours to copy from it says so, and creates nothing'); eq(count(mobius_list_menus($cfg)['menus']), 3, 'so Mobius holds exactly the three');
     @unlink($store);
 });
+t('Mobius menus: a list in another shape is still read; any menu can be changed with confirmation and put back', function () use ($cfgFor, $stub, $db) {
+    $tmp = sys_get_temp_dir(); $store = $tmp.'/zt_stub_mobius_menus.json'; $shape = $tmp.'/zt_stub_mobius_shape.txt'; $ours = 'https://x/portal/ussd.php?t=ZT-TOKEN&m=proxy';
+    $menus = [['menuID' => 'o1', 'name' => 'Ours main', 'shortcode' => '*8800#', 'shortcodeType' => 'PROXY', 'isExtendable' => false, 'remoteURL' => $ours, 'destinationID' => ['d1']]];
+    for ($i = 1; $i < 120; $i++) $menus[] = ['menuID' => sprintf('e%03d', $i), 'name' => "Svc $i", 'shortcode' => "*7$i", 'shortcodeType' => 'PROXY', 'isExtendable' => false, 'remoteURL' => "https://prod/hera/ussd/$i", 'destinationID' => ['d2']];
+    file_put_contents($store, json_encode($menus)); file_put_contents($shape, 'nested');
+    $cfg = $cfgFor(['mobius_base' => "$stub/mobius/rest/", 'mobius_user' => 'u', 'mobius_pass' => encrypt_secret(md5('p')), 'token' => 'ZT-TOKEN', 'shortcode_proxy' => '*8800#', 'mobius_session' => '', 'mobius_variant' => '0']);
+    try {
+        $l = mobius_list_menus($cfg); eq(count($l['menus'] ?? []), 120, 'paging inside data, rows in data.list, "id" for the id, 50 a page: all 120 are read'); eq($l['count'], 120, 'and the count agrees');
+        has((string)($l['diag'][1]['answer'] ?? ''), '"list":[]', 'the first (empty) answer is kept for the troubleshooting box');
+        thrown(fn() => mobius_save_menu($cfg, 'e005', ['name' => 'Svc five', 'shortcode' => '*75', 'shortcodeType' => 'PROXY', 'remoteURL' => 'https://prod/hera/ussd/5', 'destinationID' => 'd2']), 'type its short code', 'another service\'s menu is not changed without typing its code');
+        $r = mobius_save_menu($cfg, 'e005', ['name' => 'Svc five', 'shortcode' => '*75', 'shortcodeType' => 'PROXY', 'remoteURL' => 'https://prod/hera/ussd/5', 'destinationID' => 'd2, d3'], '*75');
+        eq([$r['menu']['name'] ?? null, $r['menu']['destinationID'] ?? null], ['Svc five', ['d2', 'd3']], 'with the code typed it is changed');
+        $row = array_values(array_filter(json_decode((string)file_get_contents($store), true), fn($m) => $m['menuID'] === 'e005'))[0]; ok(!isset($row['_raw']), 'and only Mobius\' own fields are sent');
+        $b = mobius_restore_change($cfg, $r['change']); eq([$b['menu']['name'] ?? null, $b['menu']['destinationID'] ?? null], ['Svc 5', ['d2']], 'Put back restores the menu as it was');
+        $p = mobius_point_to_portal($cfg, 'e007', '*77'); ok(mobius_menu_is_ours($p['menu'], $cfg), 'a code can be sent to the portal'); eq($p['menu']['destinationID'] ?? null, ['d1'], 'with the portal menu\'s destinations');
+        $c = mobius_save_menu($cfg, null, ['name' => 'New ours', 'shortcode' => '*8805#', 'shortcodeType' => 'PROXY', 'remoteURL' => $ours, 'destinationID' => 'd1']); eq($c['menu']['shortcode'] ?? null, '*8805#', 'a new menu that calls the portal needs no confirmation');
+        thrown(fn() => mobius_save_menu($cfg, null, ['name' => 'Else', 'shortcode' => '*8806#', 'shortcodeType' => 'PROXY', 'remoteURL' => 'https://other/x']), 'will not call this portal', 'one that calls elsewhere does');
+        thrown(fn() => mobius_save_menu($cfg, null, ['name' => 'Dup', 'shortcode' => '*76#', 'shortcodeType' => 'PROXY', 'remoteURL' => $ours]), 'already used', 'a code Mobius has (with or without #) is refused');
+        thrown(fn() => mobius_restore_change($cfg, $c['change']), 'was a new menu', 'a creation is not undone (the portal never deletes in Mobius)');
+    } finally { @unlink($store); @unlink($shape); $db->exec("DELETE FROM mobius_menu_changes WHERE shortcode IN ('*75','*77','*8805#','*8806#','*76#','*8802#')"); }
+    eq(count(mobius_find_rows(['data' => ['a1' => ['shortCode' => '*1#'], 'a2' => ['shortCode' => '*2#']]]) ?? []), 2, 'a list given as a map keyed by id is read');
+    eq(mobius_find_count(['status' => 'SUCCESS', 'data' => '270']), 270, 'a count given as text is read');
+});
 t('a menu is renamed in the portal: short code and name together', function () use ($db) {
     $clean = fn() => array_map(fn($t) => $db->exec("DELETE FROM $t WHERE short_code IN ('*8811#','*8812#','*8813#')"), ['ussd_menu_nodes', 'ussd_menu_versions', 'portal_short_codes']);
     $clean();
