@@ -56,6 +56,8 @@ if ($parts[0] === 'mobius') {
             $j(['status' => 'SUCCESS', 'data' => $rows]); break;
         case 'ussdmenues/set':
             $d = $in['data'] ?? []; if (empty($d['shortcode'])) { $j(['status' => 'ERROR', 'errorMessage' => 'shortcode required']); break; }
+            // "strict" (file zt_stub_mobius_strict.txt): like a Mobius that refuses any field its menus do not have (HTTP 400 "Unrecognized field")
+            if (is_file($dir.'/zt_stub_mobius_strict.txt') && $menus) { $known = array_keys($menus[0]); foreach (array_keys($d) as $f) if (!in_array($f, $known, true) && !in_array($f, ['id', 'menuID'], true)) { http_response_code(400); $j(['status' => 'ERROR', 'errorMessage' => 'Unrecognized field &quot;'.$f.'&quot; (class com.mobius.software.ims.ussd.gateway.c.B), not marked as ignorable']); break 2; } }
             if (isset($d['id'])) { $d['menuID'] = $d['id']; unset($d['id']); } if (array_key_exists('_raw', $d)) { $j(['status' => 'ERROR', 'errorMessage' => 'unknown field _raw']); break; }
             if (!empty($d['menuID'])) { foreach ($menus as $k => $m) if ($m['menuID'] === $d['menuID']) $menus[$k] = $d; } else { $d['menuID'] = 'm'.(count($menus) + 1).substr(md5(uniqid('', true)), 0, 8); $menus[] = $d; }
             file_put_contents($store, json_encode($menus)); $j(['status' => 'SUCCESS', 'data' => $d]); break;

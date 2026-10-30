@@ -559,6 +559,21 @@ t('Mobius menus: a list in another shape is still read; any menu can be changed 
     eq(count(mobius_find_rows(['data' => ['a1' => ['shortCode' => '*1#'], 'a2' => ['shortCode' => '*2#']]]) ?? []), 2, 'a list given as a map keyed by id is read');
     eq(mobius_find_count(['status' => 'SUCCESS', 'data' => '270']), 270, 'a count given as text is read');
 });
+t('Mobius menus: a Mobius that refuses fields it does not know (no destinationID) - only its own fields are sent', function () use ($cfgFor, $stub) {
+    $tmp = sys_get_temp_dir(); $store = $tmp.'/zt_stub_mobius_menus.json'; $strict = $tmp.'/zt_stub_mobius_strict.txt'; $ours = 'https://x/portal/ussd.php?t=ZT-TOKEN&m=proxy';
+    file_put_contents($store, json_encode([['menuID' => 'o1', 'name' => 'Ours', 'shortcode' => '*8800#', 'shortcodeType' => 'PROXY', 'isExtendable' => 'false', 'remoteURL' => $ours], ['menuID' => 'e1', 'name' => 'EVD', 'shortcode' => '*16', 'shortcodeType' => 'PROXY', 'isExtendable' => 'true', 'remoteURL' => 'https://prod/x']]));
+    file_put_contents($strict, '1');
+    $cfg = $cfgFor(['mobius_base' => "$stub/mobius/rest/", 'mobius_user' => 'u', 'mobius_pass' => encrypt_secret(md5('p')), 'token' => 'ZT-TOKEN', 'shortcode_proxy' => '*8800#', 'mobius_session' => '', 'mobius_variant' => '0']);
+    try {
+        $c = mobius_save_menu($cfg, null, ['name' => 'Strict new', 'shortcode' => '*7894#', 'shortcodeType' => 'PROXY', 'remoteURL' => $ours, 'destinationID' => 'd1']); eq($c['menu']['shortcode'] ?? null, '*7894#', 'a new menu is created');
+        $row = array_values(array_filter(json_decode((string)file_get_contents($store), true), fn($m) => $m['shortcode'] === '*7894#'))[0];
+        ok(!array_key_exists('destinationID', $row), 'without a destinationID field, which this Mobius does not have'); eq($row['isExtendable'] ?? null, 'false', 'and Extendable in the same form as its other menus');
+        eq(mobius_create_menu($cfg, 'Old button', '*7895#')['menu']['shortcode'] ?? null, '*7895#', 'the Create button on the Menus page works too');
+        mobius_save_menu($cfg, 'e1', ['name' => 'EVD2', 'shortcode' => '*16', 'shortcodeType' => 'PROXY', 'remoteURL' => 'https://prod/x', 'destinationID' => 'zz'], '*16');
+        ok(!array_key_exists('destinationID', json_decode((string)file_get_contents($store), true)[1]), 'a change adds no field either');
+        $r = mobius_rest($cfg, 'ussdmenues/set', ['data' => ['name' => 'x', 'shortcode' => '*1#', 'bogus' => 1]]); has((string)($r['error'] ?? ''), 'field "bogus"', 'Mobius\' message is shown as plain text (no &quot;)');
+    } finally { @unlink($store); @unlink($strict); }
+});
 t('a menu is renamed in the portal: short code and name together', function () use ($db) {
     $clean = fn() => array_map(fn($t) => $db->exec("DELETE FROM $t WHERE short_code IN ('*8811#','*8812#','*8813#')"), ['ussd_menu_nodes', 'ussd_menu_versions', 'portal_short_codes']);
     $clean();

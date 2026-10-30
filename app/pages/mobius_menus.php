@@ -49,6 +49,7 @@ declare(strict_types=1);
         if ($saved && $saved['menu_id']===($edit['menuID']??'')) { $s=$saved['m']; $base=['name'=>$s['name']??'','shortcode'=>$s['shortcode']??'','shortcodeType'=>$s['shortcodeType']??'PROXY','isExtendable'=>!empty($s['isExtendable']),'remoteURL'=>$s['remoteURL']??'','destinationID'=>preg_split('/[\s,;]+/',(string)($s['destinationID']??''),-1,PREG_SPLIT_NO_EMPTY)]; }
         $form=$base;
     }
+    $mk=mobius_menu_keys($menus)['keys']; $hasDest=$mk['destinationID']!==null; $hasExt=$mk['isExtendable']!==null;
     $dests=[]; foreach($menus as $m) foreach($m['destinationID'] as $d) $dests[$d]=($dests[$d]??0)+1; arsort($dests);
     $oursN=count(array_filter($menus,fn($m)=>mobius_menu_is_ours($m,$cfg)));
     $changes=mobius_changes(30);
@@ -81,10 +82,10 @@ declare(strict_types=1);
             <div class="col-md-5"><label class="small text-muted mb-0">Name</label><input class="form-control" name="m[name]" value="<?=e($form['name'])?>" maxlength="150" required></div>
             <div class="col-md-3"><label class="small text-muted mb-0">Short code</label><input class="form-control font-monospace" name="m[shortcode]" value="<?=e($form['shortcode'])?>" maxlength="40" placeholder="*9606*7070#" required></div>
             <div class="col-md-2"><label class="small text-muted mb-0">Type</label><select class="form-select" name="m[shortcodeType]"><?php foreach(array_unique(array_merge(MOBIUS_MENU_TYPES,[$form['shortcodeType']])) as $t): if($t==='') continue;?><option <?=$form['shortcodeType']===$t?'selected':''?>><?=e($t)?></option><?php endforeach;?></select></div>
-            <div class="col-md-2 d-flex align-items-end"><div class="form-check mb-2"><input class="form-check-input" type="checkbox" name="m[isExtendable]" value="1" id="mbExt" <?=$form['isExtendable']?'checked':''?>><label class="form-check-label" for="mbExt">Extendable</label></div></div>
+            <div class="col-md-2 d-flex align-items-end"><?php if($hasExt):?><div class="form-check mb-2"><input class="form-check-input" type="checkbox" name="m[isExtendable]" value="1" id="mbExt" <?=$form['isExtendable']?'checked':''?>><label class="form-check-label" for="mbExt">Extendable</label></div><?php endif;?></div>
             <div class="col-md-8"><label class="small text-muted mb-0">Address Mobius calls (remote URL)</label><input class="form-control font-monospace" name="m[remoteURL]" id="mbUrl" value="<?=e($form['remoteURL'])?>" maxlength="500" placeholder="https://…">
                 <?php if($tpl):?><button type="button" class="btn btn-link btn-sm px-0" id="mbUsePortal" data-url="<?=e($tpl['remoteURL'])?>" data-dest="<?=e(implode(', ',$tpl['destinationID']))?>">Use this portal's address</button><?php endif;?></div>
-            <div class="col-md-4"><label class="small text-muted mb-0">Destination ids (comma separated)</label><input class="form-control font-monospace" name="m[destinationID]" id="mbDest" value="<?=e(implode(', ',$form['destinationID']))?>" list="mbDests"><datalist id="mbDests"><?php foreach($dests as $d=>$n):?><option value="<?=e($d)?>"><?=e($d)?> (<?=$n?> menus)</option><?php endforeach;?></datalist></div>
+            <?php if($hasDest):?><div class="col-md-4"><label class="small text-muted mb-0">Destination ids (comma separated)</label><input class="form-control font-monospace" name="m[destinationID]" id="mbDest" value="<?=e(implode(', ',$form['destinationID']))?>" list="mbDests"><datalist id="mbDests"><?php foreach($dests as $d=>$n):?><option value="<?=e($d)?>"><?=e($d)?> (<?=$n?> menus)</option><?php endforeach;?></datalist></div><?php endif;?>
             <div class="col-md-5"><label class="small text-muted mb-0">Confirm<?=$other?'':' (only needed when the menu does not call this portal)'?>: type the short code<?=$edit?' <code>'.e($edit['shortcode']).'</code>':''?></label><input class="form-control font-monospace" name="confirm" autocomplete="off" <?=$other?'required':''?>></div>
             <div class="col-md-3 d-flex align-items-end"><button class="btn <?=$other?'btn-danger':'btn-primary'?> w-100"><?=$edit?'Save in Mobius':'Create in Mobius'?></button></div>
             <div class="col-12 small text-muted">The change goes straight to Mobius (live). Fields Mobius has that are not shown here are sent back unchanged. Nothing is deleted from Mobius by the portal.</div>
@@ -95,7 +96,7 @@ declare(strict_types=1);
     <div class="cardx mt-3"><div class="d-flex justify-content-between"><h3 class="mb-2"><code><?=e($view['shortcode'])?></code> — <?=e($view['name'])?> <span class="badge <?=$vo?'bg-success':'bg-secondary'?> align-middle"><?=$vo?'calls this portal':'other service'?></span></h3><a class="btn-close" href="?page=mobius_menus" aria-label="Close"></a></div>
         <div class="row g-3"><div class="col-lg-7"><table class="table table-sm mb-0"><tbody>
             <tr><th class="text-muted fw-normal">Menu id</th><td><code><?=e($view['menuID'])?></code></td></tr><tr><th class="text-muted fw-normal">Type</th><td><?=e($view['shortcodeType'])?></td></tr><tr><th class="text-muted fw-normal">Extendable</th><td><?=$view['isExtendable']?'yes':'no'?></td></tr>
-            <tr><th class="text-muted fw-normal">Address</th><td class="small font-monospace text-break"><?=e($hideUrl($view['remoteURL']))?></td></tr><tr><th class="text-muted fw-normal">Destinations</th><td><?=e(implode(', ',$view['destinationID'])?:'—')?></td></tr>
+            <tr><th class="text-muted fw-normal">Address</th><td class="small font-monospace text-break"><?=e($hideUrl($view['remoteURL']))?></td></tr><?php if($hasDest):?><tr><th class="text-muted fw-normal">Destinations</th><td><?=e(implode(', ',$view['destinationID'])?:'—')?></td></tr><?php endif;?>
             <tr><th class="text-muted fw-normal">In the portal</th><td><?php if($inPortal):?>built — <a href="?page=ussd_build&short_code=<?=urlencode(menu_normalize_shortcode($view['shortcode']))?>">open in Easy Builder</a> · <a href="?page=ussd_sim&sc=<?=urlencode(menu_normalize_shortcode($view['shortcode']))?>">try it</a><?php else:?><span class="text-muted">no menu with this code</span><?php if(menu_valid_shortcode(menu_normalize_shortcode($view['shortcode']))):?> — <a href="?page=ussd_menus&add=1">build one</a><?php endif;?><?php endif;?></td></tr>
         </tbody></table>
         <details class="mt-2"><summary class="small text-muted">Everything Mobius holds for this menu</summary><pre class="small bg-light border rounded p-2 mb-0" style="white-space:pre-wrap"><?=e(mobius_redact(json_encode($view['_raw'],JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE),6000))?></pre></details></div>
@@ -109,15 +110,15 @@ declare(strict_types=1);
     <?php endif;?>
 
     <?php if($ok):?>
-    <div class="cardx table-card mt-3"><div class="table-scroll"><table class="table table-hover align-middle mb-0" id="mbTable"><thead><tr><th>Short code</th><th>Name</th><th>Type</th><th>Ext.</th><th>Address</th><th>Destinations</th><th>Portal</th><th class="text-end"></th></tr></thead><tbody>
+    <div class="cardx table-card mt-3"><div class="table-scroll"><table class="table table-hover align-middle mb-0" id="mbTable"><thead><tr><th>Short code</th><th>Name</th><th>Type</th><?php if($hasExt):?><th>Ext.</th><?php endif;?><th>Address</th><?php if($hasDest):?><th>Destinations</th><?php endif;?><th>Portal</th><th class="text-end"></th></tr></thead><tbody>
         <?php foreach($menus as $m): $mo=mobius_menu_is_ours($m,$cfg);?>
         <tr data-who="<?=$mo?'portal':'other'?>"<?=$view&&$view['menuID']===$m['menuID']?' class="table-active"':''?>>
-            <td><code><?=e($m['shortcode'])?></code></td><td><?=e($m['name'])?></td><td class="small"><?=e($m['shortcodeType'])?></td><td class="small"><?=$m['isExtendable']?'yes':'no'?></td>
-            <td class="small text-muted text-break" style="max-width:22rem"><?=e(mb_strimwidth($hideUrl($m['remoteURL']),0,70,'…'))?></td><td class="small"><?=e(implode(', ',$m['destinationID']))?></td>
+            <td><code><?=e($m['shortcode'])?></code></td><td><?=e($m['name'])?></td><td class="small"><?=e($m['shortcodeType'])?></td><?php if($hasExt):?><td class="small"><?=$m['isExtendable']?'yes':'no'?></td><?php endif;?>
+            <td class="small text-muted text-break" style="max-width:22rem"><?=e(mb_strimwidth($hideUrl($m['remoteURL']),0,70,'…'))?></td><?php if($hasDest):?><td class="small"><?=e(implode(', ',$m['destinationID']))?></td><?php endif;?>
             <td><?php if($mo):?><span class="badge bg-success">calls portal</span><?php if(!isset($portalCodes[rtrim($m['shortcode'],'#')])):?> <span class="badge bg-warning text-dark" title="Mobius sends this code to the portal, but the portal has no menu for it">not built</span><?php endif;?><?php else:?><span class="badge bg-secondary">other</span><?php endif;?></td>
             <td class="text-end text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="?page=mobius_menus&view=<?=urlencode($m['menuID'])?>" title="Open"><i class="fa-solid fa-eye"></i></a> <a class="btn btn-sm btn-outline-primary" href="?page=mobius_menus&edit=<?=urlencode($m['menuID'])?>" title="Change"><i class="fa-solid fa-pen"></i></a></td>
         </tr><?php endforeach;?>
-        <?php if(!$menus):?><tr><td colspan="8" class="text-muted">No menus read from Mobius.</td></tr><?php endif;?>
+        <?php if(!$menus):?><tr><td colspan="9" class="text-muted">No menus read from Mobius.</td></tr><?php endif;?>
     </tbody></table></div></div>
     <?php endif;?>
 
@@ -127,7 +128,7 @@ declare(strict_types=1);
             $diff=[]; if($b&&$a) foreach(['name','shortcode','shortcodeType','isExtendable','remoteURL','destinationID'] as $k) if($b[$k]!=$a[$k]) $diff[]=$k.': '.(is_array($b[$k])?implode(',',$b[$k]):var_export($b[$k],true)).' → '.(is_array($a[$k])?implode(',',$a[$k]):var_export($a[$k],true));
             $refused=str_ends_with((string)$h['action'],'-refused');?>
         <tr><td class="small text-nowrap"><?=e($h['created_at'])?></td><td class="small"><?=e($h['username']??'')?></td><td><span class="badge <?=$refused?'bg-danger':'bg-light text-dark border'?>"><?=e($h['action'])?></span></td><td><code><?=e($h['shortcode'])?></code></td>
-            <td class="small text-break" style="max-width:34rem"><?=$refused?e(mb_strimwidth((string)$h['answer'],0,200,'…')):($b?e($hideUrl(implode(' · ',$diff))?:'—'):'new menu')?></td>
+            <td class="small text-break" style="max-width:34rem"><?=$refused?e(mb_strimwidth(html_entity_decode((string)$h['answer'],ENT_QUOTES|ENT_HTML5,'UTF-8'),0,200,'…')):($b?e($hideUrl(implode(' · ',$diff))?:'—'):'new menu')?></td>
             <td class="text-end"><?php if($b && !$refused):?><form method="post" class="d-inline" data-confirm="Put <?=e($h['shortcode'])?> back as it was before this change? This changes the live menu in Mobius."><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="restore"><input type="hidden" name="change_id" value="<?=(int)$h['id']?>"><input type="hidden" name="menu_id" value="<?=e($h['menu_id'])?>"><button class="btn btn-sm btn-outline-warning py-0">Put back</button></form><?php endif;?></td></tr>
         <?php endforeach;?></tbody></table></div><?php endif;?>
     </div>
@@ -135,6 +136,6 @@ declare(strict_types=1);
     (()=>{const f=document.getElementById('mbFilter'),w=document.getElementById('mbWho'),rows=[...document.querySelectorAll('#mbTable tbody tr[data-who]')];
       const run=()=>{const q=(f.value||'').toLowerCase(),who=w.value;rows.forEach(r=>{r.style.display=(!q||r.textContent.toLowerCase().includes(q))&&(!who||r.dataset.who===who)?'':'none';});};
       f&&f.addEventListener('input',run); w&&w.addEventListener('change',run);
-      const b=document.getElementById('mbUsePortal'); b&&b.addEventListener('click',()=>{document.getElementById('mbUrl').value=b.dataset.url;document.getElementById('mbDest').value=b.dataset.dest;});})();
+      const b=document.getElementById('mbUsePortal'); b&&b.addEventListener('click',()=>{document.getElementById('mbUrl').value=b.dataset.url;const d=document.getElementById('mbDest');if(d)d.value=b.dataset.dest;});})();
     </script>
     <?php layout_end(); exit;

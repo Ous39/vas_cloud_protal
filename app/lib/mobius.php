@@ -108,7 +108,7 @@ function mobius_rest(array $cfg, string $path, array $data = []): array {
             $r = mobius_call_variant($cfg, $base, $path, $data, $variant, $n > 0);
             $bad = $r['json'] !== null && (strtoupper((string)($r['json']['status'] ?? '')) === 'ERROR' || trim((string)($r['json']['errorMessage'] ?? '')) !== '');
             if ($r['code'] === 200 && !$bad) { if ($variant !== $pref) { try { ussd_proxy_set(['mobius_variant' => (string)$variant]); } catch (Throwable $e) {} } return ['ok' => true, 'json' => (array)$r['json'], 'raw' => (string)$r['raw'], 'base' => $base]; }
-            $errors[] = $base.' HTTP '.$r['code'].' '.($r['error'] !== '' ? $r['error'] : mb_substr((string)($r['json']['errorMessage'] ?? $r['raw']), 0, 160));
+            $errors[] = $base.' HTTP '.$r['code'].' '.($r['error'] !== '' ? $r['error'] : mb_substr(html_entity_decode((string)($r['json']['errorMessage'] ?? $r['raw']), ENT_QUOTES | ENT_HTML5, 'UTF-8'), 0, 160));
             if (!mobius_is_auth_error($r)) break;
         }
         if ($r['code'] > 0) break; // this node answered: do not ask the other one to do the same
@@ -143,16 +143,44 @@ function mobius_menu_norm(array $raw): array {
     return ['menuID' => (string)($g('menuID', '') ?? ''), 'name' => (string)($g('name', '') ?? ''), 'shortcode' => trim((string)($g('shortcode', '') ?? '')), 'shortcodeType' => strtoupper((string)($g('shortcodeType', '') ?? '')),
         'isExtendable' => $ext, 'remoteURL' => (string)($g('remoteURL', '') ?? ''), 'destinationID' => $dest, '_raw' => $raw];
 }
-// Back to what Mobius sent, with the portal's values put under Mobius' own field names. Fields Mobius did not have keep the documented names.
+// Back to what Mobius sent, with the portal's values put under Mobius' own field names. A field the menu did not have is not added: Mobius refuses
+// a field it does not know (HTTP 400 "Unrecognized field").
 function mobius_menu_denorm(array $m): array {
     $raw = (array)($m['_raw'] ?? []); $out = $raw;
     foreach (array_keys(MOBIUS_MENU_FIELDS) as $c) {
         if (!array_key_exists($c, $m)) continue; if ($c === 'menuID' && (string)$m[$c] === '') continue;
-        $k = mobius_field_key($raw, $c) ?? $c; $v = $m[$c];
+        $k = mobius_field_key($raw, $c); if ($k === null) { if ($raw !== [] && !in_array($c, ['name', 'shortcode'], true)) continue; $k = $c; } $v = $m[$c];
         if ($c === 'destinationID' && $k !== $c && isset($raw[$k]) && is_string($raw[$k])) $v = implode(',', (array)$v); // Mobius gave one text: keep it one text
         $out[$k] = $v;
     }
     return $out;
+}
+// The field names this Mobius uses, learnt from the menus it lists: [portal name => its name, or null when its menus do not have that field].
+function mobius_menu_keys(array $menus): array {
+    $out = array_fill_keys(array_keys(MOBIUS_MENU_FIELDS), null); $refs = []; $seen = false;
+    foreach ($menus as $m) {
+        $raw = (array)(mobius_menu_norm($m)['_raw'] ?? []); if (!$raw) continue; $seen = true;
+        foreach ($out as $c => $k) if ($k === null && ($f = mobius_field_key($raw, $c)) !== null) { $out[$c] = $f; $refs[$c] = $raw[$f]; }
+    }
+    if (!$seen) foreach ($out as $c => $_) $out[$c] = $c; // nothing listed to learn from: the documented names
+    return ['keys' => $out, 'refs' => $refs];
+}
+// A value in the same form as Mobius holds it in its other menus (a list as one text, true/false as text, …).
+function mobius_like($v, $ref) {
+    if (is_array($v) && is_string($ref)) return implode(',', $v);
+    if (is_bool($v) && is_string($ref)) return $v ? 'true' : 'false';
+    if (is_bool($v) && is_int($ref)) return $v ? 1 : 0;
+    return $v;
+}
+// A new menu in the shape this Mobius uses: only the fields its menus have (name and short code always), under its names.
+function mobius_new_menu_data(array $new, array $menus): array {
+    ['keys' => $keys, 'refs' => $refs] = mobius_menu_keys($menus); $data = [];
+    foreach ($new as $c => $v) {
+        if ($c === '_raw' || $c === 'menuID' || !array_key_exists($c, $keys)) continue;
+        $k = $keys[$c]; if ($k === null) { if (!in_array($c, ['name', 'shortcode'], true)) continue; $k = $c; }
+        $data[$k] = array_key_exists($c, $refs) ? mobius_like($v, $refs[$c]) : $v;
+    }
+    return $data;
 }
 // The list of menu rows anywhere in an answer: data, data.list, data.items, a map keyed by id, … (null when there is none).
 function mobius_find_rows($j, int $depth = 0): ?array {
@@ -245,7 +273,7 @@ function mobius_create_menu(array $cfg, string $name, string $code, bool $extend
     $l = mobius_list_menus($cfg); if (!$l['ok']) throw new RuntimeException('Could not read Mobius: '.$l['error']);
     if (mobius_menu_state($code, $l['menus'], $cfg)['state'] !== 'missing') throw new RuntimeException($code.' already exists in Mobius — nothing was created.');
     $tpl = mobius_template_menu($l['menus'], $cfg); if (!$tpl) throw new RuntimeException('No menu in Mobius calls this portal yet, so there is no address to copy. Create the first one by hand (Proxy → Connection shows the address), then the portal can create the rest.');
-    $data = ['name' => $name, 'shortcode' => $code, 'shortcodeType' => 'PROXY', 'isExtendable' => $extendable, 'remoteURL' => (string)$tpl['remoteURL'], 'destinationID' => array_values((array)($tpl['destinationID'] ?? []))];
+    $data = mobius_new_menu_data(['name' => $name, 'shortcode' => $code, 'shortcodeType' => 'PROXY', 'isExtendable' => $extendable, 'remoteURL' => (string)$tpl['remoteURL'], 'destinationID' => array_values((array)($tpl['destinationID'] ?? []))], $l['menus']);
     $r = mobius_rest($cfg, 'ussdmenues/set', ['data' => $data]); if (!$r['ok']) throw new RuntimeException('Mobius refused: '.$r['error']);
     audit('mobius_create_menu', null, 'mobius', $code, json_encode(['name' => $name, 'extendable' => $extendable]));
     $after = mobius_list_menus($cfg); $st = $after['ok'] ? mobius_menu_state($code, $after['menus'], $cfg) : ['state' => 'unknown', 'menu' => null];
@@ -325,8 +353,7 @@ function mobius_save_menu(array $cfg, ?string $menuId, array $in, string $confir
         $same = true; foreach ($new as $k => $v) if ($v != $cur[$k]) $same = false;
         if ($same) throw new RuntimeException('Nothing was changed: the values are the same as in Mobius.');
     }
-    $data = mobius_menu_denorm($cur ? array_merge($cur, $new) : $new + ['_raw' => []]);
-    if (!$cur) foreach (MOBIUS_MENU_FIELDS['menuID'] as $k) unset($data[$k]);
+    $data = $cur ? mobius_menu_denorm(array_merge($cur, $new)) : mobius_new_menu_data($new, $l['menus']);
     $r = mobius_rest($cfg, 'ussdmenues/set', ['data' => $data]);
     if (!$r['ok']) { mobius_record_change($menuId, $new['shortcode'], ($action ?: ($cur ? 'change' : 'create')).'-refused', $cur, $data, $r['error']); throw new RuntimeException('Mobius refused: '.$r['error']); }
     $after = mobius_list_menus($cfg); $menu = null;
