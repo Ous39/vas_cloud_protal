@@ -1,6 +1,6 @@
 # How to build a USSD menu in VAS Cloud
 
-Everything is on **Infrastructure → USSD Menu Builder**. You never need to restart anything: customers see an item the moment it is **Active**.
+Everything is on **Infrastructure → USSD Menus (portal)** and **Easy Builder**. You never need to restart anything: customers see an item the moment it is **Active**.
 
 ## Start here: the Menus page (Infrastructure → USSD Menus)
 
@@ -47,7 +47,7 @@ On the right, **On this screen** lists what is on the screen you are on (move up
 
 Everything you add is a **draft** — customers cannot see it. When you are happy, press **Publish now**, or **Publish at this time** to let it go live by itself (see *Schedule a change*). The bar also shows what the **Menu check** found, with a *fix* link. Editing an item that is already live changes it for customers straight away.
 
-The old Builder is still there as **Advanced** for long lists (Quick add), copy, import/export and History.
+The old Builder is still there under **More → Advanced builder (old)** for long lists (Quick add), copy, import/export and History.
 
 ## The 5-minute way (in the Builder)
 
@@ -161,7 +161,7 @@ It is exactly the same as dialling the short code and then typing those numbers,
 
 ## The USSD pages work together
 
-Every USSD page shows the same tab bar: **Menus** (build) → **Service Flows** (special menus) → **Quiz** → **Simulator** (try) → **Proxy** (connect to Mobius, buying, Shared Bundle) → **Short Codes** (the register) → **Routing & IVR** (Hera's routing table).
+Every USSD page shows the same tab bar, in one row: **Menus** · **Easy Builder** · **Mobius** · **Simulator** · **Service Flows** · **Quiz** · **Proxy**, and **More** for *Advanced builder (old)*, *Short Codes* and *Routing & IVR*. Refunds is under **Operations → Refunds**.
 
 - **Proxy** opens on an *Overview* checklist — "is it ready for customers?" — and keeps the settings in tabs (Connection, Buying offers, Shared Bundle, Tools & requests). The tab you were on is remembered after you save.
 - **Short Codes** shows what each registered code is *for* next to what is really built and whether it is answering. A menu whose short code is not in the register is offered with a one-click *Register*.

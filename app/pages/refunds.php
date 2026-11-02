@@ -26,7 +26,7 @@ declare(strict_types=1);
     $missFrom=$okD($_GET['mfrom']??null)?(string)$_GET['mfrom']:date('Y-m-d'); $missTo=$okD($_GET['mto']??null)?(string)$_GET['mto']:date('Y-m-d'); $miss=null; $missErr='';
     if(isset($_GET['miss'])){ try { $miss=refund_missing($schema,$missFrom,$missTo,100); } catch (Throwable $e) { $missErr=$e->getMessage(); } }
     $hist=refund_history(25);
-    layout_start('Refunds'); ussd_subnav('refunds');
+    layout_start('Refunds');
     $fill=fn(array $x)=>e(json_encode($x,JSON_UNESCAPED_SLASHES));
     ?>
     <?php if($mode==='off'):?><div class="alert alert-secondary py-2">Refunds are <b>switched off</b>: you can investigate, but nothing can be sent. Turn on <b>Test</b> or <b>Live</b> under <a href="?page=ussd_proxy">USSD Proxy → Buying offers → Refunds</a>.</div>

@@ -21,11 +21,19 @@ function nav_can_see(string $page): bool {
     return true;
 }
 
-// The tab bar every USSD page shows under its title, so Menus, Flows, Simulator, Proxy, Short Codes and Routing read as one platform.
+// The tab bar every USSD page shows under its title: the pages used every day in one row, the rest under "More".
+// (Refunds is not here any more: it is under Operations. The old builder "Advanced" is under More; Easy Builder replaces it.)
 function ussd_subnav(string $current): void {
-    $tabs = [['ussd_menus','fa-list','Menus'],['ussd_build','fa-wand-magic-sparkles','Easy Builder'],['ussd_menu','fa-sitemap','Advanced'],['ussd_flows','fa-diagram-project','Service Flows'],['ussd_quiz','fa-circle-question','Quiz'],['ussd_sim','fa-mobile-screen','Simulator'],['ussd_proxy','fa-plug','Proxy'],['mobius_menus','fa-server','Mobius'],['shortcodes','fa-hashtag','Short Codes'],['ussd_ivr','fa-route','Routing & IVR'],['refunds','fa-rotate-left','Refunds']];
+    $main = [['ussd_menus','fa-list','Menus'],['ussd_build','fa-wand-magic-sparkles','Easy Builder'],['mobius_menus','fa-server','Mobius'],['ussd_sim','fa-mobile-screen','Simulator'],['ussd_flows','fa-diagram-project','Service Flows'],['ussd_quiz','fa-circle-question','Quiz'],['ussd_proxy','fa-plug','Proxy']];
+    $more = [['ussd_menu','fa-sitemap','Advanced builder (old)'],['shortcodes','fa-hashtag','Short Codes'],['ussd_ivr','fa-route','Routing & IVR']];
+    $more = array_values(array_filter($more, fn($t) => nav_can_see($t[0]))); $inMore = null; foreach ($more as $t) if ($t[0] === $current) $inMore = $t;
     echo '<ul class="nav nav-pills ussd-subnav mb-3">';
-    foreach ($tabs as [$p,$ic,$lb]) { if (!nav_can_see($p)) continue; echo '<li class="nav-item"><a class="nav-link'.($p===$current?' active':'').'" href="?page='.$p.'"><i class="fa-solid '.$ic.' me-1"></i>'.e($lb).'</a></li>'; }
+    foreach ($main as [$p,$ic,$lb]) { if (!nav_can_see($p)) continue; echo '<li class="nav-item"><a class="nav-link'.($p===$current?' active':'').'" href="?page='.$p.'"><i class="fa-solid '.$ic.' me-1"></i>'.e($lb).'</a></li>'; }
+    if ($more) {
+        echo '<li class="nav-item dropdown"><a class="nav-link dropdown-toggle'.($inMore?' active':'').'" href="#" role="button" data-bs-toggle="dropdown" data-bs-popper-config=\'{"strategy":"fixed"}\' aria-expanded="false">'.($inMore?'<i class="fa-solid '.$inMore[1].' me-1"></i>'.e($inMore[2]):'More').'</a><ul class="dropdown-menu dropdown-menu-end">';
+        foreach ($more as [$p,$ic,$lb]) echo '<li><a class="dropdown-item'.($p===$current?' active':'').'" href="?page='.$p.'"><i class="fa-solid '.$ic.' fa-fw me-2"></i>'.e($lb).'</a></li>';
+        echo '</ul></li>';
+    }
     echo '</ul>';
 }
 
@@ -35,7 +43,7 @@ function layout_start(string $title): void {
         ['dashboard','fa-gauge','Dashboard'],
         ['monitoring','fa-heart-pulse','Monitoring'],
         ['group','fa-layer-group','Operations',[['refunds','fa-rotate-left','Refunds'],['subscriptions','fa-user-check','Subscriptions'],['offers','fa-tags','Offer Management'],['offer_health','fa-stethoscope','Offer Health'],['esim','fa-sim-card','eSIM Profiles'],['sales','fa-file-invoice-dollar','Sales & Invoices'],['friends_family','fa-user-group','Friends & Family'],['voting','fa-square-poll-vertical','Voting Service']]],
-        ['group','fa-tower-broadcast','Infrastructure',[['ussd_ivr','fa-mobile-screen-button','USSD & IVR'],['ussd_menus','fa-list','USSD Menus'],['ussd_build','fa-wand-magic-sparkles','Easy Builder'],['ussd_menu','fa-sitemap','USSD Menu Builder'],['ussd_sim','fa-mobile-screen','USSD Simulator'],['ussd_quiz','fa-circle-question','USSD Quiz'],['ussd_flows','fa-diagram-project','Service Flows'],['ussd_proxy','fa-plug','USSD Proxy'],['mobius_menus','fa-server','Mobius Menus'],['integrations','fa-plug-circle-check','Integrations']]],
+        ['group','fa-tower-broadcast','Infrastructure',[['ussd_menus','fa-list','USSD Menus (portal)'],['mobius_menus','fa-server','USSD Menus in Mobius'],['ussd_build','fa-wand-magic-sparkles','Easy Builder'],['ussd_sim','fa-mobile-screen','USSD Simulator'],['ussd_proxy','fa-plug','USSD Proxy'],['ussd_ivr','fa-route','Routing & IVR'],['integrations','fa-plug-circle-check','Integrations']]],
         ['group','fa-chart-line','Reports',[['investigate','fa-headset','Complaint Investigation'],['timeline','fa-timeline','Customer Timeline'],['alerts','fa-triangle-exclamation','Alerts'],['offer_report','fa-bullhorn','Offer Performance'],['reports','fa-chart-line','Reports'],['sql','fa-code','SQL Console']]],
         ['group','fa-gears','Admin',[['tables','fa-database','Database Tables'],['promotions','fa-bullhorn','Promotions'],['projects','fa-diagram-project','Projects'],['shortcodes','fa-hashtag','Short Codes'],['api_keys','fa-key','Partner API Keys'],['alert_settings','fa-bell','Alert Settings'],['retention','fa-database','Data Retention'],['status','fa-server','System Status'],['audit','fa-shield-halved','Audit Trail'],['users','fa-users-gear','Users']]],
     ];
