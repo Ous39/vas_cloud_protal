@@ -486,6 +486,20 @@ function mobius_menu_stats(array $cfg, string $menuId, int $max = 1000): array {
     return ['ok' => true, 'total' => $total, 'read' => count($all), 'completed' => $done, 'failed' => $failed, 'days' => $days, 'numbers' => array_slice($numbers, 0, 10, true),
         'errors' => array_slice($errors, 0, 10, true), 'answers' => array_slice($answers, 0, 15, true), 'unique' => count($numbers), 'from' => $first, 'to' => $last];
 }
+// Names of the USSD destinations (ussddestinationsettings/list), so a menu shows "SS7 HLR" rather than 69a198b7…: [id => name]. Read-only; [] when refused.
+function mobius_destination_names(array $cfg): array {
+    static $memo = null; if ($memo !== null) return $memo;
+    $r = mobius_rest($cfg, 'ussddestinationsettings/list', ['pageSize' => 500, 'includePreviousKey' => false, 'reverse' => false]);
+    $out = []; if ($r['ok']) foreach (mobius_find_rows($r['json']) ?? [] as $d) {
+        $id = mobius_id_text($d['_id'] ?? ($d['destinationID'] ?? ($d['id'] ?? ''))); if ($id === '') continue;
+        $name = ''; foreach (['name', 'destinationName', 'title', 'description', 'remoteName', 'address'] as $k) if (isset($d[$k]) && is_scalar($d[$k]) && trim((string)$d[$k]) !== '') { $name = trim((string)$d[$k]); break; }
+        $out[$id] = $name !== '' ? $name : $id;
+    }
+    return $memo = $out;
+}
+// Words for the History card.
+const MOBIUS_ACTION_LABELS = ['create' => 'Created', 'copy' => 'Copied', 'change' => 'Changed', 'rename' => 'Renamed', 'to-portal' => 'Sent to portal', 'restore' => 'Put back', 'delete' => 'Deleted', 'undelete' => 'Created again', 'undo-create' => 'Removed again'];
+function mobius_action_label(string $a): string { $refused = str_ends_with($a, '-refused'); $b = $refused ? substr($a, 0, -8) : $a; return (MOBIUS_ACTION_LABELS[$b] ?? ucfirst($b)).($refused ? ' — refused' : ''); }
 // The steps of a menu built inside Mobius (its Builder): [['ok', 'steps' => […] in tree order with 'depth']].
 function mobius_menu_steps(array $cfg, string $menuId): array {
     $r = mobius_rest($cfg, 'ussdmenusteps/list_by_menu', ['key' => $menuId, 'pageSize' => 500, 'includePreviousKey' => false, 'reverse' => false]);

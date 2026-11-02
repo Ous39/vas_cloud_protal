@@ -616,6 +616,8 @@ t('Mobius menus: Copy, Delete (with Put back), Calls, Stats and Builder steps - 
         eq(mobius_menu_calls($cfg, 'aa0000000000000000000001', '220 7700003')['total'], 33, 'filtered by number');
         $st = mobius_menu_stats($cfg, 'aa0000000000000000000001'); eq([$st['read'], $st['completed'], $st['failed'], $st['unique'], array_sum($st['days']), $st['answers']['1'] ?? 0], [230, 184, 23, 7, 230, 115], 'Stats: calls, completed, errors, numbers, per day, answers');
         file_put_contents($tmp.'/zt_stub_mobius_steps.json', json_encode([['menuID' => 'aa0000000000000000000003', 'stepID' => 'b', 'parentID' => 'a', 'stepType' => 'MESSAGE', 'localCode' => '1', 'message' => 'Hi'], ['menuID' => 'aa0000000000000000000003', 'stepID' => 'a', 'stepType' => 'MENU', 'message' => 'Main']]));
+        eq(mobius_destination_names($cfg), ['dd01' => 'SS7 HLR main', 'dd02' => 'HTTP Hera'], 'destination names are read (ussddestinationsettings/list)');
+        eq([mobius_action_label('undelete'), mobius_action_label('create-refused')], ['Created again', 'Created — refused'], 'History uses plain words');
         $sp = mobius_menu_steps($cfg, 'aa0000000000000000000003'); eq([$sp['steps'][0]['id'] ?? null, $sp['steps'][1]['depth'] ?? null], ['a', 1], 'Builder: the steps in tree order');
     } finally { foreach (['zt_stub_mobius_menus.json', 'zt_stub_mobius_strict.txt', 'zt_stub_mobius_calls.json', 'zt_stub_mobius_steps.json'] as $f) @unlink($tmp.'/'.$f); $db->exec("DELETE FROM mobius_menu_changes WHERE shortcode IN ('*7998#','*7999#','*7999')"); }
 });

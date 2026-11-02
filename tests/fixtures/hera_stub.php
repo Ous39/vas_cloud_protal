@@ -76,6 +76,7 @@ if ($parts[0] === 'mobius') {
             if (!empty($in['reverse'])) $calls = array_reverse($calls);
             if (!empty($in['firstKey'])) { $at = array_search($in['firstKey'], array_column($calls, 'callID'), true); $calls = $at === false ? [] : array_slice($calls, $at + 1); }
             $j(['status' => 'SUCCESS', 'data' => array_slice($calls, 0, (int)($in['pageSize'] ?? 50))]); break;
+        case 'ussddestinationsettings/list': $j(['status' => 'SUCCESS', 'data' => [['_id' => ['$oid' => 'dd01'], 'name' => 'SS7 HLR main'], ['_id' => ['$oid' => 'dd02'], 'name' => 'HTTP Hera']]]); break;
         case 'ussdmenusteps/list_by_menu':
             $steps = json_decode((string)@file_get_contents($dir.'/zt_stub_mobius_steps.json'), true) ?: [];
             $j(['status' => 'SUCCESS', 'data' => array_values(array_filter($steps, fn($x) => $x['menuID'] === ($in['key'] ?? '')))]); break;

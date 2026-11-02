@@ -3,7 +3,7 @@ declare(strict_types=1);
 // Page: ?page=ussd_menus — included by index.php inside its try/catch, after the sign-in, CSRF and $page checks.
 
     require_perm('view_tables'); try { menu_apply_schedules(); } catch (Throwable $e) { error_log('menu schedule: '.$e->getMessage()); } $canEdit=can('manage_ussd_menus'); $canUrl=can('manage_api_keys'); $db=portal_pdo(); $cfg=ussd_proxy_config();
-    $form=['short_code'=>'','name'=>'','items'=>'','copy_from'=>'']; $formOpen=isset($_GET['add']);
+    $form=['short_code'=>trim((string)($_GET['short_code']??'')),'name'=>trim((string)($_GET['name']??'')),'items'=>'','copy_from'=>'']; $formOpen=isset($_GET['add']);
     if ($_SERVER['REQUEST_METHOD']==='POST') {
         require_perm('manage_ussd_menus'); $do=(string)($_POST['do']??'create');
         if ($do==='rename') {
