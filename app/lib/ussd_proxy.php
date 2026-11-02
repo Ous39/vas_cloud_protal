@@ -36,7 +36,7 @@ const USSD_PROXY_DEFAULTS = [
     'resp_type' => 'text/plain; charset=UTF-8', 'resp_body' => '{text}', 'end_true' => 'true', 'end_false' => 'false',
     'capture_body' => 'VAS Cloud test endpoint: request received.',
     // PROXY menus: Mobius sends each reply here and expects the screen to come back through ITS REST API
-    'push_enabled' => '0', 'mobius_base' => 'http://192.168.162.20:28080/rest/', 'mobius_user' => '', 'mobius_pass' => '', 'mobius_session' => '', 'mobius_variant' => '0',
+    'push_enabled' => '0', 'mobius_base' => 'http://192.168.162.20:28080/rest/', 'mobius_user' => '', 'mobius_pass' => '', 'mobius_session' => '', 'mobius_variant' => '0', 'mobius_step_shape' => '',
     // buying an offer from the menu (see ussd_execute_purchase): off | test | live
     'purchase_mode' => 'off', 'purchase_url' => '', 'purchase_body' => USSD_PURCHASE_BODY,
     'purchase_auth' => '', 'purchase_ok_match' => '', 'purchase_timeout' => '8', 'purchase_lowbal' => 'insufficient,low balance,not enough', 'purchase_reply_field' => '', 'purchase_body_other' => '', 'purchase_other_seeded' => '0',

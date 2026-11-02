@@ -579,9 +579,39 @@ function mobius_step_from_input(array $in, ?array $raw, string $menuId, array $s
 }
 // Read the steps of a menu, or fail.
 function mobius_steps_or_fail(array $cfg, string $menuId): array { $r = mobius_menu_steps($cfg, $menuId); if (!$r['ok']) throw new RuntimeException('Could not read the steps from Mobius: '.$r['error']); return $r; }
-function mobius_step_write(array $cfg, array $raw): array {
-    $r = mobius_rest($cfg, 'ussdmenusteps/set', ['data' => $raw]); if (!$r['ok']) throw new RuntimeException('Mobius refused: '.$r['error']);
-    $d = $r['json']['data'] ?? null; return ['id' => is_array($d) ? mobius_id_text($d['_id'] ?? ($d['stepID'] ?? '')) : '', 'raw' => (string)($r['raw'] ?? '')];
+// A new MongoDB-style object id (8 hex digits of time + 16 random), as Mobius uses for every record.
+function mobius_new_oid(): string { return sprintf('%08x', time()).bin2hex(random_bytes(8)); }
+// The step in the shape of Mobius' API documentation (MenuStep: plain text ids, stepID), for installs that want that shape.
+function mobius_step_swagger(array $raw, string $id): array {
+    $t = fn($k) => ($x = mobius_id_text($raw[$k] ?? '')) === '' ? null : $x;
+    return ['stepID' => $id, 'menuID' => $t('menuID'), 'parentID' => $t('parentID'), 'nextStepID' => $t('nextStepID'), 'localCode' => $raw['localCode'] ?? null, 'stepType' => $raw['stepType'] ?? null,
+        'message' => $raw['message'] ?? null, 'language' => $raw['language'] ?? null, 'errorMessage' => $raw['errorMessage'] ?? null, 'externalUrl' => $raw['externalUrl'] ?? null, 'mappingType' => $raw['mappingType'] ?? null,
+        'properties' => $raw['properties'] ?? null, 'responseProperties' => $raw['responseProperties'] ?? null];
+}
+// Save one step. Mobius was seen to answer HTTP 500 when a new step came without an id, so a new step is tried: (0) as stored, without an id,
+// (1) as stored with an id made here, (2) in the documented shape. Between tries the menu is read again so a step Mobius did save despite an
+// error is never created twice. The shape that works is remembered (mobius_step_shape).
+function mobius_step_write(array $cfg, array $raw, ?array $known = null): array {
+    $isNew = mobius_id_text($raw['_id'] ?? '') === ''; $menuId = mobius_id_text($raw['menuID'] ?? '');
+    $pref = $cfg['mobius_step_shape'] ?? ''; $errors = [];
+    $order = $isNew ? array_values(array_unique(array_merge($pref !== '' ? [(int)$pref] : [], [0, 1, 2]))) : (($pref === '2') ? [2, 0] : [0, 2]);
+    foreach ($order as $n => $shape) {
+        $id = $isNew ? ($shape === 0 ? '' : mobius_new_oid()) : mobius_id_text($raw['_id']);
+        $body = $shape === 2 ? mobius_step_swagger($raw, $id) : ($id !== '' ? array_merge($raw, ['_id' => mobius_oid($id)]) : $raw);
+        if ($shape === 0 && $isNew) unset($body['_id']);
+        $r = mobius_rest($cfg, 'ussdmenusteps/set', ['data' => $body]);
+        if ($r['ok']) {
+            if ((string)$shape !== $pref && ($isNew || $shape !== 0)) { try { ussd_proxy_set(['mobius_step_shape' => (string)$shape]); } catch (Throwable $e) {} }
+            $d = $r['json']['data'] ?? null; $got = is_array($d) ? mobius_id_text($d['_id'] ?? ($d['stepID'] ?? '')) : '';
+            return ['id' => $got !== '' ? $got : $id, 'raw' => (string)($r['raw'] ?? '')];
+        }
+        $errors[] = '['.['as stored', 'with an id', 'documented shape'][$shape].'] '.$r['error'];
+        if ($isNew && $known !== null && $menuId !== '') { // did it get saved anyway?
+            $now = mobius_menu_steps($cfg, $menuId);
+            if ($now['ok']) foreach ($now['steps'] as $sid => $s) if (!isset($known[$sid]) && $s['type'] === strtoupper((string)($raw['stepType'] ?? '')) && $s['parent'] === mobius_id_text($raw['parentID'] ?? '') && $s['code'] === trim((string)($raw['localCode'] ?? ''))) return ['id' => $sid, 'raw' => ''];
+        }
+    }
+    throw new RuntimeException('Mobius refused: '.implode(' | ', array_map(fn($e) => mb_strimwidth(preg_replace('/<[^>]+>/', ' ', $e), 0, 200, '…'), $errors)));
 }
 // Edit a step, or add one: $how = 'edit' | 'option' (under a menu, with its key) | 'next' (after $anchor) | 'first' (the Welcome of an empty menu).
 function mobius_step_save(array $cfg, array $menu, string $how, string $anchor, array $in): array {
@@ -617,7 +647,7 @@ function mobius_step_save(array $cfg, array $menu, string $how, string $anchor, 
         } else throw new RuntimeException('Unknown action.');
     }
     $new = mobius_step_from_input($in, null, $menuId, $steps, $menus); $new['parentID'] = mobius_oid($parent); if ($how === 'option') $new['localCode'] = $code;
-    $w = mobius_step_write($cfg, $new); $id = $w['id'];
+    $w = mobius_step_write($cfg, $new, $steps); $id = $w['id'];
     if ($id === '') { $after = mobius_steps_or_fail($cfg, $menuId)['steps']; foreach ($after as $sid => $o) if (!isset($steps[$sid]) && $o['type'] === $new['stepType'] && $o['parent'] === (string)$parent) $id = $sid; }
     if ($id === '') throw new RuntimeException('Mobius accepted the new step but did not say its id; refresh to see it.');
     if ($how === 'next') { $pr = $steps[$anchor]['_raw']; $pr['nextStepID'] = mobius_oid($id); mobius_step_write($cfg, $pr); }
@@ -669,7 +699,7 @@ function mobius_step_restore(array $cfg, array $ch): array {
         $map = []; $list = (array)($info['steps'] ?? []); if (!$list) throw new RuntimeException('The deleted steps were not kept.');
         foreach ($list as $raw) { $old = mobius_id_text($raw['_id'] ?? ''); $new = $raw; unset($new['_id']);
             foreach (['parentID', 'nextStepID'] as $k) { $t = mobius_id_text($new[$k] ?? ''); if ($t !== '' && isset($map[$t])) $new[$k] = mobius_oid($map[$t]); }
-            $w = mobius_step_write($cfg, $new); if ($w['id'] === '') throw new RuntimeException('Mobius created a step but did not say its id; check the menu in Mobius.'); $map[$old] = $w['id']; }
+            $w = mobius_step_write($cfg, $new, mobius_steps_or_fail($cfg, $menuId)['steps']); if ($w['id'] === '') throw new RuntimeException('Mobius created a step but did not say its id; check the menu in Mobius.'); $map[$old] = $w['id']; }
         foreach ($list as $raw) { $old = mobius_id_text($raw['_id'] ?? ''); $n = mobius_id_text($raw['nextStepID'] ?? ''); if ($n !== '' && isset($map[$n]) && mobius_id_text($raw['nextStepID']) !== $map[$n]) { $fix = $raw; $fix['_id'] = mobius_oid($map[$old]); foreach (['parentID', 'nextStepID'] as $k) { $t = mobius_id_text($fix[$k] ?? ''); if (isset($map[$t])) $fix[$k] = mobius_oid($map[$t]); } mobius_step_write($cfg, $fix); } }
         $rel = (string)($info['relink'] ?? ''); $first = mobius_id_text($list[0]['_id'] ?? '');
         if ($rel !== '' && isset($steps[$rel], $map[$first])) { $pr = $steps[$rel]['_raw']; $pr['nextStepID'] = mobius_oid($map[$first]); mobius_step_write($cfg, $pr); }

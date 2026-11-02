@@ -641,7 +641,7 @@ t('Mobius Builder: unlock, add Welcome / next / options (message, question, serv
     $mk = fn($id, $name, $code, $url, $dest, $type = 'PROXY') => ['name' => $name, 'applicationDestinationID' => $dest ? ['$oid' => $dest] : null, 'shortcodeType' => $type, 'shortcode' => $code, 'isExtendable' => false, 'remoteURL' => $url, 'tps' => 10, '_id' => ['$oid' => $id]];
     $step = fn($id, $par, $type, $extra = []) => $extra + ['menuID' => $o('aa0000000000000000000009'), 'parentID' => $par ? $o($par) : null, 'localCode' => null, 'stepType' => $type, 'message' => null, 'language' => null, 'errorMessage' => null, 'externalUrl' => null, 'externalHttpDestinationID' => null, 'nextStepID' => null, 'mappingType' => null, 'properties' => null, 'responseProperties' => null, 'headers' => null, '_id' => $o($id)];
       file_put_contents($store, json_encode([$mk('aa0000000000000000000009', 'TEST DELETE', '*7999#', null, null, 'MS_INITIATED'), $mk('aa0000000000000000000001', 'Basic Data', '*1#', null, null, 'MS_INITIATED')]));
-      file_put_contents($tmp.'/zt_stub_mobius_steps.json', '[]');
+      file_put_contents($tmp.'/zt_stub_mobius_steps.json', '[]'); file_put_contents($tmp.'/zt_stub_mobius_step500.txt', '1'); // the real Mobius answers 500 to a new step without an id
       $l = mobius_list_menus($cfg); $menu = mobius_find_menu($l['menus'], 'aa0000000000000000000009');
       thrown(fn() => mobius_step_save($cfg, $menu, 'first', '', []), 'Unlock editing', 'locked by default');
       thrown(fn() => mobius_steps_unlock($menu, '*7998#'), 'Type the short code', 'unlock needs the code');
@@ -681,7 +681,7 @@ t('Mobius Builder: unlock, add Welcome / next / options (message, question, serv
       mobius_restore_change($cfg, $g['change']); $st = mobius_menu_steps($cfg, 'aa0000000000000000000009')['steps']; ok(!isset($st[$g['id']]), 'put back of an added step removes it');
       // history has no secrets
       $rows = portal_pdo()->query("SELECT * FROM mobius_menu_changes WHERE shortcode='*7999#'")->fetchAll(); ok(!str_contains(json_encode($rows), 'secret-1'), 'no header secret in History rows'); ok(str_contains(json_encode($rows), 'Added key 2'), 'History says what happened');
-    } finally { @unlink($tmp.'/zt_stub_mobius_steps.json'); @unlink($store); $db->exec("DELETE b FROM mobius_step_backups b JOIN mobius_menu_changes c ON c.id=b.change_id WHERE c.shortcode='*7999#'"); $db->exec("DELETE FROM mobius_menu_changes WHERE shortcode='*7999#'"); unset($_SESSION['mobius_unlock']); }
+    } finally { @unlink($tmp.'/zt_stub_mobius_step500.txt'); @unlink($tmp.'/zt_stub_mobius_steps.json'); @unlink($store); $db->exec("DELETE b FROM mobius_step_backups b JOIN mobius_menu_changes c ON c.id=b.change_id WHERE c.shortcode='*7999#'"); $db->exec("DELETE FROM mobius_menu_changes WHERE shortcode='*7999#'"); unset($_SESSION['mobius_unlock']); }
 });
 t('a menu is renamed in the portal: short code and name together', function () use ($db) {
     $clean = fn() => array_map(fn($t) => $db->exec("DELETE FROM $t WHERE short_code IN ('*8811#','*8812#','*8813#')"), ['ussd_menu_nodes', 'ussd_menu_versions', 'portal_short_codes']);
