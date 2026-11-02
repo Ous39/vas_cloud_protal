@@ -86,7 +86,11 @@ if ($parts[0] === 'mobius') {
             // like the real Mobius (zt_stub_mobius_step500.txt): set changes an existing step but answers 500 to a new one, with or without an id;
             // setmulti creates (unless zt_stub_mobius_nocreate.txt, then it answers 500 too)
             $real = is_file($dir.'/zt_stub_mobius_step500.txt'); $multi = $rest === 'ussdmenusteps/setmulti';
-            if ($multi) { if (is_file($dir.'/zt_stub_mobius_nocreate.txt')) { http_response_code(500); header('Content-Type: text/html'); echo '<html><body>Internal Server Error</body></html>'; break; } $in['data'] = ($in['data'] ?? [])[0] ?? []; }
+            if ($multi) { if (is_file($dir.'/zt_stub_mobius_nocreate.txt')) { http_response_code(500); header('Content-Type: text/html'); echo '<html><body>Internal Server Error</body></html>'; break; }
+                $batch = array_values((array)($in['data'] ?? [])); $batchIds = array_map($sid, $batch);
+                foreach ($batch as $b) if ($real && in_array(strtoupper((string)($b['stepType'] ?? '')), ['COLLECT', 'EXTERNAL_SERVICE'], true) && $oid($b['nextStepID'] ?? '') === '') { http_response_code(500); header('Content-Type: text/html'); echo '<html><body>Internal Server Error</body></html>'; break 2; } // like the real Mobius: a question must lead somewhere
+                if (count($batch) > 1) { $out = []; foreach ($batch as $b) { if ($sid($b) === '') $b['_id'] = ['$oid' => sprintf('6%07x%016x', count($steps), random_int(0, PHP_INT_MAX))]; $steps[] = $b; $out[] = $b; } file_put_contents($sf, json_encode($steps)); $j(['status' => 'SUCCESS', 'data' => $out]); break; }
+                $in['data'] = $batch[0] ?? []; }
             $d = $in['data'] ?? []; $known = ['menuID', 'parentID', 'localCode', 'stepType', 'message', 'language', 'errorMessage', 'externalUrl', 'externalHttpDestinationID', 'nextStepID', 'mappingType', 'properties', 'responseProperties', 'headers', '_id', 'stepID'];
             foreach (array_keys($d) as $f) if (!in_array($f, $known, true)) { http_response_code(400); $j(['status' => 'ERROR', 'errorMessage' => 'Unrecognized field "'.$f.'"']); break 2; }
             foreach (['parentID', 'nextStepID', 'menuID'] as $k) if (isset($d[$k]) && !is_array($d[$k])) { http_response_code(400); $j(['status' => 'ERROR', 'errorMessage' => 'Cannot deserialize '.$k.' from a string']); break 2; }

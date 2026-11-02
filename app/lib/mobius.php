@@ -618,6 +618,20 @@ function mobius_step_write(array $cfg, array $raw, ?array $known = null): array 
     }
     throw new RuntimeException(MOBIUS_NO_CREATE.' (it answered: '.implode(' | ', $errors).').');
 }
+// Create several linked steps at once (ids made here, so they can point at each other). Seen on the real Mobius: a "Question with input" alone
+// is refused (it must lead somewhere), so a question or a service is created together with the message that follows it.
+function mobius_steps_create(array $cfg, array $list, array $known): void {
+    $ids = array_map(fn($x) => mobius_id_text($x['_id'] ?? ''), $list); $menuId = mobius_id_text($list[0]['menuID'] ?? ''); $errors = [];
+    $present = function () use ($cfg, $menuId, $ids): array { $now = mobius_menu_steps($cfg, $menuId); return $now['ok'] ? array_values(array_filter($ids, fn($i) => isset($now['steps'][$i]))) : []; };
+    $tries = [['setmulti', fn() => mobius_rest($cfg, 'ussdmenusteps/setmulti', ['data' => array_values($list)])], ['set, one by one', function () use ($cfg, $list) { foreach ($list as $x) { $r = mobius_rest($cfg, 'ussdmenusteps/set', ['data' => $x]); if (!$r['ok']) return $r; } return ['ok' => true]; }]];
+    foreach ($tries as [$label, $go]) {
+        $r = $go(); $got = $present();
+        if (count($got) === count($ids)) return;
+        foreach ($got as $i) mobius_rest($cfg, 'ussdmenusteps/delete', ['data' => $i]); // half-made: take it away again
+        $errors[] = '['.$label.'] '.($r['ok'] ? 'said yes, but the steps are not there' : mb_strimwidth(preg_replace('/\s+/', ' ', preg_replace('/<[^>]+>/', ' ', $r['error'])), 0, 160, '…'));
+    }
+    throw new RuntimeException(MOBIUS_NO_CREATE.' (it answered: '.implode(' | ', $errors).').');
+}
 // Edit a step, or add one: $how = 'edit' | 'option' (under a menu, with its key) | 'next' (after $anchor) | 'first' (the Welcome of an empty menu).
 function mobius_step_save(array $cfg, array $menu, string $how, string $anchor, array $in): array {
     $menuId = (string)$menu['menuID']; if (!mobius_steps_unlocked($menuId)) throw new RuntimeException('Unlock editing for this menu first (type its short code).');
@@ -652,7 +666,14 @@ function mobius_step_save(array $cfg, array $menu, string $how, string $anchor, 
         } else throw new RuntimeException('Unknown action.');
     }
     $new = mobius_step_from_input($in, null, $menuId, $steps, $menus); $new['parentID'] = mobius_oid($parent); if ($how === 'option') $new['localCode'] = $code;
-    $w = mobius_step_write($cfg, $new, $steps); $id = $w['id'];
+    $then = trim(str_replace("\r", '', (string)($in['then'] ?? '')));
+    if ($then !== '' && mobius_step_continues($new['stepType'])) { // the step and the message after it, linked, in one go
+        if (mb_strlen($then) > 1000) throw new RuntimeException('The message after it is too long.');
+        $id = mobius_new_oid(); $fid = mobius_new_oid(); $new['_id'] = mobius_oid($id); $new['nextStepID'] = mobius_oid($fid);
+        $follow = array_fill_keys(MOBIUS_STEP_FIELDS, null); $follow['menuID'] = mobius_oid($menuId); $follow['parentID'] = mobius_oid($id); $follow['stepType'] = 'MESSAGE'; $follow['message'] = $then; $follow['language'] = $new['language'] ?? 'DEFAULT'; $follow['_id'] = mobius_oid($fid);
+        mobius_steps_create($cfg, [$new, $follow], $steps); $w = ['id' => $id];
+    } else { $w = mobius_step_write($cfg, $new, $steps); }
+    $id = $w['id'];
     if ($id === '') { $after = mobius_steps_or_fail($cfg, $menuId)['steps']; foreach ($after as $sid => $o) if (!isset($steps[$sid]) && $o['type'] === $new['stepType'] && $o['parent'] === (string)$parent) $id = $sid; }
     if ($id === '') throw new RuntimeException('Mobius accepted the new step but did not say its id; refresh to see it.');
     if ($how === 'next') { $pr = $steps[$anchor]['_raw']; $pr['nextStepID'] = mobius_oid($id); mobius_step_write($cfg, $pr); }
@@ -701,11 +722,11 @@ function mobius_step_restore(array $cfg, array $ch): array {
         return ['menu' => mobius_menu_public($menu), 'change' => 0, 'steps' => true];
     }
     if ($ch['action'] === 'step-delete') {
-        $map = []; $list = (array)($info['steps'] ?? []); if (!$list) throw new RuntimeException('The deleted steps were not kept.');
-        foreach ($list as $raw) { $old = mobius_id_text($raw['_id'] ?? ''); $new = $raw; unset($new['_id']);
-            foreach (['parentID', 'nextStepID'] as $k) { $t = mobius_id_text($new[$k] ?? ''); if ($t !== '' && isset($map[$t])) $new[$k] = mobius_oid($map[$t]); }
-            $w = mobius_step_write($cfg, $new, mobius_steps_or_fail($cfg, $menuId)['steps']); if ($w['id'] === '') throw new RuntimeException('Mobius created a step but did not say its id; check the menu in Mobius.'); $map[$old] = $w['id']; }
-        foreach ($list as $raw) { $old = mobius_id_text($raw['_id'] ?? ''); $n = mobius_id_text($raw['nextStepID'] ?? ''); if ($n !== '' && isset($map[$n]) && mobius_id_text($raw['nextStepID']) !== $map[$n]) { $fix = $raw; $fix['_id'] = mobius_oid($map[$old]); foreach (['parentID', 'nextStepID'] as $k) { $t = mobius_id_text($fix[$k] ?? ''); if (isset($map[$t])) $fix[$k] = mobius_oid($map[$t]); } mobius_step_write($cfg, $fix); } }
+        $list = (array)($info['steps'] ?? []); if (!$list) throw new RuntimeException('The deleted steps were not kept.');
+        $map = []; foreach ($list as $raw) $map[mobius_id_text($raw['_id'] ?? '')] = mobius_new_oid(); // new ids made here, so the steps are created already linked
+        $batch = []; foreach ($list as $raw) { $x = $raw; $x['_id'] = mobius_oid($map[mobius_id_text($raw['_id'] ?? '')]);
+            foreach (['parentID', 'nextStepID'] as $k) { $t = mobius_id_text($x[$k] ?? ''); if ($t !== '' && isset($map[$t])) $x[$k] = mobius_oid($map[$t]); } $batch[] = $x; }
+        mobius_steps_create($cfg, $batch, $steps);
         $rel = (string)($info['relink'] ?? ''); $first = mobius_id_text($list[0]['_id'] ?? '');
         if ($rel !== '' && isset($steps[$rel], $map[$first])) { $pr = $steps[$rel]['_raw']; $pr['nextStepID'] = mobius_oid($map[$first]); mobius_step_write($cfg, $pr); }
         mobius_record_change($menuId, (string)$ch['shortcode'], 'step-undelete', null, null, 'Created again '.count($map).' step(s): '.mobius_step_words($list[0]));

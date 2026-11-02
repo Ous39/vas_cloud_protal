@@ -632,28 +632,31 @@ t('Mobius menus: Copy, Delete (with Put back), Calls, Stats and Builder steps - 
         eq(mobius_step_summary($st['g1'], $st, []), 'Message Response 0: Thanks', 'Go to step shows where it goes');
     } finally { foreach (['zt_stub_mobius_menus.json', 'zt_stub_mobius_strict.txt', 'zt_stub_mobius_calls.json', 'zt_stub_mobius_steps.json'] as $f) @unlink($tmp.'/'.$f); $db->exec("DELETE FROM mobius_menu_changes WHERE shortcode IN ('*7998#','*7999#','*7999')"); }
 });
-t('Mobius Builder: unlock, add Welcome / next / options (message, question, service, go to menu, go to step), edit, delete, Put back', function () use ($cfgFor, $stub, $db) {
+t('Mobius Builder: unlock, add Welcome / next / options (message, question + reply, service, go to menu, go to step), edit, delete, Put back - with a Mobius that behaves like the real one', function () use ($cfgFor, $stub, $db) {
     $tmp = sys_get_temp_dir(); $store = $tmp.'/zt_stub_mobius_menus.json';
-    $cfg = $cfgFor(['mobius_base' => "$stub/mobius/rest/", 'mobius_user' => 'u', 'mobius_pass' => encrypt_secret(md5('p')), 'token' => 'ZT-TOKEN', 'shortcode_proxy' => '*8800#', 'mobius_session' => '', 'mobius_variant' => '0']);
+    $cfg = $cfgFor(['mobius_base' => "$stub/mobius/rest/", 'mobius_user' => 'u', 'mobius_pass' => encrypt_secret(md5('p')), 'token' => 'ZT-TOKEN', 'shortcode_proxy' => '*8800#', 'mobius_session' => '', 'mobius_variant' => '0', 'mobius_step_shape' => '']);
     $_SESSION['mobius_unlock'] = [];
     try {
     $o = fn($x) => ['$oid' => $x];
     $mk = fn($id, $name, $code, $url, $dest, $type = 'PROXY') => ['name' => $name, 'applicationDestinationID' => $dest ? ['$oid' => $dest] : null, 'shortcodeType' => $type, 'shortcode' => $code, 'isExtendable' => false, 'remoteURL' => $url, 'tps' => 10, '_id' => ['$oid' => $id]];
     $step = fn($id, $par, $type, $extra = []) => $extra + ['menuID' => $o('aa0000000000000000000009'), 'parentID' => $par ? $o($par) : null, 'localCode' => null, 'stepType' => $type, 'message' => null, 'language' => null, 'errorMessage' => null, 'externalUrl' => null, 'externalHttpDestinationID' => null, 'nextStepID' => null, 'mappingType' => null, 'properties' => null, 'responseProperties' => null, 'headers' => null, '_id' => $o($id)];
       file_put_contents($store, json_encode([$mk('aa0000000000000000000009', 'TEST DELETE', '*7999#', null, null, 'MS_INITIATED'), $mk('aa0000000000000000000001', 'Basic Data', '*1#', null, null, 'MS_INITIATED')]));
-      file_put_contents($tmp.'/zt_stub_mobius_steps.json', '[]'); file_put_contents($tmp.'/zt_stub_mobius_step500.txt', '1'); // the real Mobius answers 500 to a new step without an id
+      file_put_contents($tmp.'/zt_stub_mobius_steps.json', '[]'); file_put_contents($tmp.'/zt_stub_mobius_step500.txt', '1');
       $l = mobius_list_menus($cfg); $menu = mobius_find_menu($l['menus'], 'aa0000000000000000000009');
       thrown(fn() => mobius_step_save($cfg, $menu, 'first', '', []), 'Unlock editing', 'locked by default');
       thrown(fn() => mobius_steps_unlock($menu, '*7998#'), 'Type the short code', 'unlock needs the code');
       mobius_steps_unlock($menu, '*7999');
-      $w = mobius_step_save($cfg, $menu, 'first', '', ['type' => 'WELCOME']); ok($w['id'] !== '', 'welcome added');
+      $w = mobius_step_save($cfg, $menu, 'first', '', ['type' => 'WELCOME']); ok($w['id'] !== '' && preg_match('/^[0-9a-f]{24}$/', $w['id']), 'welcome added although Mobius answers 500 to a step without an id ('.$w['id'].')');
+      ok(count(json_decode(file_get_contents($tmp.'/zt_stub_mobius_steps.json'), true)) === 1, 'and only once');
       $m = mobius_step_save($cfg, $menu, 'next', $w['id'], ['type' => 'MENU', 'message' => "Pick\n1. Hello\n2. Data", 'language' => 'DEFAULT', 'invalid' => 'Wrong key']);
       $st = mobius_menu_steps($cfg, 'aa0000000000000000000009')['steps']; ok($st[$w['id']]['next'] === $m['id'] && $st[$m['id']]['parent'] === $w['id'] && $st[$m['id']]['error'] === 'Wrong key', 'menu linked after welcome (next + parent)');
       $raw = json_decode(file_get_contents($tmp.'/zt_stub_mobius_steps.json'), true); ok(is_array($raw[0]['nextStepID']) && $raw[1]['menuID'] === ['$oid' => 'aa0000000000000000000009'], 'ids written as {$oid}');
       $a = mobius_step_save($cfg, $menu, 'option', $m['id'], ['type' => 'MESSAGE', 'code' => '1', 'message' => 'Hello there']);
       thrown(fn() => mobius_step_save($cfg, $menu, 'option', $m['id'], ['type' => 'MESSAGE', 'code' => '1', 'message' => 'dup']), 'already used', 'duplicate key refused');
-      $q = mobius_step_save($cfg, $menu, 'option', $m['id'], ['type' => 'COLLECT', 'code' => '2', 'message' => 'Number?', 'variable' => 'otherMsisdn']);
-      $x = mobius_step_save($cfg, $menu, 'next', $q['id'], ['type' => 'EXTERNAL_SERVICE', 'url' => 'https://vas-staging.comium.gm/hera/prepaid/SpecialOffer', 'format' => 'JSON', 'sends' => "offerCode = {offerCode} | 40154\notherMsisdn = {otherMsisdn}", 'reads' => 'result.resultDescription = resultDescription', 'headers' => "X-API-KEY: secret-1\nX-USERNAME: USSD"]);
+      thrown(fn() => mobius_step_save($cfg, $menu, 'option', $m['id'], ['type' => 'COLLECT', 'code' => '2', 'message' => 'Number?', 'variable' => 'otherMsisdn']), MOBIUS_NO_CREATE, 'like the real Mobius: a question alone is refused');
+      $q = mobius_step_save($cfg, $menu, 'option', $m['id'], ['type' => 'COLLECT', 'code' => '2', 'message' => 'Number?', 'variable' => 'otherMsisdn', 'then' => 'Got it']);
+      $fid = mobius_menu_steps($cfg, 'aa0000000000000000000009')['steps'][$q['id']]['next']; ok($fid !== '' && mobius_menu_steps($cfg, 'aa0000000000000000000009')['steps'][$fid]['message'] === 'Got it', 'question + its reply created together, linked');
+      $x = mobius_step_save($cfg, $menu, 'edit', $fid, ['type' => 'EXTERNAL_SERVICE', 'url' => 'https://vas-staging.comium.gm/hera/prepaid/SpecialOffer', 'format' => 'JSON', 'sends' => "offerCode = {offerCode} | 40154\notherMsisdn = {otherMsisdn}", 'reads' => 'result.resultDescription = resultDescription', 'headers' => "X-API-KEY: secret-1\nX-USERNAME: USSD"]);
       $r = mobius_step_save($cfg, $menu, 'next', $x['id'], ['type' => 'MESSAGE', 'message' => '{resultDescription}']);
       $g = mobius_step_save($cfg, $menu, 'option', $m['id'], ['type' => 'GO_TO_MENU', 'code' => '3', 'target_menu' => 'aa0000000000000000000001']);
       $j = mobius_step_save($cfg, $menu, 'option', $m['id'], ['type' => 'GO_TO_STEP', 'code' => '9', 'target_step' => $q['id']]);
@@ -679,12 +682,14 @@ t('Mobius Builder: unlock, add Welcome / next / options (message, question, serv
       ok($qq && $qq['parent'] === $m['id'] && $qq['code'] === '2' && $xx && $xx['type'] === 'EXTERNAL_SERVICE' && $xx['parent'] === $qq['id'] && ($st[$xx['next']]['type'] ?? '') === 'MESSAGE' && $xx['_raw']['headers'][0]['defaultValue'] === 'secret-1', 'put back re-creates the three steps, linked, headers kept');
       // put back an add (removes the added step)
       mobius_restore_change($cfg, $g['change']); $st = mobius_menu_steps($cfg, 'aa0000000000000000000009')['steps']; ok(!isset($st[$g['id']]), 'put back of an added step removes it');
-        file_put_contents($tmp.'/zt_stub_mobius_nocreate.txt', '1'); $before = count(json_decode(file_get_contents($tmp.'/zt_stub_mobius_steps.json'), true));
-        thrown(fn() => mobius_step_save($cfg, $menu, 'option', $m['id'], ['type' => 'MESSAGE', 'code' => '7', 'message' => 'nope']), MOBIUS_NO_CREATE, 'when Mobius refuses every way of creating a step, it says so');
-        ok(count(json_decode(file_get_contents($tmp.'/zt_stub_mobius_steps.json'), true)) === $before, 'and nothing was added'); @unlink($tmp.'/zt_stub_mobius_nocreate.txt');
+      // a Mobius that refuses every way of creating: clear message, nothing half-made
+      file_put_contents($tmp.'/zt_stub_mobius_nocreate.txt', '1'); $before = count(json_decode(file_get_contents($tmp.'/zt_stub_mobius_steps.json'), true));
+      thrown(fn() => mobius_step_save($cfg, $menu, 'option', $m['id'], ['type' => 'MESSAGE', 'code' => '7', 'message' => 'nope']), MOBIUS_NO_CREATE, 'no way to create: says so');
+      ok(count(json_decode(file_get_contents($tmp.'/zt_stub_mobius_steps.json'), true)) === $before, 'and nothing was added'); @unlink($tmp.'/zt_stub_mobius_nocreate.txt');
+      $ok2 = mobius_step_save($cfg, $menu, 'edit', $a['id'], ['type' => 'MESSAGE', 'code' => '1', 'message' => 'Edits still work', 'language' => 'DEFAULT']); ok($ok2['id'] === $a['id'], 'edits still work');
       // history has no secrets
       $rows = portal_pdo()->query("SELECT * FROM mobius_menu_changes WHERE shortcode='*7999#'")->fetchAll(); ok(!str_contains(json_encode($rows), 'secret-1'), 'no header secret in History rows'); ok(str_contains(json_encode($rows), 'Added key 2'), 'History says what happened');
-    } finally { @unlink($tmp.'/zt_stub_mobius_nocreate.txt'); @unlink($tmp.'/zt_stub_mobius_step500.txt'); @unlink($tmp.'/zt_stub_mobius_steps.json'); @unlink($store); $db->exec("DELETE b FROM mobius_step_backups b JOIN mobius_menu_changes c ON c.id=b.change_id WHERE c.shortcode='*7999#'"); $db->exec("DELETE FROM mobius_menu_changes WHERE shortcode='*7999#'"); unset($_SESSION['mobius_unlock']); }
+    } finally { foreach (['zt_stub_mobius_nocreate.txt', 'zt_stub_mobius_step500.txt', 'zt_stub_mobius_steps.json', 'zt_stub_mobius_menus.json'] as $f) @unlink($tmp.'/'.$f); $db->exec("DELETE b FROM mobius_step_backups b JOIN mobius_menu_changes c ON c.id=b.change_id WHERE c.shortcode='*7999#'"); $db->exec("DELETE FROM mobius_menu_changes WHERE shortcode='*7999#'"); unset($_SESSION['mobius_unlock']); }
 });
 t('a menu is renamed in the portal: short code and name together', function () use ($db) {
     $clean = fn() => array_map(fn($t) => $db->exec("DELETE FROM $t WHERE short_code IN ('*8811#','*8812#','*8813#')"), ['ussd_menu_nodes', 'ussd_menu_versions', 'portal_short_codes']);
