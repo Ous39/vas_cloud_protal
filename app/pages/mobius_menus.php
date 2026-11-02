@@ -1,6 +1,7 @@
 <?php
 declare(strict_types=1);
-// Page: ?page=mobius_menus — every menu in Mobius (USSD Shortcodes): search, look at, create, change, point at this portal, put back, export.
+// Page: ?page=mobius_menus — every menu in Mobius (USSD Shortcodes), with the same actions as Mobius: Builder (steps), Calls, Stats, Copy, Edit, Delete;
+// plus create, send a code to this portal, History with Put back, export.
 // Included by index.php inside its try/catch, after the sign-in, CSRF and $page checks. The rules are in app/lib/mobius.php (mobius_save_menu).
 
     require_perm('manage_api_keys'); $cfg=ussd_proxy_config();
@@ -18,12 +19,21 @@ declare(strict_types=1);
                 flash($built?'success':'warning','Now calls this portal: '.$code.'.'.($built?'':' The portal has no menu for '.$code.' yet, so callers will see “no menu” until you build one (Menus → Add new menu with the same short code).'));
                 $back.='&view='.urlencode($id);
             } elseif ($do==='restore') {
-                $r=mobius_restore_change($cfg,(int)($_POST['change_id']??0)); flash('success','Put back as it was: '.($r['menu']['shortcode']??'').' — “'.($r['menu']['name']??'').'”.');
-                if (!empty($r['menu']['menuID'])) $back.='&view='.urlencode((string)$r['menu']['menuID']);
+                $r=mobius_restore_change($cfg,(int)($_POST['change_id']??0));
+                if (!empty($r['removed'])) flash('success','Put back: the menu '.($r['menu']['shortcode']??'').' — “'.($r['menu']['name']??'').'” that the portal had created was removed from Mobius again.');
+                else { flash('success','Put back as it was: '.($r['menu']['shortcode']??'').' — “'.($r['menu']['name']??'').'”.'); if (!empty($r['menu']['menuID'])) $back.='&view='.urlencode((string)$r['menu']['menuID']); }
+            } elseif ($do==='copy') {
+                $id=(string)($_POST['menu_id']??''); $r=mobius_copy_menu($cfg,$id,(string)($_POST['shortcode']??''),(string)($_POST['name']??''),(string)($_POST['confirm']??''));
+                flash('success','Copied into a new menu: '.($r['menu']['shortcode']??'').' — “'.($r['menu']['name']??'').'”. Put back in History removes the copy again.');
+                $back.=!empty($r['menu']['menuID'])?'&view='.urlencode((string)$r['menu']['menuID']):'';
+            } elseif ($do==='delete') {
+                $r=mobius_delete_menu($cfg,(string)($_POST['menu_id']??''),(string)($_POST['confirm']??''));
+                flash($r['gone']===false?'warning':'success',($r['gone']===false?'Mobius said yes, but the menu is still listed — check it in Mobius: ':'Deleted from Mobius: ').($r['menu']['shortcode']??'').' — “'.($r['menu']['name']??'').'”. Put back in History creates it again with the same settings.');
             }
         } catch (RuntimeException $e) {
             flash('danger',$e->getMessage());
             if ($do==='save') { $_SESSION['mobius_form']=['menu_id'=>(string)($_POST['menu_id']??''),'m'=>(array)($_POST['m']??[])]; $back.=($_POST['menu_id']??'')!==''?'&edit='.urlencode((string)$_POST['menu_id']):'&new=1'; }
+            elseif ($do==='copy'||$do==='delete') $back.='&'.$do.'='.urlencode((string)($_POST['menu_id']??''));
             elseif (!empty($_POST['menu_id'])) $back.='&view='.urlencode((string)$_POST['menu_id']);
         }
         redirect($back);
@@ -41,6 +51,11 @@ declare(strict_types=1);
     }
     $portalCodes=array_flip(array_map(fn($c)=>rtrim($c,'#'),menu_shortcodes()));
     $viewId=trim((string)($_GET['view']??'')); $editId=trim((string)($_GET['edit']??'')); $isNew=isset($_GET['new']);
+    $act=''; $actId=''; foreach(['calls','stats','steps','copy','delete'] as $a) if(trim((string)($_GET[$a]??''))!==''){ $act=$a; $actId=trim((string)$_GET[$a]); break; }
+    $actMenu=$act!==''?mobius_find_menu($menus,$actId):null; $actData=null;
+    if($actMenu && $act==='calls') $actData=mobius_menu_calls($cfg,$actMenu['menuID'],(string)($_GET['msisdn']??''),50,isset($_GET['from'])?(string)$_GET['from']:null);
+    if($actMenu && $act==='stats') $actData=mobius_menu_stats($cfg,$actMenu['menuID'],(int)($_GET['max']??1000));
+    if($actMenu && $act==='steps') $actData=mobius_menu_steps($cfg,$actMenu['menuID']);
     $view=$viewId!==''?mobius_find_menu($menus,$viewId):null; $edit=$editId!==''?mobius_find_menu($menus,$editId):null;
     $saved=$_SESSION['mobius_form']??null; unset($_SESSION['mobius_form']);
     $tpl=$ok?mobius_template_menu($menus,$cfg):null;
@@ -88,8 +103,58 @@ declare(strict_types=1);
             <?php if($hasDest):?><div class="col-md-4"><label class="small text-muted mb-0">Destination ids (comma separated)</label><input class="form-control font-monospace" name="m[destinationID]" id="mbDest" value="<?=e(implode(', ',$form['destinationID']))?>" list="mbDests"><datalist id="mbDests"><?php foreach($dests as $d=>$n):?><option value="<?=e($d)?>"><?=e($d)?> (<?=$n?> menus)</option><?php endforeach;?></datalist></div><?php endif;?>
             <div class="col-md-5"><label class="small text-muted mb-0">Confirm<?=$other?'':' (only needed when the menu does not call this portal)'?>: <?=$edit&&trim($edit['shortcode'])===''?'type its name <code>'.e($edit['name']).'</code>':'type the short code'.($edit?' <code>'.e($edit['shortcode']).'</code>':'')?></label><input class="form-control font-monospace" name="confirm" autocomplete="off" <?=$other?'required':''?>></div>
             <div class="col-md-3 d-flex align-items-end"><button class="btn <?=$other?'btn-danger':'btn-primary'?> w-100"><?=$edit?'Save in Mobius':'Create in Mobius'?></button></div>
-            <div class="col-12 small text-muted">The change goes straight to Mobius (live). Fields Mobius has that are not shown here are sent back unchanged. Nothing is deleted from Mobius by the portal.</div>
+            <div class="col-12 small text-muted">The change goes straight to Mobius (live). Fields Mobius has that are not shown here are sent back unchanged.</div>
         </form></div>
+    <?php endif;?>
+
+    <?php if($act!=='' && !$actMenu):?><div class="alert alert-warning mt-3">That menu is no longer in Mobius (refresh the list).</div><?php endif;?>
+    <?php if($actMenu): $am=$actMenu; $amOurs=mobius_menu_is_ours($am,$cfg); $amWord=mobius_confirm_word($am); $base='?page=mobius_menus&'.$act.'='.urlencode($am['menuID']);
+        $titles=['calls'=>'Calls','stats'=>'Stats','steps'=>'Builder (steps in Mobius)','copy'=>'Copy','delete'=>'Delete'];?>
+    <div class="cardx mt-3 <?=$act==='delete'?'border-danger':'border-primary'?>"><div class="d-flex justify-content-between align-items-start"><h3 class="mb-2"><?=e($titles[$act])?> — <code><?=e($am['shortcode']?:'(no code)')?></code> <?=e($am['name'])?></h3><a class="btn-close" href="?page=mobius_menus" aria-label="Close"></a></div>
+    <?php if($act==='calls'): $cd=$actData;?>
+        <form class="d-flex gap-2 mb-2" method="get"><input type="hidden" name="page" value="mobius_menus"><input type="hidden" name="calls" value="<?=e($am['menuID'])?>"><input class="form-control w-auto" name="msisdn" value="<?=e((string)($_GET['msisdn']??''))?>" placeholder="Number, e.g. 2207700001"><button class="btn btn-outline-primary">Filter</button><?php if(($_GET['msisdn']??'')!==''):?><a class="btn btn-link" href="?page=mobius_menus&calls=<?=urlencode($am['menuID'])?>">All numbers</a><?php endif;?></form>
+        <?php if(!$cd['ok']):?><div class="alert alert-danger py-2">Mobius refused: <?=e($cd['error'])?></div>
+        <?php else:?><p class="small mb-2"><?=$cd['total']!==null?'<b>'.number_format((int)$cd['total']).'</b> calls in Mobius for this menu'.(($_GET['msisdn']??'')!==''?' from that number':'').'. ':''?>Newest first, 50 a page. Times come from Mobius' record ids (server time).</p>
+        <?php if(!$cd['calls']):?><p class="text-muted">No calls.</p><?php else:?>
+        <div class="table-scroll"><table class="table table-sm align-middle mb-0"><thead><tr><th>When</th><th>Number</th><th>Dialled</th><th>Customer typed</th><th>Result</th><th></th></tr></thead><tbody>
+        <?php foreach($cd['calls'] as $i=>$c): $typed=array_values(array_map(fn($x)=>$x['message'],array_filter($c['steps'],fn($x)=>$x['mobile'])));?>
+            <tr><td class="small text-nowrap"><?=$c['time']?e(date('Y-m-d H:i:s',$c['time'])):'—'?></td><td><code><?=e($c['msisdn'])?></code></td><td><code><?=e($c['request'])?></code></td><td class="small"><?=e(implode(' → ',$typed))?:'—'?></td>
+                <td><?php if($c['error']!==''):?><span class="badge bg-danger"><?=e(mb_strimwidth($c['error'],0,40,'…'))?></span><?php elseif($c['completed']):?><span class="badge bg-success">completed</span><?php else:?><span class="badge bg-secondary">not finished</span><?php endif;?></td>
+                <td><?php if($c['steps']):?><button class="btn btn-sm btn-link py-0" type="button" data-bs-toggle="collapse" data-bs-target="#cs<?=$i?>">screens</button><?php endif;?></td></tr>
+            <?php if($c['steps']):?><tr class="collapse" id="cs<?=$i?>"><td colspan="6"><?php foreach($c['steps'] as $stp):?><div class="small <?=$stp['mobile']?'text-primary':''?>"><b><?=$stp['mobile']?'Customer':'Screen'?>:</b> <span style="white-space:pre-wrap"><?=e($stp['message'])?></span></div><?php endforeach;?><?php if($c['vars']):?><div class="small text-muted mt-1">Variables: <?=e(implode(', ',array_map(fn($k,$v)=>$k.'='.$v,array_keys($c['vars']),$c['vars'])))?></div><?php endif;?></td></tr><?php endif;?>
+        <?php endforeach;?></tbody></table></div>
+        <div class="mt-2"><?php if(isset($_GET['from'])):?><a class="btn btn-sm btn-outline-secondary" href="?page=mobius_menus&calls=<?=urlencode($am['menuID'])?>&msisdn=<?=urlencode((string)($_GET['msisdn']??''))?>">Newest</a> <?php endif;?><?php if($cd['next']):?><a class="btn btn-sm btn-outline-secondary" href="?page=mobius_menus&calls=<?=urlencode($am['menuID'])?>&msisdn=<?=urlencode((string)($_GET['msisdn']??''))?>&from=<?=urlencode($cd['next'])?>">Older calls →</a><?php endif;?></div>
+        <?php endif; endif;?>
+    <?php elseif($act==='stats'): $sd=$actData;?>
+        <?php if(!$sd['ok']):?><div class="alert alert-danger py-2">Mobius refused: <?=e($sd['error'])?></div>
+        <?php elseif(!$sd['read']):?><p class="text-muted mb-0">No calls recorded for this menu<?=$sd['total']!==null?' (Mobius counts '.(int)$sd['total'].')':''?>.</p>
+        <?php else: $pct=fn($n)=>$sd['read']?round($n*100/$sd['read']).'%':'—';?>
+        <p class="small text-muted">From the <?=number_format($sd['read'])?> most recent calls<?=$sd['total']!==null&&$sd['total']>$sd['read']?' of '.number_format((int)$sd['total']).' in Mobius':''?><?=$sd['from']?', '.e(date('Y-m-d H:i',$sd['from'])).' to '.e(date('Y-m-d H:i',$sd['to'])):''?>.<?php if($sd['total']!==null&&$sd['total']>$sd['read']):?> <a href="?page=mobius_menus&stats=<?=urlencode($am['menuID'])?>&max=2000">Use up to 2,000</a><?php endif;?></p>
+        <div class="row g-2 mb-3"><?php foreach([['Calls',number_format($sd['read'])],['Different numbers',number_format($sd['unique'])],['Completed',$pct($sd['completed'])],['With an error',$pct($sd['failed'])]] as [$k,$v]):?><div class="col-6 col-md-3"><div class="border rounded p-2"><div class="small text-muted"><?=e($k)?></div><div class="fs-4 fw-semibold"><?=e($v)?></div></div></div><?php endforeach;?></div>
+        <?php $mx=max($sd['days']?:[1]);?><div class="fw-semibold small mb-1">Calls per day</div>
+        <div class="d-flex align-items-end gap-1 mb-3" style="height:9rem;overflow-x:auto"><?php foreach($sd['days'] as $d=>$n):?><div class="text-center" style="min-width:2.2rem" title="<?=e($d)?>: <?=$n?> calls"><div class="small"><?=$n?></div><div style="height:<?=max(2,round($n/$mx*100))?>px;background:var(--bs-primary,#0d6efd);border-radius:3px 3px 0 0"></div><div class="small text-muted" style="font-size:.65rem"><?=e(substr($d,5))?></div></div><?php endforeach;?></div>
+        <div class="row g-3"><?php foreach([['Top numbers',$sd['numbers']],['What customers typed',$sd['answers']],['Errors',$sd['errors']]] as [$k,$list]): if(!$list) continue;?><div class="col-md-4"><div class="fw-semibold small mb-1"><?=e($k)?></div><table class="table table-sm mb-0"><tbody><?php foreach($list as $x=>$n):?><tr><td class="small"><?=e(mb_strimwidth((string)$x,0,40,'…'))?></td><td class="text-end small"><?=$n?></td></tr><?php endforeach;?></tbody></table></div><?php endforeach;?></div>
+        <?php endif;?>
+    <?php elseif($act==='steps'): $pd=$actData;?>
+        <?php if($amOurs && menu_valid_shortcode(menu_normalize_shortcode($am['shortcode']))):?><div class="alert alert-info py-2 small">This menu calls the portal, so its screens are built in the portal: <a href="?page=ussd_build&short_code=<?=urlencode(menu_normalize_shortcode($am['shortcode']))?>">open it in Easy Builder</a>. Mobius' own steps for it (normally none) are below.</div><?php endif;?>
+        <?php if(!$pd['ok']):?><div class="alert alert-danger py-2">Mobius refused: <?=e($pd['error'])?></div>
+        <?php elseif(!$pd['steps']):?><p class="text-muted mb-0">Mobius has no steps for this menu<?=$am['shortcodeType']==='PROXY'?' (a PROXY menu takes its screens from its address).':'.'?></p>
+        <?php else:?><p class="small text-muted">The menu as built in Mobius' Builder (read-only here). Indented = under the step above.</p><div class="table-scroll"><table class="table table-sm mb-0"><thead><tr><th>Step</th><th>Type</th><th>Code</th><th>Message</th><th>Goes to / address</th></tr></thead><tbody>
+            <?php foreach($pd['steps'] as $stp):?><tr><td class="small text-muted" style="padding-left:<?=0.5+$stp['depth']*1.2?>rem"><?=$stp['depth']?'└ ':''?><?=e(mb_substr($stp['id'],-8))?></td><td><span class="badge bg-light text-dark border"><?=e($stp['type'])?></span></td><td><code><?=e($stp['code'])?></code></td><td class="small" style="white-space:pre-wrap"><?=e($stp['message'])?></td><td class="small text-break"><?=e($stp['url']!==''?$hideUrl($stp['url']):($stp['next']!==''?'step '.mb_substr($stp['next'],-8):''))?></td></tr><?php endforeach;?>
+        </tbody></table></div><?php endif;?>
+    <?php elseif($act==='copy'):?>
+        <p class="small">Makes a <b>new</b> menu in Mobius with every setting of <code><?=e($am['shortcode'])?></code> (type, address, destination, Extendable). The original is not changed. Put back in History removes the copy.</p>
+        <form method="post" class="row g-2" data-confirm="Create the copy in Mobius now?"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="copy"><input type="hidden" name="menu_id" value="<?=e($am['menuID'])?>">
+            <div class="col-md-3"><label class="small text-muted mb-0">New short code</label><input class="form-control font-monospace" name="shortcode" required placeholder="*7998#"></div>
+            <div class="col-md-4"><label class="small text-muted mb-0">Name of the copy</label><input class="form-control" name="name" value="<?=e($am['name'].' (copy)')?>" maxlength="150"></div>
+            <?php if(!$amOurs):?><div class="col-md-3"><label class="small text-muted mb-0">Confirm: type the new short code again</label><input class="form-control font-monospace" name="confirm" required autocomplete="off"></div><?php endif;?>
+            <div class="col-md-2 d-flex align-items-end"><button class="btn btn-primary w-100">Copy</button></div></form>
+    <?php elseif($act==='delete'): $cnt=mobius_rest($cfg,'ussdcalls/count_by_menu',['data'=>$am['menuID'],'msisdn'=>'']); $calls=$cnt['ok']?mobius_find_count($cnt['json']):null;?>
+        <div class="alert alert-danger small"><b>This removes the menu from Mobius (live).</b> Customers dialling <code><?=e($am['shortcode']?:'—')?></code> will get “connection problem or invalid MMI code” straight away.<?=$calls?' Mobius has <b>'.number_format((int)$calls).'</b> calls recorded for it.':''?><?=$amOurs?'':' It belongs to <b>another service</b>, not this portal.'?> The portal keeps all its settings: <b>Put back</b> in History creates it again (with a new id).</div>
+        <form method="post" class="row g-2" data-confirm="Delete <?=e($amWord)?> from Mobius now?"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="delete"><input type="hidden" name="menu_id" value="<?=e($am['menuID'])?>">
+            <div class="col-md-5"><label class="small text-muted mb-0">Type <?=trim($am['shortcode'])!==''?'its short code':'its name'?> <code><?=e($amWord)?></code> to confirm</label><input class="form-control font-monospace" name="confirm" required autocomplete="off"></div>
+            <div class="col-md-3 d-flex align-items-end"><button class="btn btn-danger w-100"><i class="fa-solid fa-trash me-1"></i>Delete from Mobius</button></div></form>
+    <?php endif;?></div>
     <?php endif;?>
 
     <?php if($view): $vo=mobius_menu_is_ours($view,$cfg); $hist=mobius_changes(10,$view['menuID']); $inPortal=isset($portalCodes[rtrim($view['shortcode'],'#')]);?>
@@ -102,6 +167,7 @@ declare(strict_types=1);
         <details class="mt-2"><summary class="small text-muted">Everything Mobius holds for this menu</summary><pre class="small bg-light border rounded p-2 mb-0" style="white-space:pre-wrap"><?=e(mobius_redact(json_encode($view['_raw'],JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE),6000))?></pre></details></div>
         <div class="col-lg-5"><div class="d-grid gap-2">
             <a class="btn btn-outline-primary" href="?page=mobius_menus&edit=<?=urlencode($view['menuID'])?>"><i class="fa-solid fa-pen me-1"></i>Change in Mobius</a>
+            <div class="btn-group"><?php $q=urlencode($view['menuID']); foreach([['steps','fa-sitemap','Builder'],['calls','fa-phone','Calls'],['stats','fa-chart-column','Stats'],['copy','fa-copy','Copy']] as [$a,$ic,$lb]):?><a class="btn btn-outline-secondary btn-sm" href="?page=mobius_menus&<?=$a?>=<?=$q?>"><i class="fa-solid <?=$ic?> me-1"></i><?=$lb?></a><?php endforeach;?><a class="btn btn-outline-danger btn-sm" href="?page=mobius_menus&delete=<?=$q?>"><i class="fa-solid fa-xmark me-1"></i>Delete</a></div>
             <?php if(!$vo && $tpl):?><form method="post" class="border rounded p-2" data-confirm="Send <?=e($view['shortcode'])?> to this portal? Customers dialling it will get the portal's menu from now on."><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="to_portal"><input type="hidden" name="menu_id" value="<?=e($view['menuID'])?>">
                 <div class="small mb-1"><b>Send this code to the portal</b> — makes it a PROXY menu with the portal's address<?=$inPortal?' (the portal already has a menu for it)':'; <span class="text-danger">build the menu in the portal first</span>'?>.</div>
                 <div class="input-group input-group-sm"><input class="form-control font-monospace" name="confirm" placeholder="type <?=e($view['shortcode'])?>" required autocomplete="off"><button class="btn btn-warning">Send to portal</button></div></form><?php endif;?>
@@ -116,20 +182,23 @@ declare(strict_types=1);
             <td><code><?=e($m['shortcode'])?></code></td><td><?=e($m['name'])?></td><td class="small"><?=e($m['shortcodeType'])?></td><?php if($hasExt):?><td class="small"><?=$m['isExtendable']?'yes':'no'?></td><?php endif;?>
             <td class="small text-muted text-break" style="max-width:22rem"><?=e(mb_strimwidth($hideUrl($m['remoteURL']),0,70,'…'))?></td><?php if($hasDest):?><td class="small"><?=e(implode(', ',$m['destinationID']))?></td><?php endif;?>
             <td><?php if($mo):?><span class="badge bg-success">calls portal</span><?php if(!isset($portalCodes[rtrim($m['shortcode'],'#')])):?> <span class="badge bg-warning text-dark" title="Mobius sends this code to the portal, but the portal has no menu for it">not built</span><?php endif;?><?php else:?><span class="badge bg-secondary">other</span><?php endif;?></td>
-            <td class="text-end text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="?page=mobius_menus&view=<?=urlencode($m['menuID'])?>" title="Open"><i class="fa-solid fa-eye"></i></a> <a class="btn btn-sm btn-outline-primary" href="?page=mobius_menus&edit=<?=urlencode($m['menuID'])?>" title="Change"><i class="fa-solid fa-pen"></i></a></td>
+            <td class="text-end text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="?page=mobius_menus&view=<?=urlencode($m['menuID'])?>" title="Open"><i class="fa-solid fa-eye"></i></a>
+                <div class="btn-group"><button class="btn btn-sm btn-outline-primary dropdown-toggle" type="button" data-bs-toggle="dropdown" data-bs-popper-config='{"strategy":"fixed"}' aria-expanded="false" title="Actions"><i class="fa-solid fa-ellipsis"></i></button><ul class="dropdown-menu dropdown-menu-end">
+                    <?php $q=urlencode($m['menuID']);?><li><a class="dropdown-item" href="?page=mobius_menus&steps=<?=$q?>"><i class="fa-solid fa-sitemap fa-fw me-2"></i>Builder</a></li><li><a class="dropdown-item" href="?page=mobius_menus&calls=<?=$q?>"><i class="fa-solid fa-phone fa-fw me-2"></i>Calls</a></li><li><a class="dropdown-item" href="?page=mobius_menus&stats=<?=$q?>"><i class="fa-solid fa-chart-column fa-fw me-2"></i>Stats</a></li>
+                    <li><a class="dropdown-item" href="?page=mobius_menus&copy=<?=$q?>"><i class="fa-regular fa-copy fa-fw me-2"></i>Copy</a></li><li><a class="dropdown-item" href="?page=mobius_menus&edit=<?=$q?>"><i class="fa-solid fa-pen fa-fw me-2"></i>Edit</a></li><li><hr class="dropdown-divider"></li><li><a class="dropdown-item text-danger" href="?page=mobius_menus&delete=<?=$q?>"><i class="fa-solid fa-xmark fa-fw me-2"></i>Delete</a></li></ul></div></td>
         </tr><?php endforeach;?>
         <?php if(!$menus):?><tr><td colspan="9" class="text-muted">No menus read from Mobius.</td></tr><?php endif;?>
     </tbody></table></div></div>
     <?php endif;?>
 
-    <div class="cardx mt-3"><h3 class="mb-2"><i class="fa-solid fa-clock-rotate-left me-2"></i>History</h3><p class="small text-muted">Every change the portal made in Mobius, with the menu as it was before. <b>Put back</b> sends the earlier values to Mobius again.</p>
+    <div class="cardx mt-3"><h3 class="mb-2"><i class="fa-solid fa-clock-rotate-left me-2"></i>History</h3><p class="small text-muted">Every change the portal made in Mobius, with the menu as it was before. <b>Put back</b> sends the earlier values to Mobius again, creates a deleted menu again, or removes a menu the portal created or copied.</p>
         <?php if(!$changes):?><p class="text-muted mb-0">No changes yet.</p><?php else:?><div class="table-scroll"><table class="table table-sm align-middle mb-0"><thead><tr><th>When</th><th>Who</th><th>What</th><th>Code</th><th>Before → after</th><th></th></tr></thead><tbody>
         <?php foreach($changes as $h): $b=$h['before_json']?mobius_menu_public((array)json_decode($h['before_json'],true)):null; $a=$h['after_json']?mobius_menu_public((array)json_decode($h['after_json'],true)):null;
             $diff=[]; if($b&&$a) foreach(['name','shortcode','shortcodeType','isExtendable','remoteURL','destinationID'] as $k) if($b[$k]!=$a[$k]) $diff[]=$k.': '.(is_array($b[$k])?implode(',',$b[$k]):var_export($b[$k],true)).' → '.(is_array($a[$k])?implode(',',$a[$k]):var_export($a[$k],true));
             $refused=str_ends_with((string)$h['action'],'-refused');?>
         <tr><td class="small text-nowrap"><?=e($h['created_at'])?></td><td class="small"><?=e($h['username']??'')?></td><td><span class="badge <?=$refused?'bg-danger':'bg-light text-dark border'?>"><?=e($h['action'])?></span></td><td><code><?=e($h['shortcode'])?></code></td>
-            <td class="small text-break" style="max-width:34rem"><?=$refused?e(mb_strimwidth(html_entity_decode((string)$h['answer'],ENT_QUOTES|ENT_HTML5,'UTF-8'),0,200,'…')):($b?e($hideUrl(implode(' · ',$diff))?:'—'):'new menu')?></td>
-            <td class="text-end"><?php if($b && !$refused):?><form method="post" class="d-inline" data-confirm="Put <?=e($h['shortcode'])?> back as it was before this change? This changes the live menu in Mobius."><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="restore"><input type="hidden" name="change_id" value="<?=(int)$h['id']?>"><input type="hidden" name="menu_id" value="<?=e($h['menu_id'])?>"><button class="btn btn-sm btn-outline-warning py-0">Put back</button></form><?php endif;?></td></tr>
+            <td class="small text-break" style="max-width:34rem"><?=$refused?e(mb_strimwidth(html_entity_decode((string)$h['answer'],ENT_QUOTES|ENT_HTML5,'UTF-8'),0,200,'…')):($h['action']==='delete'?'deleted (was “'.e($b['name']??'').'”, '.e($hideUrl((string)($b['remoteURL']??''))).')':($b?e($hideUrl(implode(' · ',$diff))?:'—'):($h['action']==='undo-create'?'removed again':'new menu')))?></td>
+            <td class="text-end"><?php if(($b || in_array($h['action'],['create','copy','undelete'],true)) && !$refused && !in_array($h['action'],['undo-create'],true)):?><form method="post" class="d-inline" data-confirm="<?=$b?'Put '.e($h['shortcode']).' back as it was before this change? This changes the live menu in Mobius.':'Remove '.e($h['shortcode']).', which the portal created, from Mobius again?'?>"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="restore"><input type="hidden" name="change_id" value="<?=(int)$h['id']?>"><input type="hidden" name="menu_id" value="<?=e($h['menu_id'])?>"><button class="btn btn-sm btn-outline-warning py-0">Put back</button></form><?php endif;?></td></tr>
         <?php endforeach;?></tbody></table></div><?php endif;?>
     </div>
     <script>

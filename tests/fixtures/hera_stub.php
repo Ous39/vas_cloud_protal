@@ -65,6 +65,20 @@ if ($parts[0] === 'mobius') {
             if ($idOf($d) !== null) { foreach ($menus as $k => $m) if ($idOf($m) === $idOf($d)) $menus[$k] = $d; }
             else { $new = 'm'.(count($menus) + 1).substr(md5(uniqid('', true)), 0, 8); if ($menus && isset($menus[0]['_id'])) $d['_id'] = ['$oid' => $new]; else $d['menuID'] = $new; $menus[] = $d; }
             file_put_contents($store, json_encode($menus)); $j(['status' => 'SUCCESS', 'data' => $d]); break;
+        case 'ussdmenues/delete':
+            $id = (string)($in['data'] ?? ''); $n = count($menus); $menus = array_values(array_filter($menus, fn($m) => $idOf($m) !== $id));
+            file_put_contents($store, json_encode($menus)); $j(['status' => 'SUCCESS', 'errorMessage' => null, 'data' => count($menus) < $n]); break;
+        // calls live in zt_stub_mobius_calls.json: [{menuID, msisdn, callID (an object id), isCompleted, errorMessage, passedSteps}, …], oldest first
+        case 'ussdcalls/list_by_menu': case 'ussdcalls/count_by_menu':
+            $calls = json_decode((string)@file_get_contents($dir.'/zt_stub_mobius_calls.json'), true) ?: []; $key = (string)($in['key'] ?? $in['data'] ?? ''); $ms = (string)($in['msisdn'] ?? '');
+            $calls = array_values(array_filter($calls, fn($c) => $c['menuID'] === $key && ($ms === '' || $c['msisdn'] === $ms)));
+            if ($rest === 'ussdcalls/count_by_menu') { $j(['status' => 'SUCCESS', 'data' => count($calls)]); break; }
+            if (!empty($in['reverse'])) $calls = array_reverse($calls);
+            if (!empty($in['firstKey'])) { $at = array_search($in['firstKey'], array_column($calls, 'callID'), true); $calls = $at === false ? [] : array_slice($calls, $at + 1); }
+            $j(['status' => 'SUCCESS', 'data' => array_slice($calls, 0, (int)($in['pageSize'] ?? 50))]); break;
+        case 'ussdmenusteps/list_by_menu':
+            $steps = json_decode((string)@file_get_contents($dir.'/zt_stub_mobius_steps.json'), true) ?: [];
+            $j(['status' => 'SUCCESS', 'data' => array_values(array_filter($steps, fn($x) => $x['menuID'] === ($in['key'] ?? '')))]); break;
         default: $j(['status' => 'ERROR', 'errorMessage' => 'unknown call']);
     }
     exit;

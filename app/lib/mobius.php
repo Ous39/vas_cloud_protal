@@ -311,7 +311,7 @@ function mobius_update_menu(array $cfg, string $menuId, string $name, string $co
 //  * only users with the settings permission (manage_api_keys) — checked by the page;
 //  * a menu that does NOT call this portal (airtime, data usage, …) is only changed when the user types its short code to confirm;
 //  * every change keeps the menu as it was before and after (mobius_menu_changes), so it can be put back with one click (Restore);
-//  * nothing is deleted from Mobius by the portal.
+//  * Delete always needs the short code (or name) typed, and the deleted menu is kept so Put back creates it again.
 function mobius_menu_tables(): void {
     static $done = false; if ($done) return;
     portal_pdo()->exec("CREATE TABLE IF NOT EXISTS mobius_menu_changes (
@@ -395,12 +395,110 @@ function mobius_restore_change(array $cfg, int $changeId): array {
     mobius_menu_tables(); $st = portal_pdo()->prepare('SELECT * FROM mobius_menu_changes WHERE id=?'); $st->execute([$changeId]); $ch = $st->fetch();
     if (!$ch) throw new RuntimeException('That change is not in the history.');
     if (str_ends_with((string)$ch['action'], '-refused')) throw new RuntimeException('Mobius refused that change, so there is nothing to put back.');
-    if ($ch['before_json'] === null) throw new RuntimeException('That was a new menu. The portal does not delete menus in Mobius: switch it to another address or remove it in Mobius itself.');
-    $before = mobius_menu_norm((array)json_decode((string)$ch['before_json'], true));
     $l = mobius_list_menus($cfg); if (!$l['ok']) throw new RuntimeException('Could not read Mobius: '.$l['error']);
-    $cur = mobius_find_menu($l['menus'], (string)$ch['menu_id']); if (!$cur) throw new RuntimeException('That menu is no longer in Mobius.');
-    $in = mobius_menu_public($before);
+    if ($ch['before_json'] === null) { // a menu the portal created (or copied): putting it back = removing it again
+        $cur = mobius_find_menu($l['menus'], (string)$ch['menu_id']); if (!$cur) throw new RuntimeException('That menu is no longer in Mobius.');
+        mobius_delete_menu($cfg, (string)$ch['menu_id'], mobius_confirm_word($cur), 'undo-create'); return ['menu' => mobius_menu_public($cur), 'change' => 0, 'removed' => true];
+    }
+    $before = mobius_menu_norm((array)json_decode((string)$ch['before_json'], true)); $in = mobius_menu_public($before);
+    $cur = mobius_find_menu($l['menus'], (string)$ch['menu_id']);
+    if (!$cur) { // deleted: create it again with the same values (Mobius gives it a new id)
+        if ((string)$ch['action'] !== 'delete') throw new RuntimeException('That menu is no longer in Mobius.');
+        return mobius_save_menu($cfg, null, $in, mobius_confirm_word($before), 'undelete');
+    }
     return mobius_save_menu($cfg, (string)$ch['menu_id'], $in, trim((string)$cur['shortcode']) !== '' ? (string)$cur['shortcode'] : (trim((string)$before['shortcode']) !== '' ? (string)$before['shortcode'] : (string)$cur['name']), 'restore');
+}
+// What a user types to confirm a risky action on a menu: its short code, or its name when it has none.
+function mobius_confirm_word(array $m): string { $m = mobius_menu_norm($m); return trim($m['shortcode']) !== '' ? $m['shortcode'] : $m['name']; }
+function mobius_confirm_ok(array $m, string $typed): bool {
+    $m = mobius_menu_norm($m); $t = trim($typed);
+    return trim($m['shortcode']) !== '' ? mobius_bare_code($t) === mobius_bare_code($m['shortcode']) : ($t !== '' && $t === trim($m['name']));
+}
+
+// ---- Copy, delete, calls, stats and steps (Mobius REST API 2.1: ussdmenues/delete, ussdcalls/*_by_menu, ussdmenusteps/list_by_menu) ----
+// Copy: a new menu with every setting of the original and a new short code (and name). The original is not touched.
+function mobius_copy_menu(array $cfg, string $menuId, string $newCode, string $newName, string $confirm = ''): array {
+    $l = mobius_list_menus($cfg); if (!$l['ok']) throw new RuntimeException('Could not read Mobius: '.$l['error']);
+    $cur = mobius_find_menu($l['menus'], $menuId); if (!$cur) throw new RuntimeException('That menu is no longer in Mobius.');
+    $in = mobius_menu_public($cur); $in['shortcode'] = preg_replace('/\s+/', '', $newCode); $in['name'] = trim($newName) !== '' ? trim($newName) : $cur['name'].' (copy)';
+    if ($in['shortcode'] === '' || mobius_bare_code($in['shortcode']) === mobius_bare_code((string)$cur['shortcode'])) throw new RuntimeException('Give the copy its own short code.');
+    return mobius_save_menu($cfg, null, $in, $confirm, 'copy');
+}
+// Delete a menu in Mobius. Always needs its short code (or name) typed; the menu is kept in History so "Put back" creates it again.
+function mobius_delete_menu(array $cfg, string $menuId, string $confirm, string $action = 'delete'): array {
+    $l = mobius_list_menus($cfg); if (!$l['ok']) throw new RuntimeException('Could not read Mobius: '.$l['error']);
+    $cur = mobius_find_menu($l['menus'], $menuId); if (!$cur) throw new RuntimeException('That menu is no longer in Mobius.');
+    if (!mobius_confirm_ok($cur, $confirm)) throw new RuntimeException('To delete it, type '.(trim($cur['shortcode']) !== '' ? 'its short code '.$cur['shortcode'] : 'its name “'.$cur['name'].'”').' in the confirmation box. Nothing was deleted.');
+    $r = mobius_rest($cfg, 'ussdmenues/delete', ['data' => $menuId]);
+    if (!$r['ok'] || (isset($r['json']['data']) && $r['json']['data'] === false)) {
+        $err = $r['ok'] ? 'Mobius answered that it did not delete it.' : $r['error'];
+        mobius_record_change($menuId, (string)$cur['shortcode'], $action.'-refused', $cur, null, $err); throw new RuntimeException('Mobius refused: '.$err);
+    }
+    $after = mobius_list_menus($cfg); $gone = $after['ok'] ? mobius_find_menu($after['menus'], $menuId) === null : null;
+    $id = mobius_record_change($menuId, (string)$cur['shortcode'], $action, $cur, null, mobius_redact((string)($r['raw'] ?? ''), 1000));
+    audit('mobius_menu_'.$action, null, 'mobius', (string)$cur['shortcode'], json_encode(['menu' => $menuId, 'was' => mobius_menu_public($cur)], JSON_UNESCAPED_SLASHES));
+    return ['menu' => mobius_menu_public($cur), 'change' => $id, 'gone' => $gone];
+}
+// When a MongoDB object id was made (its first 8 hex digits are the Unix time): call records carry no other time.
+function mobius_oid_time(string $oid): ?int { return preg_match('/^[0-9a-f]{24}$/i', $oid) ? (int)hexdec(substr($oid, 0, 8)) : null; }
+// One call record with plain fields.
+function mobius_call_norm(array $c): array {
+    $id = mobius_id_text($c['callID'] ?? ($c['_id'] ?? '')); $oid = mobius_id_text($c['_id'] ?? ($c['callID'] ?? ''));
+    $t = null; foreach (['startTime', 'timestamp', 'created', 'createdAt', 'date', 'time'] as $k) if (!empty($c[$k])) { $t = is_numeric($c[$k]) ? (int)($c[$k] > 1e11 ? $c[$k] / 1000 : $c[$k]) : (strtotime((string)(is_array($c[$k]) ? ($c[$k]['$date'] ?? '') : $c[$k])) ?: null); if ($t) break; }
+    $t ??= mobius_oid_time($oid) ?? mobius_oid_time($id);
+    $steps = array_map(fn($s) => ['mobile' => !empty($s['isMobile']), 'message' => (string)($s['message'] ?? ''), 'step' => mobius_id_text($s['stepID'] ?? '')], array_values((array)($c['passedSteps'] ?? [])));
+    $vars = []; foreach ((array)($c['variables'] ?? []) as $v) if (is_array($v)) $vars[(string)($v['propertyName'] ?? '')] = (string)($v['propertyValue'] ?? $v['defaultValue'] ?? '');
+    $err = trim((string)($c['errorMessage'] ?? '')); $code = $c['errorCode'] ?? null;
+    return ['id' => $id, 'time' => $t, 'msisdn' => (string)($c['msisdn'] ?? ''), 'request' => (string)($c['originalRequest'] ?? ''), 'completed' => !empty($c['isCompleted']),
+        'error' => $err !== '' ? $err : (($code !== null && (int)$code !== 0) ? 'error '.$code : ''), 'steps' => $steps, 'vars' => $vars, 'language' => (string)($c['language'] ?? '')];
+}
+// The calls of one menu, newest first. ['ok', 'calls' => […], 'next' => key for the following page | null, 'total' => N|null].
+function mobius_menu_calls(array $cfg, string $menuId, string $msisdn = '', int $size = 50, ?string $from = null): array {
+    $size = max(1, min(500, $size)); $msisdn = preg_replace('/\D+/', '', $msisdn);
+    $req = ['key' => $menuId, 'pageSize' => $size, 'includePreviousKey' => false, 'reverse' => true, 'msisdn' => $msisdn] + ($from !== null && $from !== '' ? ['firstKey' => $from] : []);
+    $r = mobius_rest($cfg, 'ussdcalls/list_by_menu', $req);
+    if (!$r['ok']) return ['ok' => false, 'error' => $r['error']];
+    $rows = mobius_find_rows($r['json']) ?? [];
+    if (!$rows && $msisdn === '') { unset($req['msisdn']); $r2 = mobius_rest($cfg, 'ussdcalls/list_by_menu', $req); if ($r2['ok'] && ($x = mobius_find_rows($r2['json']))) { $r = $r2; $rows = $x; } } // an empty number may mean "only calls with no number"
+    $calls = array_map('mobius_call_norm', $rows);
+    usort($calls, fn($a, $b) => ($b['time'] ?? 0) <=> ($a['time'] ?? 0));
+    $c = mobius_rest($cfg, 'ussdcalls/count_by_menu', ['data' => $menuId, 'msisdn' => $msisdn]); $total = $c['ok'] ? mobius_find_count($c['json']) : null;
+    $last = $rows ? mobius_id_text(end($rows)['callID'] ?? (end($rows)['_id'] ?? '')) : '';
+    return ['ok' => true, 'calls' => $calls, 'next' => count($rows) >= $size && $last !== '' ? $last : null, 'total' => $total, 'answer' => mobius_redact((string)($r['raw'] ?? ''), 1500)];
+}
+// Numbers for one menu from its most recent calls (up to $max): per day, completed / errors, top numbers and top answers.
+function mobius_menu_stats(array $cfg, string $menuId, int $max = 1000): array {
+    $all = []; $from = null; $total = null;
+    for ($i = 0; $i < 10 && count($all) < $max; $i++) {
+        $r = mobius_menu_calls($cfg, $menuId, '', min(200, $max - count($all)), $from); if (!$r['ok']) return $r;
+        $total ??= $r['total']; foreach ($r['calls'] as $c) $all[$c['id'] !== '' ? $c['id'] : count($all)] = $c;
+        if ($r['next'] === null || !$r['calls']) break; $from = $r['next'];
+    }
+    $days = []; $numbers = []; $errors = []; $answers = []; $done = 0; $failed = 0; $first = null; $last = null;
+    foreach ($all as $c) {
+        $d = $c['time'] ? date('Y-m-d', $c['time']) : 'unknown'; $days[$d] = ($days[$d] ?? 0) + 1;
+        if ($c['msisdn'] !== '') $numbers[$c['msisdn']] = ($numbers[$c['msisdn']] ?? 0) + 1;
+        if ($c['completed']) $done++; if ($c['error'] !== '') { $failed++; $errors[$c['error']] = ($errors[$c['error']] ?? 0) + 1; }
+        foreach ($c['steps'] as $s) if ($s['mobile'] && $s['message'] !== '') $answers[$s['message']] = ($answers[$s['message']] ?? 0) + 1;
+        if ($c['time']) { $first = $first === null ? $c['time'] : min($first, $c['time']); $last = $last === null ? $c['time'] : max($last, $c['time']); }
+    }
+    ksort($days); arsort($numbers); arsort($errors); arsort($answers);
+    return ['ok' => true, 'total' => $total, 'read' => count($all), 'completed' => $done, 'failed' => $failed, 'days' => $days, 'numbers' => array_slice($numbers, 0, 10, true),
+        'errors' => array_slice($errors, 0, 10, true), 'answers' => array_slice($answers, 0, 15, true), 'unique' => count($numbers), 'from' => $first, 'to' => $last];
+}
+// The steps of a menu built inside Mobius (its Builder): [['ok', 'steps' => […] in tree order with 'depth']].
+function mobius_menu_steps(array $cfg, string $menuId): array {
+    $r = mobius_rest($cfg, 'ussdmenusteps/list_by_menu', ['key' => $menuId, 'pageSize' => 500, 'includePreviousKey' => false, 'reverse' => false]);
+    if (!$r['ok']) return ['ok' => false, 'error' => $r['error']];
+    $steps = []; foreach (mobius_find_rows($r['json']) ?? [] as $s) {
+        $id = mobius_id_text($s['stepID'] ?? ($s['_id'] ?? ''));
+        $steps[$id] = ['id' => $id, 'parent' => mobius_id_text($s['parentID'] ?? ''), 'type' => (string)($s['stepType'] ?? ''), 'code' => (string)($s['localCode'] ?? ''), 'message' => (string)($s['message'] ?? ''),
+            'next' => mobius_id_text($s['nextStepID'] ?? ''), 'url' => (string)($s['externalUrl'] ?? ''), 'mapping' => (string)($s['mappingType'] ?? ''), 'error' => (string)($s['errorMessage'] ?? '')];
+    }
+    $kids = []; foreach ($steps as $s) $kids[isset($steps[$s['parent']]) ? $s['parent'] : ''][] = $s['id'];
+    $out = []; $walk = function (string $p, int $depth) use (&$walk, &$out, $kids, $steps) { foreach ($kids[$p] ?? [] as $id) { if (isset($out[$id])) continue; $out[$id] = $steps[$id] + ['depth' => $depth]; $walk($id, $depth + 1); } };
+    $walk('', 0); foreach ($steps as $id => $s) if (!isset($out[$id])) $out[$id] = $s + ['depth' => 0];
+    return ['ok' => true, 'steps' => array_values($out), 'answer' => mobius_redact((string)($r['raw'] ?? ''), 1500)];
 }
 // For the export buttons: every menu exactly as Mobius gave it.
 function mobius_menus_export(array $menus): array { return array_map(fn($m) => mobius_menu_norm($m)['_raw'], $menus); }

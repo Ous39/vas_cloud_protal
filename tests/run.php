@@ -554,7 +554,7 @@ t('Mobius menus: a list in another shape is still read; any menu can be changed 
         $c = mobius_save_menu($cfg, null, ['name' => 'New ours', 'shortcode' => '*8805#', 'shortcodeType' => 'PROXY', 'remoteURL' => $ours, 'destinationID' => 'd1']); eq($c['menu']['shortcode'] ?? null, '*8805#', 'a new menu that calls the portal needs no confirmation');
         thrown(fn() => mobius_save_menu($cfg, null, ['name' => 'Else', 'shortcode' => '*8806#', 'shortcodeType' => 'PROXY', 'remoteURL' => 'https://other/x']), 'will not call this portal', 'one that calls elsewhere does');
         thrown(fn() => mobius_save_menu($cfg, null, ['name' => 'Dup', 'shortcode' => '*76#', 'shortcodeType' => 'PROXY', 'remoteURL' => $ours]), 'already used', 'a code Mobius has (with or without #) is refused');
-        thrown(fn() => mobius_restore_change($cfg, $c['change']), 'was a new menu', 'a creation is not undone (the portal never deletes in Mobius)');
+        ok(!empty(mobius_restore_change($cfg, $c['change'])['removed']), 'Put back on a new menu removes it again');
     } finally { @unlink($store); @unlink($shape); $db->exec("DELETE FROM mobius_menu_changes WHERE shortcode IN ('*75','*77','*8805#','*8806#','*76#','*8802#')"); }
     eq(count(mobius_find_rows(['data' => ['a1' => ['shortCode' => '*1#'], 'a2' => ['shortCode' => '*2#']]]) ?? []), 2, 'a list given as a map keyed by id is read');
     eq(mobius_find_count(['status' => 'SUCCESS', 'data' => '270']), 270, 'a count given as text is read');
@@ -593,6 +593,31 @@ t('Mobius menus: ids and destinations as MongoDB object ids ({"$oid": …}), as 
         eq([$row['name'], $row['_id'], $row['shortcode'], $row['tps']], ['TestNI2', ['$oid' => '63b7134dce3ec6546ec5e17c'], null, 10], 'a change keeps the id as {"$oid"}, an empty code as null and every other field');
         eq(mobius_restore_change($cfg, $u['change'])['menu']['name'] ?? null, 'TestNI', 'and Put back works');
     } finally { @unlink($store); @unlink($strict); }
+});
+t('Mobius menus: Copy, Delete (with Put back), Calls, Stats and Builder steps - like the actions in Mobius', function () use ($cfgFor, $stub, $db) {
+    $tmp = sys_get_temp_dir(); $store = $tmp.'/zt_stub_mobius_menus.json'; $ours = 'https://x/portal/ussd.php?t=ZT-TOKEN&m=proxy';
+    $oid = fn(int $t, int $n) => sprintf('%08x%016x', $t, $n);
+    $mk = fn($id, $name, $code, $url, $dest) => ['name' => $name, 'applicationDestinationID' => $dest ? ['$oid' => $dest] : null, 'shortcodeType' => 'PROXY', 'shortcode' => $code, 'isExtendable' => false, 'remoteURL' => $url, 'tps' => 10, '_id' => ['$oid' => $id]];
+    file_put_contents($store, json_encode([$mk('aa0000000000000000000001', 'Ours', '*8800#', $ours, 'dd01'), $mk('aa0000000000000000000002', 'TEST DELETE', '*7999#', $ours, 'dd01'), $mk('aa0000000000000000000003', 'EVD', '*16', 'https://prod/x', 'dd02')]));
+    file_put_contents($tmp.'/zt_stub_mobius_strict.txt', '1');
+    $cfg = $cfgFor(['mobius_base' => "$stub/mobius/rest/", 'mobius_user' => 'u', 'mobius_pass' => encrypt_secret(md5('p')), 'token' => 'ZT-TOKEN', 'shortcode_proxy' => '*8800#', 'mobius_session' => '', 'mobius_variant' => '0']);
+    try {
+        $c = mobius_copy_menu($cfg, 'aa0000000000000000000002', '*7998#', 'TEST COPY'); eq([$c['menu']['shortcode'] ?? null, $c['menu']['destinationID'] ?? null], ['*7998#', ['dd01']], 'Copy makes a new menu with the same settings');
+        thrown(fn() => mobius_copy_menu($cfg, 'aa0000000000000000000002', '*7999#', 'x'), 'own short code', 'a copy needs its own code');
+        thrown(fn() => mobius_delete_menu($cfg, 'aa0000000000000000000002', '*7998#'), 'type its short code *7999#', 'Delete needs the exact short code typed');
+        $d = mobius_delete_menu($cfg, 'aa0000000000000000000002', '*7999'); ok($d['gone'] === true, 'Delete removes it from Mobius');
+        $u = mobius_restore_change($cfg, $d['change']); eq([$u['menu']['shortcode'] ?? null, $u['menu']['destinationID'] ?? null], ['*7999#', ['dd01']], 'Put back creates the deleted menu again');
+        ok(!empty(mobius_restore_change($cfg, $c['change'])['removed']), 'Put back on a copy removes the copy');
+        $t0 = mktime(10, 0, 0, 10, 28, 2026); $calls = [];
+        for ($i = 0; $i < 230; $i++) $calls[] = ['menuID' => 'aa0000000000000000000001', 'callID' => $oid($t0 + $i * 3600, $i), 'msisdn' => '22077'.sprintf('%05d', $i % 7), 'isCompleted' => $i % 5 !== 0, 'errorMessage' => $i % 10 === 0 ? 'timeout' : null, 'originalRequest' => '*8800#', 'passedSteps' => [['isMobile' => false, 'message' => 'Menu'], ['isMobile' => true, 'message' => (string)(1 + $i % 2)]]];
+        file_put_contents($tmp.'/zt_stub_mobius_calls.json', json_encode($calls));
+        $r = mobius_menu_calls($cfg, 'aa0000000000000000000001'); eq([count($r['calls']), $r['total'], $r['calls'][0]['time'] ?? null], [50, 230, $t0 + 229 * 3600], 'Calls: newest first, 50 a page, the total, the time from the record id');
+        eq(mobius_menu_calls($cfg, 'aa0000000000000000000001', '', 50, $r['next'])['calls'][0]['time'] ?? null, $t0 + 179 * 3600, 'and the next page');
+        eq(mobius_menu_calls($cfg, 'aa0000000000000000000001', '220 7700003')['total'], 33, 'filtered by number');
+        $st = mobius_menu_stats($cfg, 'aa0000000000000000000001'); eq([$st['read'], $st['completed'], $st['failed'], $st['unique'], array_sum($st['days']), $st['answers']['1'] ?? 0], [230, 184, 23, 7, 230, 115], 'Stats: calls, completed, errors, numbers, per day, answers');
+        file_put_contents($tmp.'/zt_stub_mobius_steps.json', json_encode([['menuID' => 'aa0000000000000000000003', 'stepID' => 'b', 'parentID' => 'a', 'stepType' => 'MESSAGE', 'localCode' => '1', 'message' => 'Hi'], ['menuID' => 'aa0000000000000000000003', 'stepID' => 'a', 'stepType' => 'MENU', 'message' => 'Main']]));
+        $sp = mobius_menu_steps($cfg, 'aa0000000000000000000003'); eq([$sp['steps'][0]['id'] ?? null, $sp['steps'][1]['depth'] ?? null], ['a', 1], 'Builder: the steps in tree order');
+    } finally { foreach (['zt_stub_mobius_menus.json', 'zt_stub_mobius_strict.txt', 'zt_stub_mobius_calls.json', 'zt_stub_mobius_steps.json'] as $f) @unlink($tmp.'/'.$f); $db->exec("DELETE FROM mobius_menu_changes WHERE shortcode IN ('*7998#','*7999#','*7999')"); }
 });
 t('a menu is renamed in the portal: short code and name together', function () use ($db) {
     $clean = fn() => array_map(fn($t) => $db->exec("DELETE FROM $t WHERE short_code IN ('*8811#','*8812#','*8813#')"), ['ussd_menu_nodes', 'ussd_menu_versions', 'portal_short_codes']);

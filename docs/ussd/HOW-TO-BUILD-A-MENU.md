@@ -12,10 +12,20 @@ The next screen is a **setup checklist** with the exact values to type in **Mobi
 
 **Mobius, from the same page.** Press **Check Mobius** (admins with the settings permission): the portal reads Mobius' own list of menus (the same list as Mobius → USSD Shortcodes) and adds an **In Mobius** column — *in Mobius* (it calls this portal), *points elsewhere* (a menu with that short code exists but belongs to something else) or *not in Mobius*, with a **Create** button that makes the PROXY menu there for you, copying the address and destinations from the menu that already calls this portal. The ✎ button on a row changes the **name and short code** (and, for a menu that is in Mobius, *Extendable*) in the portal and, if you leave the box ticked, in Mobius too. On this page the other menus of the operator (airtime recharge, data usage…) are listed read-only; they are managed on the **Mobius** tab (below). Nothing is ever deleted from Mobius by the portal, and every change is in the audit trail. If Mobius refuses something, its message is shown.
 
-**Mobius tab — every menu in Mobius.** USSD → **Mobius** (admins with the settings permission) lists every menu Mobius has, with search and a filter (*calls this portal* / *other services*), and **JSON / CSV** export of the whole list (keep the JSON as a backup before big changes). On any row: 👁 opens it (all fields, everything Mobius holds for it, whether the portal has a menu for that code, recent changes); ✎ changes **name, short code, type, Extendable, address and destinations**; **New menu in Mobius** creates one (the portal's own address and destinations are filled in; *Use this portal's address* puts them back). **Send to portal** turns an existing code into a PROXY menu that calls the portal — build the menu in the portal first, or callers see "no menu". Safety rules:
-- a menu that does **not** call this portal is only changed after you **type its short code** in the confirmation box (customers are using it);
-- every change keeps the menu **as it was before**; the **History** card shows what changed and **Put back** sends the earlier values to Mobius again (a newly created menu cannot be undone from the portal — the portal never deletes in Mobius);
+**Mobius tab — every menu in Mobius.** USSD → **Mobius** (admins with the settings permission) lists every menu Mobius has, with search, a filter (*calls this portal* / *other services*) and **JSON / CSV** export (keep the JSON as a backup before big changes). Each row has the same actions as Mobius (the ⋯ button):
+- **Builder** — the steps of a menu built inside Mobius (read-only). A menu that calls the portal is built in the portal: it links to Easy Builder.
+- **Calls** — the calls of that menu, newest first (time, number, what was dialled, what the customer typed, completed / error, the screens). Filter by number; *Older calls* pages back.
+- **Stats** — from the most recent calls (1,000, or 2,000): calls, different numbers, completed and error rates, calls per day, top numbers, what customers typed, errors.
+- **Copy** — a new menu with every setting of this one and a new short code.
+- **Edit** — name, short code, type, Extendable, address and destination. **Use this portal's address** fills in the portal's address and destination.
+- **Delete** — removes it from Mobius; you must type its short code (or its name if it has none). Customers dialling it get "invalid MMI code" at once.
+
+**New menu in Mobius** creates one; **Send to portal** (in the 👁 view) turns an existing code into a PROXY menu that calls the portal — build the menu in the portal first, or callers see "no menu". Safety rules:
+- a menu that does **not** call this portal is only changed after you **type its short code**;
+- every change is kept in **History** with the menu as it was; **Put back** undoes it: it restores the earlier values, creates a deleted menu again (Mobius gives it a new id), or removes a menu the portal created or copied;
 - fields Mobius has that the form does not show are sent back unchanged, under Mobius' own field names.
+
+The calls are those Mobius still keeps; their time is read from Mobius' record id (server time). The Mobius REST API used is version 2.1 (`ussdmenues/*`, `ussdcalls/list_by_menu`, `ussdcalls/count_by_menu`, `ussdmenusteps/list_by_menu`).
 
 If the count and the list disagree (e.g. *Mobius lists 0 menus, count says 270*), open **What Mobius answered** on the Mobius tab: it shows Mobius' exact answers (session ids and the portal token hidden). The portal already tries the list in three ways and finds the rows wherever they are in the answer; if it still cannot, send that box to whoever maintains the portal.
 
