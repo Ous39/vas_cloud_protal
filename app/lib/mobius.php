@@ -588,30 +588,35 @@ function mobius_step_swagger(array $raw, string $id): array {
         'message' => $raw['message'] ?? null, 'language' => $raw['language'] ?? null, 'errorMessage' => $raw['errorMessage'] ?? null, 'externalUrl' => $raw['externalUrl'] ?? null, 'mappingType' => $raw['mappingType'] ?? null,
         'properties' => $raw['properties'] ?? null, 'responseProperties' => $raw['responseProperties'] ?? null];
 }
-// Save one step. Mobius was seen to answer HTTP 500 when a new step came without an id, so a new step is tried: (0) as stored, without an id,
-// (1) as stored with an id made here, (2) in the documented shape. Between tries the menu is read again so a step Mobius did save despite an
-// error is never created twice. The shape that works is remembered (mobius_step_shape).
+// Save one step. Seen on the real Mobius (2 Nov 2026, test menu *7999#): changing an existing step through ussdmenusteps/set works, but a NEW step
+// is refused with HTTP 500 whether or not it carries an id, and the documented shape (stepID) is refused as an unknown field. So a new step is
+// tried: (0) set as stored, without an id; (1) set with an id made here; (3) setmulti without an id; (4) setmulti with an id. Between tries the
+// menu is read again so a step Mobius did save despite an error is never created twice. The way that works is remembered (mobius_step_shape).
+// When none works, MOBIUS_NO_CREATE is thrown so the page can send the user to Mobius' own Builder for that one step.
+const MOBIUS_NO_CREATE = 'Mobius does not let its API create new steps';
 function mobius_step_write(array $cfg, array $raw, ?array $known = null): array {
     $isNew = mobius_id_text($raw['_id'] ?? '') === ''; $menuId = mobius_id_text($raw['menuID'] ?? '');
-    $pref = $cfg['mobius_step_shape'] ?? ''; $errors = [];
-    $order = $isNew ? array_values(array_unique(array_merge($pref !== '' ? [(int)$pref] : [], [0, 1, 2]))) : (($pref === '2') ? [2, 0] : [0, 2]);
-    foreach ($order as $n => $shape) {
-        $id = $isNew ? ($shape === 0 ? '' : mobius_new_oid()) : mobius_id_text($raw['_id']);
-        $body = $shape === 2 ? mobius_step_swagger($raw, $id) : ($id !== '' ? array_merge($raw, ['_id' => mobius_oid($id)]) : $raw);
-        if ($shape === 0 && $isNew) unset($body['_id']);
-        $r = mobius_rest($cfg, 'ussdmenusteps/set', ['data' => $body]);
+    $pref = (string)($cfg['mobius_step_shape'] ?? ''); $errors = []; $labels = [0 => 'set', 1 => 'set with an id', 3 => 'setmulti', 4 => 'setmulti with an id'];
+    if (!$isNew) { $r = mobius_rest($cfg, 'ussdmenusteps/set', ['data' => $raw]); if (!$r['ok']) throw new RuntimeException('Mobius refused: '.mb_strimwidth(preg_replace('/<[^>]+>/', ' ', $r['error']), 0, 300, '…')); return ['id' => mobius_id_text($raw['_id']), 'raw' => (string)($r['raw'] ?? '')]; }
+    $order = array_values(array_unique(array_merge($pref !== '' && isset($labels[(int)$pref]) ? [(int)$pref] : [], [0, 1, 3, 4])));
+    foreach ($order as $shape) {
+        $id = in_array($shape, [1, 4], true) ? mobius_new_oid() : '';
+        $body = $raw; unset($body['_id']); if ($id !== '') $body['_id'] = mobius_oid($id);
+        $r = in_array($shape, [3, 4], true) ? mobius_rest($cfg, 'ussdmenusteps/setmulti', ['data' => [$body]]) : mobius_rest($cfg, 'ussdmenusteps/set', ['data' => $body]);
         if ($r['ok']) {
-            if ((string)$shape !== $pref && ($isNew || $shape !== 0)) { try { ussd_proxy_set(['mobius_step_shape' => (string)$shape]); } catch (Throwable $e) {} }
-            $d = $r['json']['data'] ?? null; $got = is_array($d) ? mobius_id_text($d['_id'] ?? ($d['stepID'] ?? '')) : '';
+            $d = $r['json']['data'] ?? null; if (is_array($d) && array_is_list($d)) $d = $d[0] ?? null;
+            $got = is_array($d) ? mobius_id_text($d['_id'] ?? ($d['stepID'] ?? '')) : '';
+            if ($got === '' && $id === '' && $menuId !== '' && $known !== null) { $now = mobius_menu_steps($cfg, $menuId); if ($now['ok']) foreach ($now['steps'] as $sid => $s) if (!isset($known[$sid]) && $s['type'] === strtoupper((string)($raw['stepType'] ?? '')) && $s['parent'] === mobius_id_text($raw['parentID'] ?? '')) $got = $sid; }
+            if ((string)$shape !== $pref) { try { ussd_proxy_set(['mobius_step_shape' => (string)$shape]); } catch (Throwable $e) {} }
             return ['id' => $got !== '' ? $got : $id, 'raw' => (string)($r['raw'] ?? '')];
         }
-        $errors[] = '['.['as stored', 'with an id', 'documented shape'][$shape].'] '.$r['error'];
-        if ($isNew && $known !== null && $menuId !== '') { // did it get saved anyway?
+        $errors[] = '['.$labels[$shape].'] '.mb_strimwidth(preg_replace('/\s+/', ' ', preg_replace('/<[^>]+>/', ' ', $r['error'])), 0, 160, '…');
+        if ($known !== null && $menuId !== '') { // did it get saved anyway?
             $now = mobius_menu_steps($cfg, $menuId);
             if ($now['ok']) foreach ($now['steps'] as $sid => $s) if (!isset($known[$sid]) && $s['type'] === strtoupper((string)($raw['stepType'] ?? '')) && $s['parent'] === mobius_id_text($raw['parentID'] ?? '') && $s['code'] === trim((string)($raw['localCode'] ?? ''))) return ['id' => $sid, 'raw' => ''];
         }
     }
-    throw new RuntimeException('Mobius refused: '.implode(' | ', array_map(fn($e) => mb_strimwidth(preg_replace('/<[^>]+>/', ' ', $e), 0, 200, '…'), $errors)));
+    throw new RuntimeException(MOBIUS_NO_CREATE.' (it answered: '.implode(' | ', $errors).').');
 }
 // Edit a step, or add one: $how = 'edit' | 'option' (under a menu, with its key) | 'next' (after $anchor) | 'first' (the Welcome of an empty menu).
 function mobius_step_save(array $cfg, array $menu, string $how, string $anchor, array $in): array {

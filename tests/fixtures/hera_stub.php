@@ -78,16 +78,22 @@ if ($parts[0] === 'mobius') {
             $j(['status' => 'SUCCESS', 'data' => array_slice($calls, 0, (int)($in['pageSize'] ?? 50))]); break;
         case 'ussddestinationsettings/list': $j(['status' => 'SUCCESS', 'data' => [['_id' => ['$oid' => 'dd01'], 'name' => 'SS7 HLR main'], ['_id' => ['$oid' => 'dd02'], 'name' => 'HTTP Hera']]]); break;
         // steps live in zt_stub_mobius_steps.json, stored like the real Mobius: {"_id": {"$oid"}, "menuID": {"$oid"} (or text), "parentID", "nextStepID", …}
-        case 'ussdmenusteps/list_by_menu': case 'ussdmenusteps/set': case 'ussdmenusteps/delete':
+        case 'ussdmenusteps/list_by_menu': case 'ussdmenusteps/set': case 'ussdmenusteps/delete': case 'ussdmenusteps/setmulti':
             $sf = $dir.'/zt_stub_mobius_steps.json'; $steps = json_decode((string)@file_get_contents($sf), true) ?: [];
             $oid = fn($v) => is_array($v) ? (string)($v['$oid'] ?? '') : (string)$v; $sid = fn($x) => $oid($x['_id'] ?? ($x['stepID'] ?? ''));
             if ($rest === 'ussdmenusteps/list_by_menu') { $j(['status' => 'SUCCESS', 'data' => array_values(array_filter($steps, fn($x) => $oid($x['menuID'] ?? '') === ($in['key'] ?? '')))]); break; }
             if ($rest === 'ussdmenusteps/delete') { $n = count($steps); $steps = array_values(array_filter($steps, fn($x) => $sid($x) !== (string)($in['data'] ?? ''))); file_put_contents($sf, json_encode($steps)); $j(['status' => 'SUCCESS', 'data' => count($steps) < $n]); break; }
+            // like the real Mobius (zt_stub_mobius_step500.txt): set changes an existing step but answers 500 to a new one, with or without an id;
+            // setmulti creates (unless zt_stub_mobius_nocreate.txt, then it answers 500 too)
+            $real = is_file($dir.'/zt_stub_mobius_step500.txt'); $multi = $rest === 'ussdmenusteps/setmulti';
+            if ($multi) { if (is_file($dir.'/zt_stub_mobius_nocreate.txt')) { http_response_code(500); header('Content-Type: text/html'); echo '<html><body>Internal Server Error</body></html>'; break; } $in['data'] = ($in['data'] ?? [])[0] ?? []; }
             $d = $in['data'] ?? []; $known = ['menuID', 'parentID', 'localCode', 'stepType', 'message', 'language', 'errorMessage', 'externalUrl', 'externalHttpDestinationID', 'nextStepID', 'mappingType', 'properties', 'responseProperties', 'headers', '_id', 'stepID'];
             foreach (array_keys($d) as $f) if (!in_array($f, $known, true)) { http_response_code(400); $j(['status' => 'ERROR', 'errorMessage' => 'Unrecognized field "'.$f.'"']); break 2; }
             foreach (['parentID', 'nextStepID', 'menuID'] as $k) if (isset($d[$k]) && !is_array($d[$k])) { http_response_code(400); $j(['status' => 'ERROR', 'errorMessage' => 'Cannot deserialize '.$k.' from a string']); break 2; }
-            if ($sid($d) === '' && is_file($dir.'/zt_stub_mobius_step500.txt')) { http_response_code(500); header('Content-Type: text/html'); echo '<html><head><title>Error</title></head><body>Internal Server Error</body></html>'; break; } // like the real Mobius: a new step needs an id
-            if ($sid($d) !== '') { $hit = false; if (is_file($dir.'/zt_stub_mobius_step500.txt')) { foreach ($steps as $x) if ($sid($x) === $sid($d)) $hit = true; if (!$hit) { $steps[] = $d; file_put_contents($sf, json_encode($steps)); $j(['status' => 'SUCCESS', 'data' => $d]); break; } $hit = false; } foreach ($steps as $k => $x) if ($sid($x) === $sid($d)) { $steps[$k] = $d; $hit = true; } if (!$hit) { $j(['status' => 'ERROR', 'errorMessage' => 'step not found']); break; } }
+            $exists = false; foreach ($steps as $x) if ($sid($d) !== '' && $sid($x) === $sid($d)) $exists = true;
+            if ($real && !$multi && !$exists) { http_response_code(500); header('Content-Type: text/html'); echo '<html><head><title>Error</title></head><body>Internal Server Error</body></html>'; break; }
+            if ($multi && !$exists) { if ($sid($d) === '') $d['_id'] = ['$oid' => sprintf('6%07x%016x', count($steps), random_int(0, PHP_INT_MAX))]; $steps[] = $d; file_put_contents($sf, json_encode($steps)); $j(['status' => 'SUCCESS', 'data' => [$d]]); break; }
+            if ($sid($d) !== '') { $hit = false; foreach ($steps as $k => $x) if ($sid($x) === $sid($d)) { $steps[$k] = $d; $hit = true; } if (!$hit) { $j(['status' => 'ERROR', 'errorMessage' => 'step not found']); break; } }
             else { $d['_id'] = ['$oid' => sprintf('5%07x%016x', count($steps), random_int(0, PHP_INT_MAX))]; $steps[] = $d; }
             file_put_contents($sf, json_encode($steps)); $j(['status' => 'SUCCESS', 'data' => $d]); break;
         default: $j(['status' => 'ERROR', 'errorMessage' => 'unknown call']);

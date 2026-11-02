@@ -679,9 +679,12 @@ t('Mobius Builder: unlock, add Welcome / next / options (message, question, serv
       ok($qq && $qq['parent'] === $m['id'] && $qq['code'] === '2' && $xx && $xx['type'] === 'EXTERNAL_SERVICE' && $xx['parent'] === $qq['id'] && ($st[$xx['next']]['type'] ?? '') === 'MESSAGE' && $xx['_raw']['headers'][0]['defaultValue'] === 'secret-1', 'put back re-creates the three steps, linked, headers kept');
       // put back an add (removes the added step)
       mobius_restore_change($cfg, $g['change']); $st = mobius_menu_steps($cfg, 'aa0000000000000000000009')['steps']; ok(!isset($st[$g['id']]), 'put back of an added step removes it');
+        file_put_contents($tmp.'/zt_stub_mobius_nocreate.txt', '1'); $before = count(json_decode(file_get_contents($tmp.'/zt_stub_mobius_steps.json'), true));
+        thrown(fn() => mobius_step_save($cfg, $menu, 'option', $m['id'], ['type' => 'MESSAGE', 'code' => '7', 'message' => 'nope']), MOBIUS_NO_CREATE, 'when Mobius refuses every way of creating a step, it says so');
+        ok(count(json_decode(file_get_contents($tmp.'/zt_stub_mobius_steps.json'), true)) === $before, 'and nothing was added'); @unlink($tmp.'/zt_stub_mobius_nocreate.txt');
       // history has no secrets
       $rows = portal_pdo()->query("SELECT * FROM mobius_menu_changes WHERE shortcode='*7999#'")->fetchAll(); ok(!str_contains(json_encode($rows), 'secret-1'), 'no header secret in History rows'); ok(str_contains(json_encode($rows), 'Added key 2'), 'History says what happened');
-    } finally { @unlink($tmp.'/zt_stub_mobius_step500.txt'); @unlink($tmp.'/zt_stub_mobius_steps.json'); @unlink($store); $db->exec("DELETE b FROM mobius_step_backups b JOIN mobius_menu_changes c ON c.id=b.change_id WHERE c.shortcode='*7999#'"); $db->exec("DELETE FROM mobius_menu_changes WHERE shortcode='*7999#'"); unset($_SESSION['mobius_unlock']); }
+    } finally { @unlink($tmp.'/zt_stub_mobius_nocreate.txt'); @unlink($tmp.'/zt_stub_mobius_step500.txt'); @unlink($tmp.'/zt_stub_mobius_steps.json'); @unlink($store); $db->exec("DELETE b FROM mobius_step_backups b JOIN mobius_menu_changes c ON c.id=b.change_id WHERE c.shortcode='*7999#'"); $db->exec("DELETE FROM mobius_menu_changes WHERE shortcode='*7999#'"); unset($_SESSION['mobius_unlock']); }
 });
 t('a menu is renamed in the portal: short code and name together', function () use ($db) {
     $clean = fn() => array_map(fn($t) => $db->exec("DELETE FROM $t WHERE short_code IN ('*8811#','*8812#','*8813#')"), ['ussd_menu_nodes', 'ussd_menu_versions', 'portal_short_codes']);

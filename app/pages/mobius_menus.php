@@ -39,6 +39,7 @@ declare(strict_types=1);
             }
         } catch (RuntimeException $e) {
             flash('danger',$e->getMessage());
+            if ($do==='step_save' && str_contains($e->getMessage(), MOBIUS_NO_CREATE)) { $_SESSION['flash']=array_values(array_filter($_SESSION['flash']??[],fn($f)=>$f['msg']!==$e->getMessage())); flash('warning','Mobius does not let the portal create new steps (its API answers with an error). Add this step in Mobius\' own Builder with + (the “Open in Mobius Builder” link below), press Save Menu there, then come back: edit, preview and History work here.'); }
             if ($do==='step_save' && !empty($_POST['menu_id'])) { $_SESSION['mobius_step_form']=(array)($_POST['s']??[]); $q=['op'=>($_POST['how']??'edit')==='edit'?'edit':'add','how'=>(string)($_POST['how']??''),'at'=>(string)($_POST['at']??'')]; $back.='&'.http_build_query($q); }
             if ($do==='save') { $_SESSION['mobius_form']=['menu_id'=>(string)($_POST['menu_id']??''),'m'=>(array)($_POST['m']??[])]; $back.=($_POST['menu_id']??'')!==''?'&edit='.urlencode((string)$_POST['menu_id']):'&new=1'; }
             elseif ($do==='copy'||$do==='delete') $back.='&'.$do.'='.urlencode((string)($_POST['menu_id']??''));
@@ -94,7 +95,7 @@ declare(strict_types=1);
     .mbt-kids>.mbt:first-child::after{top:50%}.mbt-kids>.mbt:last-child::after{bottom:50%}.mbt-kids>.mbt:only-child::after{display:none}
     .mbt-card{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #dde3ea;border-radius:8px;padding:6px 10px;width:250px;flex:none;cursor:pointer;box-shadow:0 1px 2px rgba(0,0,0,.04)}
     .mbt-card:hover,.mbt-card.on{border-color:var(--brand);box-shadow:0 0 0 2px var(--brand-light)}
-    .mbt-ref{border-style:dashed;opacity:.75}
+    .mbt-ref{border-style:dashed;opacity:.75}.mbt-plus{border-style:dashed;color:var(--muted);text-decoration:none;width:170px}.mbt-plus:hover{color:var(--brand-dark)}.mbt-plus .mbt-ic{background:#eef1f5;color:#6b7785}
     .mbt-code{font-weight:700;min-width:1.2rem;text-align:center;color:#334}
     .mbt-ic{width:28px;height:28px;border-radius:7px;display:inline-flex;align-items:center;justify-content:center;flex:none;font-size:.8rem}
     .mbt-txt{display:flex;flex-direction:column;min-width:0}.mbt-kind{font-size:.7rem;color:var(--muted)}.mbt-sub{font-size:.82rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -172,7 +173,8 @@ declare(strict_types=1);
         <?php endif;?>
     <?php elseif($act==='steps'): $pd=$actData;?>
         <?php if($amOurs && menu_valid_shortcode(menu_normalize_shortcode($am['shortcode']))):?><div class="alert alert-info py-2 small">This menu calls the portal, so its screens are built in the portal: <a href="?page=ussd_build&short_code=<?=urlencode(menu_normalize_shortcode($am['shortcode']))?>">open it in Easy Builder</a>.</div><?php endif;?>
-        <?php $unl=mobius_steps_unlocked($am['menuID']); $sb='?page=mobius_menus&steps='.urlencode($am['menuID']);
+        <?php $unl=mobius_steps_unlocked($am['menuID']); $sb='?page=mobius_menus&steps='.urlencode($am['menuID']); $mbBase=mobius_bases($cfg)[0]??''; $mbBuilder=$mbBase!==''?preg_replace('~/rest/?$~','',$mbBase).'/ussd/ussdmenubuilder/'.rawurlencode($am['menuID']):'';
+        if($mbBuilder!==''):?><div class="text-end mb-1"><a class="small" href="<?=e($mbBuilder)?>" target="_blank" rel="noopener"><i class="fa-solid fa-up-right-from-square me-1"></i>Open in Mobius Builder</a></div><?php endif;
         if($pd['ok']):?>
         <div class="d-flex flex-wrap align-items-center gap-2 mb-2 p-2 rounded <?=$unl?'bg-success-subtle border border-success':'bg-light border'?>">
             <?php if($unl):?><i class="fa-solid fa-lock-open text-success"></i><span class="small"><b>Editing is on</b> until <?=e(date('H:i',(int)$_SESSION['mobius_unlock'][$am['menuID']]))?>. Click a card, then Edit, Delete or Add. Changes go live in Mobius at once; History → Put back undoes them.</span>
@@ -184,7 +186,7 @@ declare(strict_types=1);
         <?php if(!$pd['ok']):?><div class="alert alert-danger py-2">Mobius refused: <?=e($pd['error'])?></div>
         <?php else: $menuNames=[]; foreach($menus as $mm) $menuNames[$mm['menuID']]=$mm['name'].($mm['shortcode']!==''?' ('.$mm['shortcode'].')':'');
             $steps=$pd['steps'];
-            $card=function(array $node) use (&$card,$steps,$menuNames,$am): void {
+            $card=function(array $node) use (&$card,$steps,$menuNames,$am,$unl,$sb): void {
                 $st=$steps[$node['id']]; [$label,$icon,$col]=MOBIUS_STEP_KINDS[$st['type']]??[$st['type'],'fa-circle','#999'];
                 $sub=$st['type']==='WELCOME'?'Short code '.$am['shortcode']:mobius_step_summary($st,$steps,$menuNames);
                 $tip=trim($st['message']."\n".($st['url']!==''?$st['url']:'')); ?>
@@ -192,7 +194,8 @@ declare(strict_types=1);
                     <?php if($st['code']!==''):?><span class="mbt-code"><?=e($st['code'])?></span><?php endif;?>
                     <span class="mbt-ic" style="background:<?=$col?>22;color:<?=$col?>"><i class="fa-solid <?=$icon?>"></i></span>
                     <span class="mbt-txt"><span class="mbt-kind"><?=e($label)?><?=$node['ref']?' (drawn above)':''?></span><span class="mbt-sub"><?=e(mb_strimwidth($sub,0,60,'…'))?:'&nbsp;'?></span></span></div>
-                    <?php if($node['kids'] && !$node['ref']):?><div class="mbt-kids"><?php foreach($node['kids'] as $k) $card($k);?></div><?php endif;?></div>
+                    <?php $plus=[]; if($unl && !$node['ref']){ if(mobius_step_has_options($st['type'])) $plus[]=['option','+ Add option']; if(mobius_step_continues($st['type']) && !($st['next']!=='' && isset($steps[$st['next']]))) $plus[]=['next','+ Add next step']; }
+                    if(($node['kids'] && !$node['ref']) || $plus):?><div class="mbt-kids"><?php if(!$node['ref']) foreach($node['kids'] as $k) $card($k); foreach($plus as [$how,$lab]):?><div class="mbt"><a class="mbt-card mbt-plus" href="<?=e($sb)?>&op=add&how=<?=$how?>&at=<?=urlencode($st['id'])?>#mbsForm"><span class="mbt-ic"><i class="fa-solid fa-plus"></i></span><span class="mbt-txt"><span class="mbt-sub"><?=e($lab)?></span></span></a></div><?php endforeach;?></div><?php endif;?></div>
             <?php };?>
         <?php if(!$steps):?><p class="text-muted mb-0">Mobius has no steps for this menu<?=$am['shortcodeType']==='PROXY'?' (a PROXY menu takes its screens from its address).':'.'?></p><?php else:?>
         <p class="small text-muted mb-2">Laid out like Mobius' Builder: the menu starts on the left; a number is the key the customer presses. Click a card to see everything about that step. <?=count($steps)?> steps.</p>
