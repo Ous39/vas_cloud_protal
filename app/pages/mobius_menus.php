@@ -60,11 +60,11 @@ declare(strict_types=1);
     }
     $portalCodes=array_flip(array_map(fn($c)=>rtrim($c,'#'),menu_shortcodes()));
     $viewId=trim((string)($_GET['view']??'')); $editId=trim((string)($_GET['edit']??'')); $isNew=isset($_GET['new']);
-    $act=''; $actId=''; foreach(['calls','stats','steps','copy','delete'] as $a) if(trim((string)($_GET[$a]??''))!==''){ $act=$a; $actId=trim((string)$_GET[$a]); break; }
+    $act=''; $actId=''; foreach(['calls','stats','steps','try','copy','delete'] as $a) if(trim((string)($_GET[$a]??''))!==''){ $act=$a; $actId=trim((string)$_GET[$a]); break; }
     $actMenu=$act!==''?mobius_find_menu($menus,$actId):null; $actData=null;
     if($actMenu && $act==='calls') $actData=mobius_menu_calls($cfg,$actMenu['menuID'],(string)($_GET['msisdn']??''),50,isset($_GET['from'])?(string)$_GET['from']:null);
     if($actMenu && $act==='stats') $actData=mobius_menu_stats($cfg,$actMenu['menuID'],(int)($_GET['max']??1000));
-    if($actMenu && $act==='steps') $actData=mobius_menu_steps($cfg,$actMenu['menuID']);
+    if($actMenu && ($act==='steps' || $act==='try')) $actData=mobius_menu_steps($cfg,$actMenu['menuID']);
     $stepOp=(string)($_GET['op']??''); $stepAt=(string)($_GET['at']??''); $stepHow=(string)($_GET['how']??''); $stepForm=$_SESSION['mobius_step_form']??null; unset($_SESSION['mobius_step_form']);
     $view=$viewId!==''?mobius_find_menu($menus,$viewId):null; $edit=$editId!==''?mobius_find_menu($menus,$editId):null;
     $saved=$_SESSION['mobius_form']??null; unset($_SESSION['mobius_form']);
@@ -102,28 +102,43 @@ declare(strict_types=1);
     #mbPager .btn{min-width:2.2rem}
     .mbt-side{position:sticky;top:84px}.mbt-hint{border:1px dashed #cdd5df;border-radius:8px;padding:.6rem;text-align:center;margin-bottom:.5rem}
     .mbt-phone{max-width:260px;background:#1f2933;color:#e9f5e1;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.8rem;border-radius:12px;padding:10px 12px;white-space:pre-wrap;border:6px solid #3a4652;min-height:3rem}
-    .mbt-phone:empty::before{content:'(the screen text shows here)';color:#8a96a3}</style>
-    <?php if(!$focus):?>
+    .mbt-phone:empty::before{content:'(the screen text shows here)';color:#8a96a3}
+    .mbt-sim{max-width:none;min-height:14rem;font-size:.9rem}.mbt-sim .sim-end{color:#f6c56b;display:block;margin-top:.5rem}.mbt-sim .sim-btn{margin:.15rem .2rem 0 0}</style>
+    <?php if(!$focus): $kindN=['mobius'=>0,'portal'=>0,'push'=>0,'other'=>0]; foreach($menus as $m0) $kindN[mobius_menu_kind($m0,$cfg)]++;?>
     <div class="cardx">
         <div class="d-flex flex-wrap gap-2 align-items-center">
-            <div><h3 class="mb-0">Mobius menus</h3><div class="small text-muted">Every USSD short code in Mobius (the same list as Mobius → USSD Shortcodes). Search, open, change, create, and send a menu to this portal.</div></div>
-            <input class="form-control w-auto ms-auto" id="mbFilter" placeholder="Search name, code, address…" style="min-width:16rem">
-            <select class="form-select w-auto" id="mbWho"><option value="">All menus (<?=count($menus)?>)</option><option value="portal">Calls this portal (<?=$oursN?>)</option><option value="other">Other services (<?=count($menus)-$oursN?>)</option><?php foreach($typeN as $t=>$n):?><option value="<?=e($t)?>"><?=e($t)?> (<?=$n?>)</option><?php endforeach;?></select>
-            <a class="btn btn-outline-secondary" href="?page=mobius_menus"><i class="fa-solid fa-arrows-rotate me-1"></i>Refresh</a>
-            <?php if($ok):?><div class="btn-group"><a class="btn btn-outline-secondary" href="?page=mobius_menus&export=json" title="Every menu exactly as Mobius gives it — keep it as a backup"><i class="fa-solid fa-download me-1"></i>JSON</a><a class="btn btn-outline-secondary" href="?page=mobius_menus&export=csv">CSV</a></div>
-            <a class="btn btn-primary" href="?page=mobius_menus&new=1"><i class="fa-solid fa-plus me-1"></i>New menu in Mobius</a><?php endif;?>
+            <div class="me-auto"><h3 class="mb-0">USSD menus in Mobius</h3><div class="small text-muted"><?=$ok?count($menus).' menus':'Mobius cannot be read right now'?> — open one to build it, try it, see its calls and numbers.</div></div>
+            <a class="btn btn-primary" href="?page=mobius_menus&new=1"><i class="fa-solid fa-plus me-1"></i>New menu</a>
+            <div class="dropdown"><button class="btn btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown">More</button><ul class="dropdown-menu dropdown-menu-end">
+                <li><a class="dropdown-item" href="?page=mobius_menus"><i class="fa-solid fa-arrows-rotate fa-fw me-2"></i>Refresh from Mobius</a></li>
+                <?php if($ok):?><li><a class="dropdown-item" href="?page=mobius_menus&export=json"><i class="fa-solid fa-download fa-fw me-2"></i>Backup of all menus (JSON)</a></li><li><a class="dropdown-item" href="?page=mobius_menus&export=csv"><i class="fa-solid fa-table fa-fw me-2"></i>List as CSV (Excel)</a></li><?php endif;?>
+                <li><a class="dropdown-item" href="#mbHistory"><i class="fa-solid fa-clock-rotate-left fa-fw me-2"></i>History of changes</a></li></ul></div>
+        </div>
+        <div class="d-flex flex-wrap gap-2 align-items-center mt-3">
+            <div class="position-relative flex-grow-1" style="max-width:32rem"><i class="fa-solid fa-magnifying-glass position-absolute text-muted" style="left:.75rem;top:.7rem"></i><input class="form-control ps-5" id="mbFilter" placeholder="Search by name or short code…" autocomplete="off"></div>
+            <div class="btn-group flex-wrap" role="group" id="mbKinds"><button type="button" class="btn btn-sm btn-outline-secondary active" data-kind="">All <span class="badge bg-light text-dark"><?=count($menus)?></span></button>
+                <?php foreach(MOBIUS_KINDS as $k=>[$lab,$cls]): if(!$kindN[$k]) continue;?><button type="button" class="btn btn-sm btn-outline-secondary" data-kind="<?=$k?>"><?=e($lab)?> <span class="badge bg-light text-dark"><?=$kindN[$k]?></span></button><?php endforeach;?></div>
+            <select class="d-none" id="mbWho"><option value=""></option></select>
         </div>
         <?php if(!$ok):?><div class="alert alert-danger mt-3 mb-0 py-2">Could not read Mobius: <?=e($list['error'])?> <a href="?page=ussd_proxy">Check the Mobius connection</a>.</div>
         <?php else: $short=$list['count']!==null && $list['count']!==count($menus);?>
-        <p class="mt-3 mb-0 small">Mobius lists <b><?=count($menus)?></b> menu<?=count($menus)===1?'':'s'?><?=$list['count']!==null?' (its count says <b>'.(int)$list['count'].'</b>)':''?>: <b><?=$oursN?></b> call this portal, <b><?=count($menus)-$oursN?></b> belong to other services. <span class="text-muted">Read as: <?=e($list['shape'])?>.</span></p>
-        <?php if($short):?><div class="alert alert-warning mt-2 mb-0 py-2 small"><b>The list is not complete.</b> Mobius counts <?=(int)$list['count']?> menus but the portal could read <?=count($menus)?>. Open <i>What Mobius answered</i> below and send it to whoever maintains the portal — it shows the exact answer so the reading can be adjusted.</div><?php endif;?>
-        <details class="mt-2"<?=$short?' open':''?>><summary class="small text-muted">What Mobius answered (for troubleshooting; session ids and the portal token are hidden)</summary>
+        <?php if($short):?><div class="alert alert-warning mt-2 mb-0 py-2 small"><b>The list is not complete.</b> Mobius counts <?=(int)$list['count']?> menus but the portal could read <?=count($menus)?>. Open <i>Technical details</i> below and send it to whoever maintains the portal.</div><?php endif;?>
+        <details class="mt-2"<?=$short?' open':''?>><summary class="small text-muted"><i class="fa-solid fa-circle-info me-1"></i>Technical details</summary>
+            <p class="small mb-1 mt-2">Mobius counts <?=$list['count']!==null?(int)$list['count']:'?'?>; read <?=count($menus)?> (<?=e($list['shape'])?>). Session ids and the portal token are hidden below.</p>
             <?php foreach($list['diag'] as $d):?><div class="small mt-2"><b><?=e($d['call'])?></b><?=isset($d['rows'])?' — '.(int)$d['rows'].' menus read':''?></div><pre class="small bg-light border rounded p-2 mb-0" style="max-height:14rem;overflow:auto;white-space:pre-wrap"><?=e($d['answer'])?></pre><?php endforeach;?>
         </details>
         <?php endif;?>
     </div>
     <?php else:?>
     <div class="d-flex flex-wrap align-items-center gap-2 mb-1"><a class="btn btn-outline-secondary" href="?page=mobius_menus"><i class="fa-solid fa-arrow-left me-1"></i>All menus</a><span class="small text-muted">Mobius → <?=count($menus)?> menus</span><?php if(!$ok):?><div class="alert alert-danger py-1 px-2 mb-0 small">Could not read Mobius: <?=e($list['error'])?></div><?php endif;?></div>
+    <?php $cur=$actMenu?:($view?:$edit); if($cur): $ck=mobius_menu_kind($cur,$cfg); [$ckl,$ckc]=MOBIUS_KINDS[$ck]; $cq=urlencode($cur['menuID']); $tab=$act!==''?$act:($view?'view':'edit');
+        $tabs=[['steps','fa-sitemap','Builder'],['try','fa-mobile-screen','Try it'],['calls','fa-phone','Calls'],['stats','fa-chart-column','Numbers'],['view','fa-gear','Settings'],['copy','fa-regular fa-copy','Copy']];
+        if($ck!=='mobius') $tabs=array_values(array_filter($tabs,fn($t)=>!in_array($t[0],['try'],true)));?>
+    <div class="cardx mb-0 pb-0"><div class="d-flex flex-wrap align-items-center gap-2"><div class="me-auto"><h3 class="mb-0"><?=e($cur['name'])?></h3><div class="small"><?=$cur['shortcode']!==''?'<code class="fs-6">'.e($cur['shortcode']).'</code>':'<span class="text-muted">no short code</span>'?> <span class="badge <?=$ckc?> ms-1"><?=e($ckl)?></span></div></div>
+        <?php if($ck==='portal' && menu_valid_shortcode(menu_normalize_shortcode($cur['shortcode']))):?><a class="btn btn-sm btn-outline-success" href="?page=ussd_build&short_code=<?=urlencode(menu_normalize_shortcode($cur['shortcode']))?>"><i class="fa-solid fa-wand-magic-sparkles me-1"></i>Easy Builder</a><?php endif;?>
+        <a class="btn btn-sm btn-outline-danger" href="?page=mobius_menus&delete=<?=$cq?>"><i class="fa-solid fa-trash me-1"></i>Delete</a></div>
+        <ul class="nav nav-tabs mt-3 border-0"><?php foreach($tabs as [$t,$ic,$lb]): $href=$t==='view'?'?page=mobius_menus&view='.$cq:'?page=mobius_menus&'.$t.'='.$cq; $on=$tab===$t||($t==='view'&&$tab==='edit');?><li class="nav-item"><a class="nav-link<?=$on?' active fw-semibold':''?>" href="<?=e($href)?>"><i class="<?=str_contains($ic,'fa-regular')?$ic:'fa-solid '.$ic?> me-1"></i><?=e($lb)?></a></li><?php endforeach;?></ul></div>
+    <?php endif;?>
     <?php endif;?>
 
     <?php if($form!==null): $other=$edit && !mobius_menu_is_ours($edit,$cfg);?>
@@ -145,8 +160,8 @@ declare(strict_types=1);
 
     <?php if($act!=='' && !$actMenu):?><div class="alert alert-warning mt-3">That menu is no longer in Mobius (refresh the list).</div><?php endif;?>
     <?php if($actMenu): $am=$actMenu; $amOurs=mobius_menu_is_ours($am,$cfg); $amWord=mobius_confirm_word($am); $base='?page=mobius_menus&'.$act.'='.urlencode($am['menuID']);
-        $titles=['calls'=>'Calls','stats'=>'Stats','steps'=>'Builder (steps in Mobius)','copy'=>'Copy','delete'=>'Delete'];?>
-    <div class="cardx mt-3 <?=$act==='delete'?'border-danger':'border-primary'?>"><div class="d-flex justify-content-between align-items-start"><h3 class="mb-2"><?=e($titles[$act])?> — <code><?=e($am['shortcode']?:'(no code)')?></code> <?=e($am['name'])?></h3><a class="btn-close" href="?page=mobius_menus" aria-label="Close"></a></div>
+        $titles=['calls'=>'Calls','stats'=>'Numbers','steps'=>'Builder','try'=>'Try it','copy'=>'Copy to a new short code','delete'=>'Delete this menu'];?>
+    <div class="cardx mt-3 <?=$act==='delete'?'border-danger':'border-primary'?>"><div class="d-flex justify-content-between align-items-start"><h3 class="mb-2 h5"><?=e($titles[$act])?></h3></div>
     <?php if($act==='calls'): $cd=$actData;?>
         <form class="d-flex gap-2 mb-2" method="get"><input type="hidden" name="page" value="mobius_menus"><input type="hidden" name="calls" value="<?=e($am['menuID'])?>"><input class="form-control w-auto" name="msisdn" value="<?=e((string)($_GET['msisdn']??''))?>" placeholder="Number, e.g. 2207700001"><button class="btn btn-outline-primary">Filter</button><?php if(($_GET['msisdn']??'')!==''):?><a class="btn btn-link" href="?page=mobius_menus&calls=<?=urlencode($am['menuID'])?>">All numbers</a><?php endif;?></form>
         <?php if(!$cd['ok']):?><div class="alert alert-danger py-2">Mobius refused: <?=e($cd['error'])?></div>
@@ -200,7 +215,7 @@ declare(strict_types=1);
         <?php if(!$steps):?><p class="text-muted mb-0">Mobius has no steps for this menu<?=$am['shortcodeType']==='PROXY'?' (a PROXY menu takes its screens from its address).':'.'?></p><?php else:?>
         <p class="small text-muted mb-2">Laid out like Mobius' Builder: the menu starts on the left; a number is the key the customer presses. Click a card to see everything about that step. <?=count($steps)?> steps.</p>
         <div class="row g-3"><div class="col-xl-8"><div class="mbt-wrap"><?php foreach($pd['tree'] as $root) $card($root);?></div></div><?php endif;?>
-        <div class="<?=$steps?'col-xl-4':'col-12'?>"><div class="mbt-side"><?php if($steps):?><div class="small text-muted mbt-hint" id="mbtHint"><i class="fa-solid fa-hand-pointer me-1"></i>Click a card to see the step<?=$unl?' and to Edit, Add or Delete':''?>.</div><?php endif;?>
+        <div class="<?=$steps?'col-xl-4':'col-12'?>"><div class="mbt-side"><?php if($steps):?><div class="small text-muted mbt-hint" id="mbtHint"><i class="fa-solid fa-hand-pointer me-1"></i><?=$unl?'Click a card to change it, or a + card to add a step.':'Click a card to see the step.'?></div><?php endif;?>
         <div id="mbtDetail" class="border rounded p-2 small bg-light" hidden data-unlocked="<?=$unl?'1':''?>" data-base="<?=e($sb)?>" data-focus="<?=e((string)($_GET['focus']??($_GET['at']??'')))?>"></div>
         <script type="application/json" id="mbtData"><?=json_encode(array_map(function($st) use ($steps,$menuNames){ return ['kind'=>MOBIUS_STEP_KINDS[$st['type']][0]??$st['type'],'type'=>$st['type'],'id'=>$st['id'],'code'=>$st['code'],'message'=>$st['message'],'invalid'=>$st['error'],'language'=>$st['language'],
             'url'=>$st['url'],'format'=>$st['mapping'],'next'=>$st['next']!==''?($st['type']==='GO_TO_MENU'?($menuNames[$st['next']]??$st['next']):(isset($steps[$st['next']])?(MOBIUS_STEP_KINDS[$steps[$st['next']]['type']][0]??'').' '.$steps[$st['next']]['code'].' — '.mb_strimwidth($steps[$st['next']]['message'],0,50,'…'):$st['next'].' (not in this menu)')):'',
@@ -219,6 +234,7 @@ declare(strict_types=1);
             $nextKey=''; if($stepHow==='option'){ for($k=1;$k<=9;$k++) if(!in_array((string)$k,$usedKeys,true)){ $nextKey=(string)$k; break; } }
             $varName=$editStep&&is_array($r0['properties']??null)?(string)($r0['properties'][0]['propertyName']??''):'';?>
         <div class="border border-primary rounded p-3 mt-2 bg-white" id="mbsForm"><div class="d-flex justify-content-between"><div class="fw-semibold mb-2"><?=e($title)?></div><a class="btn-close" href="<?=e($sb)?><?=$stepAt!==''?'&focus='.urlencode($stepAt):''?>" aria-label="Close"></a></div>
+            <?php if($editStep):?><div class="d-flex flex-wrap gap-2 mb-2"><?php if(mobius_step_has_options($editStep['type'])):?><a class="btn btn-sm btn-outline-primary" href="<?=e($sb)?>&op=add&how=option&at=<?=urlencode($editStep['id'])?>#mbsForm">+ Add option</a><?php endif;?><?php if(mobius_step_continues($editStep['type']) && !($editStep['next']!=='' && isset($steps[$editStep['next']]))):?><a class="btn btn-sm btn-outline-primary" href="<?=e($sb)?>&op=add&how=next&at=<?=urlencode($editStep['id'])?>#mbsForm">+ Add next step</a><?php endif;?><?php if($editStep['type']!=='WELCOME'):?><a class="btn btn-sm btn-outline-danger ms-auto" href="<?=e($sb)?>&op=delete&at=<?=urlencode($editStep['id'])?>">Delete this step</a><?php endif;?></div><?php endif;?>
             <form method="post" class="row g-2"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="step_save"><input type="hidden" name="menu_id" value="<?=e($am['menuID'])?>"><input type="hidden" name="how" value="<?=e($editStep?'edit':$stepHow)?>"><input type="hidden" name="at" value="<?=e($stepAt)?>">
                 <div class="col-12"><label class="small text-muted mb-0">What this step does</label><select class="form-select" name="s[type]" id="mbsType" <?=$stepHow==='first'?'disabled':''?>><?php foreach(($stepHow==='first'?['WELCOME']:array_diff(MOBIUS_STEP_TYPES,['WELCOME'])) as $t):?><option value="<?=$t?>" <?=$type===$t?'selected':''?>><?=e(MOBIUS_STEP_KINDS[$t][0]??$t)?></option><?php endforeach;?><?php if($editStep && !in_array($type,MOBIUS_STEP_TYPES,true)):?><option selected value="<?=e($type)?>"><?=e($type)?></option><?php endif;?></select><?php if($stepHow==='first'):?><input type="hidden" name="s[type]" value="WELCOME"><?php endif;?></div>
                 <?php if($stepHow==='option' || ($editStep && $editStep['code']!=='')):?><div class="col-6"><label class="small text-muted mb-0">Key (customer presses)</label><input class="form-control font-monospace" name="s[code]" value="<?=e($v('code',$editStep['code']??$nextKey))?>" maxlength="6" required><?php if($usedKeys):?><div class="small text-muted">Used: <?=e(implode(', ',$usedKeys))?></div><?php endif;?></div><?php endif;?>
@@ -231,14 +247,30 @@ declare(strict_types=1);
                 <div class="col-12" data-for="GO_TO_MENU"><label class="small text-muted mb-0">Go to menu</label><select class="form-select" name="s[target_menu]"><option value="">—</option><?php $ms=$menus; usort($ms,fn($a,$b)=>strnatcasecmp($a['name'],$b['name'])); foreach($ms as $o): if($o['menuID']===$am['menuID']) continue;?><option value="<?=e($o['menuID'])?>" <?=$v('target_menu',$editStep['next']??'')===$o['menuID']?'selected':''?>><?=e($o['name'].($o['shortcode']!==''?' ('.$o['shortcode'].')':''))?></option><?php endforeach;?></select></div>
                 <div class="col-12" data-for="EXTERNAL_SERVICE"><label class="small text-muted mb-0">Service address (request URL)</label><input class="form-control font-monospace" name="s[url]" value="<?=e($v('url',(string)($r0['externalUrl']??'')))?>" placeholder="https://vas-staging.comium.gm/hera/prepaid/SpecialOffer"></div>
                 <div class="col-6" data-for="EXTERNAL_SERVICE"><label class="small text-muted mb-0">Request format</label><select class="form-select" name="s[format]"><?php foreach(['JSON','XML','ENCODED_FORM'] as $fm):?><option <?=$v('format',(string)($r0['mappingType']??'JSON'))===$fm?'selected':''?>><?=$fm?></option><?php endforeach;?></select></div>
-                <div class="col-12" data-for="EXTERNAL_SERVICE"><label class="small text-muted mb-0">Sends — one per line: <code>name = value | default</code></label><textarea class="form-control font-monospace" name="s[sends]" rows="4" placeholder="offerCode = {offerCode} | 40154&#10;otherMsisdn = {otherMsisdn}"><?=e($v('sends',$type==='EXTERNAL_SERVICE'?mobius_props_text($r0['properties']??null):''))?></textarea></div>
-                <div class="col-12" data-for="EXTERNAL_SERVICE"><label class="small text-muted mb-0">Reads back — one per line: <code>field in the answer = variable</code></label><textarea class="form-control font-monospace" name="s[reads]" rows="4" placeholder="result.resultDescription = resultDescription"><?=e($v('reads',mobius_props_text($r0['responseProperties']??null)))?></textarea></div>
+                <div class="col-12" data-for="EXTERNAL_SERVICE"><label class="small text-muted mb-0">Sends (the request)</label><textarea class="form-control font-monospace mbs-props" data-cols="Field sent|Value or {variable}|Default" name="s[sends]" rows="4" placeholder="offerCode = {offerCode} | 40154&#10;otherMsisdn = {otherMsisdn}"><?=e($v('sends',$type==='EXTERNAL_SERVICE'?mobius_props_text($r0['properties']??null):''))?></textarea></div>
+                <div class="col-12" data-for="EXTERNAL_SERVICE"><label class="small text-muted mb-0">Reads back (from the answer)</label><textarea class="form-control font-monospace mbs-props" data-cols="Field in the answer|Save into variable|Default" name="s[reads]" rows="4" placeholder="result.resultDescription = resultDescription"><?=e($v('reads',mobius_props_text($r0['responseProperties']??null)))?></textarea></div>
                 <div class="col-12" data-for="EXTERNAL_SERVICE"><label class="small text-muted mb-0">Headers — <?=!empty($r0['headers'])?'this step has: <b>'.e(implode(', ',array_map(fn($h)=>(string)($h['propertyName']??''),(array)$r0['headers']))).'</b> (values hidden). Leave empty to keep them, or type all of them again to replace':'one per line: <code>Name: value</code>'?></label><textarea class="form-control font-monospace" name="s[headers]" rows="2" placeholder="X-API-KEY: …" autocomplete="off"></textarea></div>
                 <div class="col-12"><button class="btn btn-primary"><?=$editStep?'Save in Mobius':'Add in Mobius'?></button> <span class="small text-muted ms-2">Goes live at once.</span></div>
             </form></div>
         <?php endif;?>
         </div></div><?php if($steps):?></div><?php endif;?>
         <details class="mt-2"><summary class="small text-muted">Raw steps as Mobius stores them (for checking; read-only)</summary><pre class="small bg-light border rounded p-2 mb-0" style="max-height:20rem;overflow:auto;white-space:pre-wrap"><?=e(mobius_redact(json_encode(array_map('mobius_step_safe',$pd['raw']),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE),60000))?></pre></details>
+        <?php endif;?>
+    <?php elseif($act==='try'): $pd=$actData;?>
+        <?php if(!$pd['ok']):?><div class="alert alert-danger py-2">Mobius refused: <?=e($pd['error'])?></div>
+        <?php elseif(!$pd['steps']):?><p class="text-muted mb-0">This menu has no steps in Mobius yet<?=$am['shortcodeType']==='PROXY'?' (it takes its screens from its address)':''?>. Build it first in the Builder tab.</p>
+        <?php else: $mn=[]; foreach($menus as $mm) $mn[$mm['menuID']]=$mm['name'].($mm['shortcode']!==''?' ('.$mm['shortcode'].')':'');
+            $sim=[]; foreach($pd['steps'] as $st) $sim[$st['id']]=['t'=>$st['type'],'c'=>$st['code'],'p'=>$st['parent'],'n'=>$st['next'],'m'=>$st['message'],'e'=>$st['error'],'v'=>$st['props'][0]['name']??'',
+                'reads'=>array_values(array_filter(array_map(fn($x)=>$x['value']!==''?$x['value']:'',$st['resp']))),'u'=>preg_replace('~^https?://~','',$st['url']),'g'=>$st['type']==='GO_TO_MENU'?($mn[$st['next']]??''):''];?>
+        <div class="row g-3"><div class="col-md-5 col-lg-4">
+            <div class="mbt-phone mbt-sim" id="simScreen" aria-live="polite"></div>
+            <form class="d-flex gap-2 mt-2" id="simForm" autocomplete="off"><input class="form-control font-monospace" id="simIn" placeholder="Type a key, then Send" inputmode="numeric"><button class="btn btn-primary">Send</button></form>
+            <div class="d-flex gap-2 mt-2"><button class="btn btn-sm btn-outline-secondary" type="button" id="simRestart"><i class="fa-solid fa-rotate-left me-1"></i>Dial <?=e($am['shortcode']?:'again')?></button><a class="btn btn-sm btn-outline-secondary" href="?page=mobius_menus&steps=<?=urlencode($am['menuID'])?>"><i class="fa-solid fa-sitemap me-1"></i>Builder</a></div>
+        </div><div class="col-md-7 col-lg-8">
+            <div class="small text-muted mb-1">What happens, step by step (services are <b>not</b> called here; you choose their answer)</div>
+            <ol class="small mb-0" id="simLog"></ol>
+        </div></div>
+        <script type="application/json" id="simData"><?=json_encode(['steps'=>$sim],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_HEX_TAG|JSON_HEX_AMP)?></script>
         <?php endif;?>
     <?php elseif($act==='copy'):?>
         <p class="small">Makes a <b>new</b> menu in Mobius with every setting of <code><?=e($am['shortcode'])?></code> (type, address, destination, Extendable). The original is not changed. Put back in History removes the copy.</p>
@@ -256,7 +288,7 @@ declare(strict_types=1);
     <?php endif;?>
 
     <?php if($view): $vo=mobius_menu_is_ours($view,$cfg); $hist=mobius_changes(10,$view['menuID']); $inPortal=isset($portalCodes[rtrim($view['shortcode'],'#')]);?>
-    <div class="cardx mt-3"><div class="d-flex justify-content-between"><h3 class="mb-2"><code><?=e($view['shortcode'])?></code> — <?=e($view['name'])?> <span class="badge <?=$vo?'bg-success':'bg-secondary'?> align-middle"><?=$vo?'calls this portal':'other service'?></span></h3><a class="btn-close" href="?page=mobius_menus" aria-label="Close"></a></div>
+    <div class="cardx mt-3"><div class="d-flex justify-content-between"><h3 class="mb-2 h5">Settings and details</h3><a class="btn btn-sm btn-primary" href="?page=mobius_menus&edit=<?=urlencode($view['menuID'])?>"><i class="fa-solid fa-pen me-1"></i>Change settings</a></div>
         <div class="row g-3"><div class="col-lg-7"><table class="table table-sm mb-0 mb-kv"><tbody>
             <tr><th class="text-muted fw-normal">Menu id</th><td><code><?=e($view['menuID'])?></code></td></tr><tr><th class="text-muted fw-normal">Type</th><td><?=e($view['shortcodeType'])?></td></tr><tr><th class="text-muted fw-normal">Extendable</th><td><?=$view['isExtendable']?'yes':'no'?></td></tr>
             <tr><th class="text-muted fw-normal">Address</th><td class="small font-monospace text-break"><?=e($hideUrl($view['remoteURL']))?></td></tr><?php if($hasDest):?><tr><th class="text-muted fw-normal">Destination</th><td><?=e($destLabel($view['destinationID'])?:'—')?><?php if($view['destinationID'] && isset($destNames[$view['destinationID'][0]]) && $destNames[$view['destinationID'][0]]!==$view['destinationID'][0]):?> <span class="small text-muted">(<?=e(implode(', ',$view['destinationID']))?>)</span><?php endif;?></td></tr><?php endif;?>
@@ -264,8 +296,6 @@ declare(strict_types=1);
         </tbody></table>
         <details class="mt-2"><summary class="small text-muted">Everything Mobius holds for this menu</summary><pre class="small bg-light border rounded p-2 mb-0" style="white-space:pre-wrap"><?=e(mobius_redact(json_encode($view['_raw'],JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE),6000))?></pre></details></div>
         <div class="col-lg-5"><div class="d-grid gap-2">
-            <a class="btn btn-outline-primary" href="?page=mobius_menus&edit=<?=urlencode($view['menuID'])?>"><i class="fa-solid fa-pen me-1"></i>Change in Mobius</a>
-            <div class="btn-group"><?php $q=urlencode($view['menuID']); foreach([['steps','fa-sitemap','Builder'],['calls','fa-phone','Calls'],['stats','fa-chart-column','Stats'],['copy','fa-copy','Copy']] as [$a,$ic,$lb]):?><a class="btn btn-outline-secondary btn-sm" href="?page=mobius_menus&<?=$a?>=<?=$q?>"><i class="fa-solid <?=$ic?> me-1"></i><?=$lb?></a><?php endforeach;?><a class="btn btn-outline-danger btn-sm" href="?page=mobius_menus&delete=<?=$q?>"><i class="fa-solid fa-xmark me-1"></i>Delete</a></div>
             <?php if(!$vo && $tpl):?><form method="post" class="border rounded p-2" data-confirm="Send <?=e($view['shortcode'])?> to this portal? Customers dialling it will get the portal's menu from now on."><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="to_portal"><input type="hidden" name="menu_id" value="<?=e($view['menuID'])?>">
                 <div class="small mb-1"><b>Send this code to the portal</b> — makes it a PROXY menu with the portal's address<?=$inPortal?' (the portal already has a menu for it)':'; <span class="text-danger">build the menu in the portal first</span>'?>.</div>
                 <div class="input-group input-group-sm"><input class="form-control font-monospace" name="confirm" placeholder="type <?=e($view['shortcode'])?>" required autocomplete="off"><button class="btn btn-warning">Send to portal</button></div></form><?php endif;?>
@@ -274,27 +304,29 @@ declare(strict_types=1);
     <?php endif;?>
 
     <?php if($ok && !$focus):?>
-    <div class="cardx table-card mt-3"><div class="table-scroll"><table class="table table-hover align-middle mb-0" id="mbTable"><thead><tr><th>Short code</th><th>Name / address</th><th>Type</th><?php if($hasDest):?><th>Destination</th><?php endif;?><th>Portal</th><th class="text-end">Actions</th></tr></thead><tbody>
-        <?php foreach($menus as $m): $mo=mobius_menu_is_ours($m,$cfg);?>
-        <tr data-who="<?=$mo?'portal':'other'?>" data-type="<?=e($m['shortcodeType']?:'—')?>"<?=$view&&$view['menuID']===$m['menuID']?' class="table-active"':''?>>
-            <td class="text-nowrap"><?=$m['shortcode']!==''?'<code>'.e($m['shortcode']).'</code>':'<span class="text-muted small">no code</span>'?></td>
-            <td style="max-width:26rem"><div class="fw-semibold"><?=e($m['name'])?></div><?php if($m['remoteURL']!==''):?><div class="small text-muted text-truncate" title="<?=e($hideUrl($m['remoteURL']))?>"><?=e($hideUrl($m['remoteURL']))?></div><?php endif;?></td>
-            <td class="small text-nowrap"><?=e(str_replace('_',' ',strtolower($m['shortcodeType'])))?><?=$hasExt&&$m['isExtendable']?' <span class="badge bg-light text-dark border" title="Extendable: a dial such as '.e(rtrim($m['shortcode'],'#')).'*1# is this menu followed by choice 1">ext</span>':''?></td>
-            <?php if($hasDest):?><td class="small"><?=e($destLabel($m['destinationID']))?:'<span class="text-muted">—</span>'?></td><?php endif;?>
-            <td><?php if($mo):?><span class="badge bg-success">calls portal</span><?php if(!isset($portalCodes[rtrim($m['shortcode'],'#')])):?> <span class="badge bg-warning text-dark" title="Mobius sends this code to the portal, but the portal has no menu for it">not built</span><?php endif;?><?php else:?><span class="badge bg-secondary">other</span><?php endif;?></td>
-            <td class="text-end text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="?page=mobius_menus&view=<?=urlencode($m['menuID'])?>" title="Open"><i class="fa-solid fa-eye"></i></a>
-                <div class="btn-group"><button class="btn btn-sm btn-outline-primary dropdown-toggle" type="button" data-bs-toggle="dropdown" data-bs-popper-config='{"strategy":"fixed"}' aria-expanded="false" title="Actions"><i class="fa-solid fa-ellipsis"></i></button><ul class="dropdown-menu dropdown-menu-end">
-                    <?php $q=urlencode($m['menuID']);?><li><a class="dropdown-item" href="?page=mobius_menus&steps=<?=$q?>"><i class="fa-solid fa-sitemap fa-fw me-2"></i>Builder</a></li><li><a class="dropdown-item" href="?page=mobius_menus&calls=<?=$q?>"><i class="fa-solid fa-phone fa-fw me-2"></i>Calls</a></li><li><a class="dropdown-item" href="?page=mobius_menus&stats=<?=$q?>"><i class="fa-solid fa-chart-column fa-fw me-2"></i>Stats</a></li>
-                    <li><a class="dropdown-item" href="?page=mobius_menus&copy=<?=$q?>"><i class="fa-regular fa-copy fa-fw me-2"></i>Copy</a></li><li><a class="dropdown-item" href="?page=mobius_menus&edit=<?=$q?>"><i class="fa-solid fa-pen fa-fw me-2"></i>Edit</a></li><li><hr class="dropdown-divider"></li><li><a class="dropdown-item text-danger" href="?page=mobius_menus&delete=<?=$q?>"><i class="fa-solid fa-xmark fa-fw me-2"></i>Delete</a></li></ul></div></td>
+    <div class="cardx table-card mt-3"><div class="table-scroll"><table class="table table-hover align-middle mb-0" id="mbTable"><thead><tr><th>Menu</th><th>What it is</th><th class="text-end">Open</th></tr></thead><tbody>
+        <?php foreach($menus as $m): $mo=mobius_menu_is_ours($m,$cfg); $kd=mobius_menu_kind($m,$cfg); [$kl,$kc]=MOBIUS_KINDS[$kd]; $q=urlencode($m['menuID']); $open=$kd==='mobius'?'steps':'view';?>
+        <tr data-who="<?=$mo?'portal':'other'?>" data-type="<?=e($m['shortcodeType']?:'—')?>" data-kind="<?=$kd?>"<?=$view&&$view['menuID']===$m['menuID']?' class="table-active"':''?>>
+            <td style="max-width:30rem"><a class="fw-semibold text-decoration-none text-reset" href="?page=mobius_menus&<?=$open?>=<?=$q?>"><?=e($m['name'])?></a>
+                <div class="small"><?=$m['shortcode']!==''?'<code>'.e($m['shortcode']).'</code>':'<span class="text-muted">no short code</span>'?><?php if($m['remoteURL']!==''):?> <span class="text-muted text-truncate d-inline-block align-bottom" style="max-width:20rem" title="<?=e($hideUrl($m['remoteURL']))?>">· <?=e(preg_replace('~^https?://~','',$hideUrl($m['remoteURL'])))?></span><?php endif;?></div></td>
+            <td><span class="badge <?=$kc?>"><?=e($kl)?></span><?php if($mo && !isset($portalCodes[rtrim($m['shortcode'],'#')])):?> <span class="badge bg-warning text-dark" title="Mobius sends this code to the portal, but the portal has no menu for it yet">not built yet</span><?php endif;?><?php if($hasExt&&$m['isExtendable']):?> <span class="badge bg-light text-dark border" title="Extendable: a dial such as <?=e(rtrim($m['shortcode'],'#'))?>*1# opens option 1 straight away">direct dial</span><?php endif;?></td>
+            <td class="text-end text-nowrap">
+                <a class="btn btn-sm btn-outline-primary" href="?page=mobius_menus&<?=$open?>=<?=$q?>">Open</a>
+                <?php if($kd==='mobius'):?><a class="btn btn-sm btn-light border" href="?page=mobius_menus&try=<?=$q?>" title="Try it on a phone on screen"><i class="fa-solid fa-mobile-screen"></i></a><?php endif;?>
+                <a class="btn btn-sm btn-light border" href="?page=mobius_menus&calls=<?=$q?>" title="Calls"><i class="fa-solid fa-phone"></i></a>
+                <a class="btn btn-sm btn-light border" href="?page=mobius_menus&stats=<?=$q?>" title="Numbers"><i class="fa-solid fa-chart-column"></i></a>
+                <div class="btn-group"><button class="btn btn-sm btn-light border" type="button" data-bs-toggle="dropdown" data-bs-popper-config='{"strategy":"fixed"}' aria-expanded="false" title="More"><i class="fa-solid fa-ellipsis"></i></button><ul class="dropdown-menu dropdown-menu-end">
+                    <li><a class="dropdown-item" href="?page=mobius_menus&steps=<?=$q?>"><i class="fa-solid fa-sitemap fa-fw me-2"></i>Builder</a></li><li><a class="dropdown-item" href="?page=mobius_menus&edit=<?=$q?>"><i class="fa-solid fa-gear fa-fw me-2"></i>Settings</a></li>
+                    <li><a class="dropdown-item" href="?page=mobius_menus&copy=<?=$q?>"><i class="fa-regular fa-copy fa-fw me-2"></i>Copy to a new code</a></li><li><hr class="dropdown-divider"></li><li><a class="dropdown-item text-danger" href="?page=mobius_menus&delete=<?=$q?>"><i class="fa-solid fa-trash fa-fw me-2"></i>Delete</a></li></ul></div></td>
         </tr><?php endforeach;?>
-        <?php if(!$menus):?><tr><td colspan="9" class="text-muted">No menus read from Mobius.</td></tr><?php endif;?>
+        <?php if(!$menus):?><tr><td colspan="3" class="text-muted">No menus read from Mobius.</td></tr><?php endif;?>
     </tbody></table></div>
     <div class="d-flex flex-wrap align-items-center gap-2 p-2 border-top" id="mbPager"><button class="btn btn-sm btn-outline-secondary" type="button" data-pg="first" title="First">«</button><button class="btn btn-sm btn-outline-secondary" type="button" data-pg="prev" title="Previous">‹</button>
         <span class="small" id="mbPgInfo"></span><button class="btn btn-sm btn-outline-secondary" type="button" data-pg="next" title="Next">›</button><button class="btn btn-sm btn-outline-secondary" type="button" data-pg="last" title="Last">»</button>
         <select class="form-select form-select-sm w-auto ms-auto" id="mbPgSize"><option>10</option><option>25</option><option>50</option><option value="100000">All</option></select><span class="small text-muted">per page</span></div></div>
     <?php endif;?>
 
-    <div class="cardx mt-3"><h3 class="mb-2"><i class="fa-solid fa-clock-rotate-left me-2"></i>History</h3><p class="small text-muted">Every change the portal made in Mobius, with the menu as it was before. <b>Put back</b> sends the earlier values to Mobius again, creates a deleted menu again, or removes a menu the portal created or copied.</p>
+    <div class="cardx mt-3" id="mbHistory"><h3 class="mb-2"><i class="fa-solid fa-clock-rotate-left me-2"></i>History</h3><p class="small text-muted">Every change the portal made in Mobius, with the menu as it was before. <b>Put back</b> sends the earlier values to Mobius again, creates a deleted menu again, or removes a menu the portal created or copied.</p>
         <?php if(!$changes):?><p class="text-muted mb-0">No changes yet.</p><?php else:?><div class="table-scroll"><table class="table table-sm align-middle mb-0"><thead><tr><th>When</th><th>Who</th><th>What</th><th>Code</th><th>Before → after</th><th></th></tr></thead><tbody>
         <?php $latest=[]; foreach($changes as $h0) if(!str_ends_with((string)$h0['action'],'-refused')) $latest[mobius_bare_code((string)$h0['shortcode'])] ??= (int)$h0['id'];
         foreach($changes as $h): $isLatest=($latest[mobius_bare_code((string)$h['shortcode'])]??0)===(int)$h['id']; $b=$h['before_json']?mobius_menu_public((array)json_decode($h['before_json'],true)):null; $a=$h['after_json']?mobius_menu_public((array)json_decode($h['after_json'],true)):null;
@@ -308,13 +340,14 @@ declare(strict_types=1);
     <script nonce="<?=e(csp_nonce())?>">
     (()=>{const f=document.getElementById('mbFilter'),w=document.getElementById('mbWho'),rows=[...document.querySelectorAll('#mbTable tbody tr[data-who]')];
       let page=0; const sz=document.getElementById('mbPgSize'), info=document.getElementById('mbPgInfo');
-      const run=(keep)=>{ if(!keep) page=0; const q=(f?f.value:'').toLowerCase(),who=w?w.value:''; const hit=rows.filter(r=>(!q||r.textContent.toLowerCase().includes(q))&&(!who||r.dataset.who===who||r.dataset.type===who));
+      const run=(keep)=>{ if(!keep) page=0; const q=(f?f.value:'').toLowerCase(),who=w?w.value:''; const hit=rows.filter(r=>(!q||r.textContent.toLowerCase().includes(q))&&(!who||r.dataset.kind===who||r.dataset.who===who||r.dataset.type===who));
         const n=parseInt(sz?sz.value:'10',10)||10, pages=Math.max(1,Math.ceil(hit.length/n)); page=Math.min(Math.max(page,0),pages-1);
         const act=rows.findIndex(r=>r.classList.contains('table-active')); if(!keep && act>=0 && !q && !who){ const i=hit.indexOf(rows[act]); if(i>=0) page=Math.floor(i/n); }
         rows.forEach(r=>r.style.display='none'); hit.slice(page*n,page*n+n).forEach(r=>r.style.display='');
         if(info) info.textContent=hit.length?((page*n+1)+'–'+Math.min(hit.length,page*n+n)+' of '+hit.length+' menus'+(hit.length<rows.length?' (of '+rows.length+')':'')):'No menu matches';};
       document.querySelectorAll('#mbPager [data-pg]').forEach(b=>b.addEventListener('click',()=>{const g=b.dataset.pg; page=g==='first'?0:g==='prev'?page-1:g==='next'?page+1:1e9; run(true);}));
-      f&&f.addEventListener('input',()=>run()); w&&w.addEventListener('change',()=>run()); sz&&sz.addEventListener('change',()=>run()); if(rows.length) run();
+      f&&f.addEventListener('input',()=>run()); w&&w.addEventListener('change',()=>run());
+      document.querySelectorAll('#mbKinds [data-kind]').forEach(b=>b.addEventListener('click',()=>{ document.querySelectorAll('#mbKinds [data-kind]').forEach(x=>x.classList.toggle('active',x===b)); if(w){ if(![...w.options].some(o=>o.value===b.dataset.kind)) w.add(new Option('',b.dataset.kind)); w.value=b.dataset.kind; } run(); })); sz&&sz.addEventListener('change',()=>run()); if(rows.length) run();
       const dataEl=document.getElementById('mbtData'), box=document.getElementById('mbtDetail');
       if(dataEl&&box){ const D=JSON.parse(dataEl.textContent), esc=t=>String(t??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
         const show=c=>{document.querySelectorAll('.mbt-card.on').forEach(x=>x.classList.remove('on')); c.classList.add('on'); const d=D[c.dataset.step]; if(!d) return;
@@ -322,12 +355,53 @@ declare(strict_types=1);
           const B=box.dataset.base, sid=encodeURIComponent(d.id), act=box.dataset.unlocked?'<div class="d-flex flex-wrap gap-2 mb-2"><a class="btn btn-sm btn-primary" href="'+B+'&op=edit&at='+sid+'#mbsForm">Edit</a>'+(d.can_option?'<a class="btn btn-sm btn-outline-primary" href="'+B+'&op=add&how=option&at='+sid+'#mbsForm">+ Add option</a>':'')+(d.can_next?'<a class="btn btn-sm btn-outline-primary" href="'+B+'&op=add&how=next&at='+sid+'#mbsForm">+ Add next step</a>':'')+(d.type!=='WELCOME'?'<a class="btn btn-sm btn-outline-danger" href="'+B+'&op=delete&at='+sid+'">Delete</a>':'')+'</div>':'<div class="small text-muted mb-2">Unlock editing (above) to change this step.</div>';
           const ph=d.message&&['MENU','MESSAGE','COLLECT','VARIABLE_MENU'].includes(d.type)?'<div class="mbt-phone mb-2">'+esc(d.message)+(d.type==='COLLECT'?'\n\n[ customer types ]':'')+'</div>':''; const hint=document.getElementById('mbtHint'); if(hint) hint.hidden=true;
           box.innerHTML='<div class="fw-semibold mb-1">'+esc(d.kind)+(d.code?' — key '+esc(d.code):'')+'</div>'+act+ph+'<table class="table table-sm mb-0 mb-kv"><tbody>'+row('Message',d.message)+row('Invalid option message',d.invalid)+row('Language',d.language)+row('Goes to',d.next)+row('Address',d.url)+row('Request format',d.format)+row(d.type==='COLLECT'||d.type==='VARIABLE_MENU'?'Keeps the answer in':'Sends',d.sends)+row('Reads back',d.receives)+row('Step id',d.id)+'</tbody></table>'; box.hidden=false;};
-        document.querySelectorAll('.mbt-card').forEach(c=>{c.addEventListener('click',()=>show(c)); c.addEventListener('keydown',e=>{if(e.key==='Enter')show(c);});});
-        const fc=box.dataset.focus&&document.querySelector('.mbt-card[data-step="'+CSS.escape(box.dataset.focus)+'"]'); if(fc){ show(fc); fc.scrollIntoView({block:'nearest',inline:'center'}); } }
+        const direct=c=>{ if(box.dataset.unlocked && c.dataset.step){ location.href=box.dataset.base+'&op=edit&at='+encodeURIComponent(c.dataset.step)+'#mbsForm'; return true; } return false; };
+        document.querySelectorAll('.mbt-card[data-step]').forEach(c=>{c.addEventListener('click',()=>{ if(!direct(c)) show(c); }); c.addEventListener('keydown',e=>{if(e.key==='Enter')show(c);});});
+        const fc=box.dataset.focus&&document.querySelector('.mbt-card[data-step="'+CSS.escape(box.dataset.focus)+'"]'); if(fc){ if(document.getElementById('mbsForm')||document.querySelector('.border-danger [name=step]')){ fc.classList.add('on'); const hint=document.getElementById('mbtHint'); if(hint) hint.hidden=true; } else show(fc); fc.scrollIntoView({block:'nearest',inline:'center'}); } }
       const ty=document.getElementById('mbsType'), th=document.getElementById('mbsThen'), thl=document.getElementById('mbsThenLabel'), vn=document.querySelector('#mbsForm [name="s[variable]"]'); let thTouched=th&&th.value!==''; th&&th.addEventListener('input',()=>thTouched=true);
       const thDefault=t=>{ if(!th||thTouched) return; th.value=t==='COLLECT'?'Thank you'+(vn&&vn.value?' {'+vn.value+'}':'')+'!':(t==='EXTERNAL_SERVICE'?'{resultDescription}':''); if(thl) thl.textContent=t==='EXTERNAL_SERVICE'?'Message after the service (what it answered: {variable} from Reads back)':'Reply after the answer (shown to the customer next)'; };
       vn&&vn.addEventListener('input',()=>{ if(ty) thDefault(ty.value); });
       if(ty){ const sync=()=>{const t=ty.value; thDefault(t); document.querySelectorAll('#mbsForm [data-for]').forEach(x=>{const on=x.dataset.for.split(' ').includes(t); x.hidden=!on; x.querySelectorAll('input,select,textarea').forEach(i=>i.disabled=!on);});}; ty.addEventListener('change',sync); sync(); }
+      const sd=document.getElementById('simData'); if(sd){ const S=JSON.parse(sd.textContent).steps, scr=document.getElementById('simScreen'), log=document.getElementById('simLog'), inp=document.getElementById('simIn'); let cur=null, wait=null, vars={}, hops=0;
+        const esc=t=>String(t??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])), fill=t=>String(t||'').replace(/\{([^}]+)\}/g,(m,k)=>k in vars?vars[k]:'‹'+k+'›');
+        const kids=id=>Object.entries(S).filter(([k,x])=>x.p===id&&x.c!=='').map(([k,x])=>[k,x]);
+        const say=(h)=>{ const li=document.createElement('li'); li.innerHTML=h; log.appendChild(li); };
+        const screen=(t,end)=>{ scr.innerHTML=esc(fill(t))+(end?'<span class="sim-end">— end of session —</span>':''); };
+        const choose=(title,opts,cb)=>{ scr.innerHTML='<div class="mb-1">'+esc(title)+'</div>'; opts.forEach(([lab,val])=>{ const b=document.createElement('button'); b.type='button'; b.className='btn btn-sm btn-light sim-btn'; b.textContent=lab; b.onclick=()=>cb(val); scr.appendChild(b); }); wait=null; };
+        const go=id=>{ if(++hops>200){ screen('Stopped: the menu loops too many times.',true); return; } const x=S[id]; cur=id; wait=null;
+          if(!x){ screen('(this step is missing in Mobius)',true); say('Step '+esc(id)+' is missing'); return; }
+          switch(x.t){
+            case 'WELCOME': case 'WELCOME_INCOMING': say('Dial — the menu starts'); if(x.n) go(x.n); else screen('(nothing after Welcome yet)',true); return;
+            case 'MENU': screen(x.m); wait='menu'; say('Shows the menu'); return;
+            case 'VARIABLE_MENU': { const ks=kids(id); const val=vars[x.v]; if(val!==undefined){ const hit=ks.find(([k,c])=>c.c===String(val)); say('Variable menu: '+esc(x.v)+' = '+esc(val)); if(hit) go(hit[0]); else { screen(x.e||'No option for that value.',true); } return; }
+              choose('Which value does '+x.v+' have?',ks.map(([k,c])=>[x.v+' = '+c.c,c.c]),v=>{ vars[x.v]=v; go(id); }); say('Variable menu on <code>'+esc(x.v)+'</code> — choose the value'); return; }
+            case 'MESSAGE': screen(x.m,true); say('Shows a message and ends'); return;
+            case 'COLLECT': screen(x.m); wait='collect'; say('Asks the customer to type something (kept in <code>'+esc(x.v)+'</code>)'); return;
+            case 'GO_TO_STEP': say('Jumps to another step'); if(x.n) go(x.n); else screen('(Go to step: no step chosen)',true); return;
+            case 'GO_TO_MENU': screen('→ Continues in the menu '+(x.g||'(not found)'),true); say('Goes to the menu <b>'+esc(x.g||'?')+'</b>'); return;
+            case 'EXTERNAL_SERVICE': say('Calls the service <code>'+esc(x.u)+'</code> (not called in Try it)'); const nx=()=>{ if(x.n) go(x.n); else screen('(nothing after the service yet)',true); };
+              if(x.reads&&x.reads.length){ scr.innerHTML='<div class="mb-1">Service: '+esc(x.u)+'</div><div class="small mb-1">Type what it would answer (or leave empty):</div>'; x.reads.slice(0,6).forEach(r=>{ const l=document.createElement('label'); l.className='d-block small'; l.textContent=r; const i=document.createElement('input'); i.className='form-control form-control-sm mb-1'; i.dataset.k=r; i.value=vars[r]??''; l.appendChild(i); scr.appendChild(l); }); const b=document.createElement('button'); b.type='button'; b.className='btn btn-sm btn-warning mt-1'; b.textContent='Continue'; b.onclick=()=>{ scr.querySelectorAll('input[data-k]').forEach(i=>{ if(i.value!=='') vars[i.dataset.k]=i.value; }); nx(); }; scr.appendChild(b); return; }
+              nx(); return;
+            default: screen('('+x.t+' is not shown in Try it)',true);
+          } };
+        const start=()=>{ log.innerHTML=''; vars={}; hops=0; const w=Object.entries(S).find(([k,x])=>x.t==='WELCOME'||x.t==='WELCOME_INCOMING'); if(w) go(w[0]); else screen('This menu has no Welcome step.',true); inp&&inp.focus(); };
+        document.getElementById('simForm').addEventListener('submit',e=>{ e.preventDefault(); const v=inp.value.trim(); inp.value=''; if(!cur||!wait) return; const x=S[cur];
+          if(wait==='menu'){ say('Customer presses <b>'+esc(v)+'</b>'); const hit=kids(cur).find(([k,c])=>c.c===v); if(hit){ hops=0; go(hit[0]); } else { scr.innerHTML=esc(fill(x.e||'Invalid option'))+'\n\n'+esc(fill(x.m)); say('No option '+esc(v)+' — shows the invalid option message'); } }
+          else if(wait==='collect'){ vars[x.v]=v; say('Customer types <b>'+esc(v)+'</b>'); hops=0; if(x.n) go(x.n); else screen('(nothing after this question yet)',true); } });
+        document.getElementById('simRestart').addEventListener('click',start); start(); }
+      document.querySelectorAll('textarea.mbs-props').forEach(ta=>{ const cols=ta.dataset.cols.split('|'); const wrap=document.createElement('div'); wrap.className='mbs-tbl';
+        const parse=t=>t.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(l=>{ const m=l.match(/^([^=|]+?)\s*(?:=\s*([^|]*?))?\s*(?:\|\s*(.*))?$/)||[,l,'','']; return [m[1]||'',m[2]||'',m[3]||'']; });
+        const ser=()=>{ ta.value=[...wrap.querySelectorAll('tbody tr')].map(tr=>[...tr.querySelectorAll('input')].map(i=>i.value.trim())).filter(r=>r[0]!=='').map(([a,b,c])=>a+(b!==''?' = '+b:'')+(c!==''?' | '+c:'')).join('\n'); };
+        const row=(v=['','',''])=>{ const tr=document.createElement('tr'); v.forEach((x,i)=>{ const td=document.createElement('td'); const inp=document.createElement('input'); inp.className='form-control form-control-sm font-monospace'; inp.value=x; inp.placeholder=cols[i]; inp.addEventListener('input',ser); td.appendChild(inp); tr.appendChild(td); });
+          const td=document.createElement('td'); const del=document.createElement('button'); del.type='button'; del.className='btn btn-sm btn-link text-danger p-0'; del.title='Remove'; del.innerHTML='&times;'; del.onclick=()=>{ tr.remove(); ser(); count(); }; td.appendChild(del); tr.appendChild(td); tb.appendChild(tr); };
+        wrap.innerHTML='<div class="table-scroll" style="max-height:18rem;overflow:auto"><table class="table table-sm mb-1 mb-kv"><thead><tr>'+cols.map(c=>'<th style="background:none;color:var(--muted);text-transform:none;letter-spacing:0;font-size:.75rem">'+c+'</th>').join('')+'<th></th></tr></thead><tbody></tbody></table></div><div class="d-flex gap-2 align-items-center"><button type="button" class="btn btn-sm btn-outline-secondary" data-a="add">+ Add row</button><button type="button" class="btn btn-sm btn-link" data-a="paste">Paste lines</button><span class="small text-muted ms-auto" data-a="n"></span></div>';
+        const tb=wrap.querySelector('tbody'), n=wrap.querySelector('[data-a=n]'), count=()=>{ n.textContent=tb.children.length+' row'+(tb.children.length===1?'':'s'); };
+        const load=()=>{ tb.innerHTML=''; parse(ta.value).forEach(r=>row(r)); if(!tb.children.length) row(); count(); };
+        wrap.querySelector('[data-a=add]').onclick=()=>{ row(); count(); tb.lastChild.querySelector('input').focus(); };
+        let pasting=false; const pb=wrap.querySelector('[data-a=paste]');
+        pb.onclick=()=>{ pasting=!pasting; if(pasting){ ser(); ta.hidden=false; wrap.querySelector('.table-scroll').hidden=true; pb.textContent='Back to the table'; ta.rows=8; ta.focus(); } else { load(); ta.hidden=true; wrap.querySelector('.table-scroll').hidden=false; pb.textContent='Paste lines'; } };
+        ta.placeholder='One per line:  name = value | default'; ta.hidden=true; ta.after(wrap); wrap.after(ta); load();
+        ta.form&&ta.form.addEventListener('submit',()=>{ if(!pasting) ser(); }); });
       const ta=document.querySelector('#mbsForm textarea[name="s[message]"]'), cn=document.getElementById('mbsCount'), pp=document.getElementById('mbsPhone'); if(ta&&cn){ const c=()=>{cn.textContent=ta.value.length; cn.parentElement.classList.toggle('text-danger',ta.value.length>160); if(pp) pp.textContent=ta.value;}; ta.addEventListener('input',c); c(); }
       const sf=document.getElementById('mbsForm'); if(sf){ const hint=document.getElementById('mbtHint'); if(hint) hint.hidden=true; }
       const b=document.getElementById('mbUsePortal'); b&&b.addEventListener('click',()=>{document.getElementById('mbUrl').value=b.dataset.url;const d=document.getElementById('mbDest');if(d)d.value=b.dataset.dest;});})();

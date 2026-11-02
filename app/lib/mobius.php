@@ -746,6 +746,13 @@ function mobius_destination_names(array $cfg): array {
     }
     return $memo = $out;
 }
+// What a menu is, in plain words (for the list): portal = calls this portal; mobius = built in Mobius' Builder; push = sent by the network; other = another service.
+const MOBIUS_KINDS = ['mobius' => ['Built in Mobius', 'bg-primary-subtle text-primary-emphasis'], 'portal' => ['Runs in the portal', 'bg-success-subtle text-success-emphasis'], 'push' => ['Push message', 'bg-warning-subtle text-warning-emphasis'], 'other' => ['Other service', 'bg-secondary-subtle text-secondary-emphasis']];
+function mobius_menu_kind(array $m, array $cfg): string {
+    if (mobius_menu_is_ours($m, $cfg)) return 'portal';
+    $t = strtoupper((string)($m['shortcodeType'] ?? ''));
+    return $t === 'MS_INITIATED' ? 'mobius' : ($t === 'NETWORK_INITIATED' ? 'push' : 'other');
+}
 // Words for the History card.
 const MOBIUS_ACTION_LABELS = ['create' => 'Created', 'copy' => 'Copied', 'change' => 'Changed', 'rename' => 'Renamed', 'to-portal' => 'Sent to portal', 'restore' => 'Put back', 'delete' => 'Deleted', 'undelete' => 'Created again', 'undo-create' => 'Removed again', 'step-edit' => 'Step changed', 'step-add' => 'Step added', 'step-delete' => 'Steps deleted', 'step-restore' => 'Step put back', 'step-undelete' => 'Steps created again'];
 function mobius_action_label(string $a): string { $refused = str_ends_with($a, '-refused'); $b = $refused ? substr($a, 0, -8) : $a; return (MOBIUS_ACTION_LABELS[$b] ?? ucfirst($b)).($refused ? ' — refused' : ''); }
