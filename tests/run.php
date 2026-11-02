@@ -691,6 +691,32 @@ t('Mobius Builder: unlock, add Welcome / next / options (message, question + rep
       $rows = portal_pdo()->query("SELECT * FROM mobius_menu_changes WHERE shortcode='*7999#'")->fetchAll(); ok(!str_contains(json_encode($rows), 'secret-1'), 'no header secret in History rows'); ok(str_contains(json_encode($rows), 'Added key 2'), 'History says what happened');
     } finally { foreach (['zt_stub_mobius_nocreate.txt', 'zt_stub_mobius_step500.txt', 'zt_stub_mobius_steps.json', 'zt_stub_mobius_menus.json'] as $f) @unlink($tmp.'/'.$f); $db->exec("DELETE b FROM mobius_step_backups b JOIN mobius_menu_changes c ON c.id=b.change_id WHERE c.shortcode='*7999#'"); $db->exec("DELETE FROM mobius_menu_changes WHERE shortcode='*7999#'"); unset($_SESSION['mobius_unlock']); }
 });
+t('Create a menu: a Mobius-built menu with a ready example, a question, a copy of another menu, or empty - one way for everything', function () use ($cfgFor, $stub, $db) {
+    $tmp = sys_get_temp_dir(); $store = $tmp.'/zt_stub_mobius_menus.json'; $ours = 'https://x/portal/ussd.php?t=ZT-TOKEN&m=proxy'; $o = fn($x) => ['$oid' => $x];
+    $cfg = $cfgFor(['mobius_base' => "$stub/mobius/rest/", 'mobius_user' => 'u', 'mobius_pass' => encrypt_secret(md5('p')), 'token' => 'ZT-TOKEN', 'shortcode_proxy' => '*8800#', 'mobius_session' => '', 'mobius_variant' => '0', 'mobius_step_shape' => '']);
+    try {
+      file_put_contents($tmp.'/zt_stub_mobius_step500.txt', '1'); file_put_contents($tmp.'/zt_stub_mobius_strict.txt', '1');
+      $mk = fn($id, $name, $code, $type, $url = null, $dest = null) => ['name' => $name, 'externalProtocol' => null, 'encodingType' => null, 'applicationDestinationID' => $dest ? $o($dest) : null, 'dataConsumerID' => null, 'shortcodeType' => $type, 'shortcode' => $code, 'isExtendable' => false, 'remoteURL' => $url, 'tps' => 10, '_id' => $o($id)];
+      file_put_contents($store, json_encode([$mk('aa0000000000000000000001', 'Ours', '*8800#', 'PROXY', $ours, 'dd01'), $mk('aa0000000000000000000002', 'Main Menu', '*9606*02141#', 'MS_INITIATED', null, 'dd09'), $mk('aa0000000000000000000003', 'Promo', '*55#', 'MS_INITIATED', null, 'dd09')]));
+      $src = [['_id' => $o('s1'), 'menuID' => $o('aa0000000000000000000002'), 'parentID' => null, 'stepType' => 'WELCOME', 'nextStepID' => $o('s2'), 'localCode' => null, 'message' => null],
+              ['_id' => $o('s2'), 'menuID' => $o('aa0000000000000000000002'), 'parentID' => $o('s1'), 'stepType' => 'EXTERNAL_SERVICE', 'externalUrl' => 'https://h/x', 'headers' => [['propertyName' => 'X-API-KEY', 'defaultValue' => 'secret-9']], 'nextStepID' => $o('s3'), 'localCode' => null, 'message' => null],
+              ['_id' => $o('s3'), 'menuID' => $o('aa0000000000000000000002'), 'parentID' => $o('s2'), 'stepType' => 'MESSAGE', 'message' => '{resultDescription}', 'localCode' => null, 'nextStepID' => null]];
+      file_put_contents($tmp.'/zt_stub_mobius_steps.json', json_encode($src));
+      $l = mobius_list_menus($cfg)['menus'];
+      $t = ussd_code_taken('*9606*02141', $l); ok($t['mobius'] && $t['mobius']['name'] === 'Main Menu' && !$t['portal'], 'code check: Main Menu uses *9606*02141#');
+      eq(ussd_code_taken('*7777#', $l), ['portal' => false, 'mobius' => null], 'code check: a free code');
+      $r = mobius_create_built($cfg, 'New promo', '*7777#', 'options'); ok($r['steps'] === true && ($r['menu']['shortcodeType'] ?? '') === 'MS_INITIATED' && ($r['menu']['destinationID'] ?? []) === ['dd09'], 'created MS_INITIATED with the usual destination + starter steps');
+      $S = mobius_menu_steps($cfg, $r['menu']['menuID']); $w = $S['tree'][0]; ok(count($S['steps']) === 5 && $S['steps'][$w['id']]['type'] === 'WELCOME' && array_column($w['kids'][0]['kids'], 'id') !== [] && count($w['kids'][0]['kids']) === 3, 'starter: Welcome -> Menu -> 3 options');
+      ok(mobius_steps_unlocked($r['menu']['menuID']), 'editing is on for the new menu');
+      $q = mobius_create_built($cfg, 'Ask', '*7778#', 'question'); $S = mobius_menu_steps($cfg, $q['menu']['menuID']); ok(count($S['steps']) === 3 && array_values(array_filter($S['steps'], fn($s) => $s['type'] === 'COLLECT'))[0]['props'][0]['name'] === 'number', 'question starter');
+      $c = mobius_create_built($cfg, 'Copy of main', '*7779#', 'copy', 'aa0000000000000000000002'); $S = mobius_menu_steps($cfg, $c['menu']['menuID']); $x = array_values(array_filter($S['steps'], fn($s) => $s['type'] === 'EXTERNAL_SERVICE'))[0];
+      ok(count($S['steps']) === 3 && $x['_raw']['headers'][0]['defaultValue'] === 'secret-9' && !in_array($x['id'], ['s2'], true) && $S['steps'][$x['next']]['message'] === '{resultDescription}', 'copy: same steps, new ids, linked, headers kept');
+      ok(count(mobius_menu_steps($cfg, 'aa0000000000000000000002')['steps']) === 3, 'the original is untouched');
+      $e = mobius_create_built($cfg, 'Empty', '*7780#', 'empty'); ok($e['steps'] === false && $e['note'] === '' && count(mobius_menu_steps($cfg, $e['menu']['menuID'])['steps']) === 0, 'empty menu');
+      thrown(fn() => mobius_create_built($cfg, 'Dup', '*7777', 'empty'), 'already used', 'a code in use is refused');
+      file_put_contents($tmp.'/zt_stub_mobius_nocreate.txt', '1'); $n = mobius_create_built($cfg, 'No steps', '*7781#', 'options'); ok($n['steps'] === false && str_contains($n['note'], MOBIUS_NO_CREATE) && $n['menu'], 'if Mobius refuses the steps: menu made, clear note'); @unlink($tmp.'/zt_stub_mobius_nocreate.txt');
+    } finally { foreach (['step500.txt', 'strict.txt', 'nocreate.txt', 'steps.json', 'menus.json'] as $f) @unlink($tmp.'/zt_stub_mobius_'.$f); $db->exec("DELETE b FROM mobius_step_backups b JOIN mobius_menu_changes c ON c.id=b.change_id WHERE c.shortcode LIKE '*77%'"); $db->exec("DELETE FROM mobius_menu_changes WHERE shortcode LIKE '*77%'"); unset($_SESSION['mobius_unlock']); }
+});
 t('a menu is renamed in the portal: short code and name together', function () use ($db) {
     $clean = fn() => array_map(fn($t) => $db->exec("DELETE FROM $t WHERE short_code IN ('*8811#','*8812#','*8813#')"), ['ussd_menu_nodes', 'ussd_menu_versions', 'portal_short_codes']);
     $clean();

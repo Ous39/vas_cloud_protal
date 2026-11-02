@@ -18,14 +18,14 @@ declare(strict_types=1);
     <div class="row g-3">
         <div class="col-lg-5"><div class="cardx">
             <h3><i class="fa-solid fa-mobile-screen me-2"></i>Try a menu</h3>
-            <p class="text-muted">Shows exactly what a phone would show for a short code, walking the menu you built in the <a href="?page=ussd_menu">Menu Builder</a>. Nothing is sent to Mobius or any customer.</p>
+            <p class="text-muted">Shows exactly what a phone would show for a short code, walking a menu built in the portal. Nothing is sent to Mobius or any customer. (Menus built in Mobius have their own <b>Try it</b> tab under <a href="?page=mobius_menus">USSD Menus in Mobius</a>.)</p>
             <form method="get" class="mb-3"><input type="hidden" name="page" value="ussd_sim">
                 <label class="small text-muted mb-0">Short code</label>
                 <div class="input-group mb-2"><input class="form-control" name="sc" value="<?=e($sc)?>" list="scList"><datalist id="scList"><?php foreach($known as $k):?><option value="<?=e($k)?>"><?php endforeach;?></datalist><button class="btn btn-outline-primary">Dial</button></div>
                 <label class="small text-muted mb-0 mt-1">If a service flow asks Hera, pretend it says</label><select class="form-select form-select-sm mb-2" name="fsim" data-autosubmit><?php foreach(['success'=>'success','lowbal,success'=>'low balance, then success on the next call (e.g. a loan)','lowbal,fail'=>'low balance, then failure','lowbal'=>'low balance','fail'=>'failure'] as $fv=>$fl):?><option value="<?=e($fv)?>" <?=$fsim===$fv?'selected':''?>><?=e($fl)?></option><?php endforeach;?></select>
                 <div class="form-check"><input class="form-check-input" type="checkbox" name="draft" value="1" id="dr" <?=$withDraft?'checked':''?> data-autosubmit><label class="form-check-label small" for="dr">Include <b>draft</b> items (the live service will only show <b>active</b> ones)</label></div>
             </form>
-            <?php if(!in_array($sc,$known,true)):?><div class="alert alert-info py-2 small">No menu exists for <b><?=e($sc)?></b> yet. <a href="?page=ussd_menu&new_short_code=<?=urlencode($sc)?>">Start one in the Menu Builder</a>.</div><?php endif;?>
+            <?php if(!in_array($sc,$known,true)):?><div class="alert alert-info py-2 small"><b><?=e($sc)?></b> is not a portal menu. If it is built in Mobius, test it there: <a href="?page=mobius_menus&q=<?=urlencode($sc)?>">find it in USSD Menus in Mobius</a> → <b>Try it</b>. Or <a href="?page=ussd_new&code=<?=urlencode($sc)?>">create a menu with this code</a>.</div><?php endif;?>
             <div class="small text-muted">Replies so far: <b><?=$trail!==''?e(str_replace(',',' → ',$trail)):'(none)'?></b></div>
         </div></div>
         <div class="col-lg-7"><div class="cardx">

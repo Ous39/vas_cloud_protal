@@ -8,7 +8,7 @@ function nav_can_see(string $page): bool {
     if ($page==='sql') return can('run_sql');
     if ($page==='users') return can('manage_users');
     if ($page==='audit') return can('view_audit');
-    if ($page==='ussd_sim' || $page==='ussd_quiz' || $page==='ussd_flows' || $page==='ussd_build') return can('manage_ussd_menus');
+    if ($page==='ussd_sim' || $page==='ussd_quiz' || $page==='ussd_flows' || $page==='ussd_build' || $page==='ussd_new') return can('manage_ussd_menus');
     if ($page==='ussd_proxy' || $page==='mobius_menus') return can('manage_api_keys');
     if ($page==='api_keys') return can('manage_api_keys');
     if ($page==='promotions') return can('manage_promotions');
@@ -28,6 +28,7 @@ function ussd_subnav(string $current): void {
     $more = [['ussd_menu','fa-sitemap','Advanced builder (old)'],['shortcodes','fa-hashtag','Short Codes'],['ussd_ivr','fa-route','Routing & IVR']];
     $more = array_values(array_filter($more, fn($t) => nav_can_see($t[0]))); $inMore = null; foreach ($more as $t) if ($t[0] === $current) $inMore = $t;
     echo '<ul class="nav nav-pills ussd-subnav mb-3">';
+    if (nav_can_see('ussd_new')) echo '<li class="nav-item"><a class="nav-link nav-create'.($current==='ussd_new'?' active':'').'" href="?page=ussd_new"><i class="fa-solid fa-plus me-1"></i>Create a menu</a></li>';
     foreach ($main as [$p,$ic,$lb]) { if (!nav_can_see($p)) continue; echo '<li class="nav-item"><a class="nav-link'.($p===$current?' active':'').'" href="?page='.$p.'"><i class="fa-solid '.$ic.' me-1"></i>'.e($lb).'</a></li>'; }
     if ($more) {
         echo '<li class="nav-item dropdown"><a class="nav-link dropdown-toggle'.($inMore?' active':'').'" href="#" role="button" data-bs-toggle="dropdown" data-bs-popper-config=\'{"strategy":"fixed"}\' aria-expanded="false">'.($inMore?'<i class="fa-solid '.$inMore[1].' me-1"></i>'.e($inMore[2]):'More').'</a><ul class="dropdown-menu dropdown-menu-end">';
@@ -43,7 +44,7 @@ function layout_start(string $title): void {
         ['dashboard','fa-gauge','Dashboard'],
         ['monitoring','fa-heart-pulse','Monitoring'],
         ['group','fa-layer-group','Operations',[['refunds','fa-rotate-left','Refunds'],['subscriptions','fa-user-check','Subscriptions'],['offers','fa-tags','Offer Management'],['offer_health','fa-stethoscope','Offer Health'],['esim','fa-sim-card','eSIM Profiles'],['sales','fa-file-invoice-dollar','Sales & Invoices'],['friends_family','fa-user-group','Friends & Family'],['voting','fa-square-poll-vertical','Voting Service']]],
-        ['group','fa-tower-broadcast','Infrastructure',[['ussd_menus','fa-list','USSD Menus (portal)'],['mobius_menus','fa-server','USSD Menus in Mobius'],['ussd_build','fa-wand-magic-sparkles','Easy Builder'],['ussd_sim','fa-mobile-screen','USSD Simulator'],['ussd_proxy','fa-plug','USSD Proxy'],['ussd_ivr','fa-route','Routing & IVR'],['integrations','fa-plug-circle-check','Integrations']]],
+        ['group','fa-tower-broadcast','Infrastructure',[['ussd_new','fa-plus','Create a USSD menu'],['ussd_menus','fa-list','USSD Menus (portal)'],['mobius_menus','fa-server','USSD Menus in Mobius'],['ussd_build','fa-wand-magic-sparkles','Easy Builder'],['ussd_sim','fa-mobile-screen','USSD Simulator'],['ussd_proxy','fa-plug','USSD Proxy'],['ussd_ivr','fa-route','Routing & IVR'],['integrations','fa-plug-circle-check','Integrations']]],
         ['group','fa-chart-line','Reports',[['investigate','fa-headset','Complaint Investigation'],['timeline','fa-timeline','Customer Timeline'],['alerts','fa-triangle-exclamation','Alerts'],['offer_report','fa-bullhorn','Offer Performance'],['reports','fa-chart-line','Reports'],['sql','fa-code','SQL Console']]],
         ['group','fa-gears','Admin',[['tables','fa-database','Database Tables'],['promotions','fa-bullhorn','Promotions'],['projects','fa-diagram-project','Projects'],['shortcodes','fa-hashtag','Short Codes'],['api_keys','fa-key','Partner API Keys'],['alert_settings','fa-bell','Alert Settings'],['retention','fa-database','Data Retention'],['status','fa-server','System Status'],['audit','fa-shield-halved','Audit Trail'],['users','fa-users-gear','Users']]],
     ];

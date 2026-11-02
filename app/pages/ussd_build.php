@@ -91,7 +91,7 @@ declare(strict_types=1);
             <div><h3 class="mb-0"><i class="fa-solid fa-wand-magic-sparkles me-2"></i>Easy Builder</h3>
                 <div class="small text-muted">Click a line on the phone to go into it. Add blocks to the screen you are on. Nothing reaches customers until you <b>publish</b>.</div></div>
             <form method="get" class="d-flex gap-2"><input type="hidden" name="page" value="ussd_build"><select class="form-select" name="short_code" data-autosubmit><?php foreach ($known as $sc):?><option value="<?=e($sc)?>" <?=$sc === $code ? 'selected' : ''?>><?=e($sc)?></option><?php endforeach;?></select>
-                <a class="btn btn-outline-secondary text-nowrap" href="?page=ussd_menus&add=1">New menu</a></form>
+                <a class="btn btn-outline-primary text-nowrap" href="?page=ussd_new"><i class="fa-solid fa-plus me-1"></i>Create a menu</a></form>
         </div>
     </div>
     <?php if ($code === ''):?><div class="cardx mt-3"><p class="mb-0">There is no menu yet. <a href="?page=ussd_menus&add=1">Add a new menu</a> first, then come back here to build it.</p></div>

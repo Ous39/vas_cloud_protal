@@ -807,6 +807,72 @@ function mobius_step_summary(array $s, array $steps, array $menuNames): string {
         default: return $s['message'] !== '' ? $first($s['message']) : ($s['error'] !== '' ? $s['error'] : '');
     }
 }
+// ---- "Create a menu": a menu built in Mobius, with its first screens (or a copy of another menu's steps) ----
+// Starters for a new Mobius-built menu. Each is a list of steps: [key, parent key|null, type, fields], linked by key; ids are made at creation.
+function mobius_starters(): array {
+    return [
+        'options' => ['Menu with options', 'A menu: the customer presses 1, 2 or 0 and sees a message. Change the texts afterwards.', [
+            ['w', null, 'WELCOME', ['next' => 'm']],
+            ['m', 'w', 'MENU', ['message' => "MENU NAME\n1. First choice\n2. Second choice\n0. Exit", 'errorMessage' => 'Wrong choice, please try again.']],
+            ['o1', 'm', 'MESSAGE', ['code' => '1', 'message' => 'You chose the first choice.']],
+            ['o2', 'm', 'MESSAGE', ['code' => '2', 'message' => 'You chose the second choice.']],
+            ['o0', 'm', 'MESSAGE', ['code' => '0', 'message' => 'Thank you, goodbye.']]]],
+        'question' => ['Question and reply', 'Asks the customer to type something (for example a number) and answers with it.', [
+            ['w', null, 'WELCOME', ['next' => 'q']],
+            ['q', 'w', 'COLLECT', ['message' => 'Please type the number:', 'var' => 'number', 'next' => 'r']],
+            ['r', 'q', 'MESSAGE', ['message' => 'Thank you. We received {number}.']]]],
+        'message' => ['One message', 'Shows one message and ends (an information code).', [
+            ['w', null, 'WELCOME', ['next' => 'x']],
+            ['x', 'w', 'MESSAGE', ['message' => 'Welcome to Comium. Thank you for your call.']]]],
+    ];
+}
+function mobius_starter_steps(string $key, string $menuId): array {
+    $st = mobius_starters()[$key] ?? throw new RuntimeException('Choose how the menu starts.');
+    $ids = []; foreach ($st[2] as [$k]) $ids[$k] = mobius_new_oid(); $out = [];
+    foreach ($st[2] as [$k, $p, $type, $f]) {
+        $x = array_fill_keys(MOBIUS_STEP_FIELDS, null); $x['menuID'] = mobius_oid($menuId); $x['parentID'] = $p ? mobius_oid($ids[$p]) : null; $x['stepType'] = $type; $x['_id'] = mobius_oid($ids[$k]);
+        if (isset($f['next'])) $x['nextStepID'] = mobius_oid($ids[$f['next']]);
+        if (isset($f['code'])) $x['localCode'] = $f['code'];
+        if (isset($f['message'])) { $x['message'] = $f['message']; $x['language'] = 'DEFAULT'; }
+        if (isset($f['errorMessage'])) $x['errorMessage'] = $f['errorMessage'];
+        if (isset($f['var'])) $x['properties'] = [['propertyName' => $f['var'], 'propertyValue' => null, 'defaultValue' => null]];
+        $out[] = $x;
+    }
+    return $out;
+}
+// The steps of another menu, for a new menu: new ids, same links, same everything else (service headers included; they stay on the server).
+function mobius_copied_steps(array $cfg, string $fromMenuId, string $menuId): array {
+    $src = mobius_steps_or_fail($cfg, $fromMenuId); if (!$src['steps']) throw new RuntimeException('That menu has no steps to copy.');
+    $map = []; foreach ($src['raw'] as $r) $map[mobius_id_text($r['_id'] ?? '')] = mobius_new_oid(); $out = [];
+    foreach ($src['raw'] as $r) { $x = $r; $x['_id'] = mobius_oid($map[mobius_id_text($r['_id'] ?? '')]); $x['menuID'] = mobius_oid($menuId);
+        foreach (['parentID', 'nextStepID'] as $k) { $t = mobius_id_text($x[$k] ?? ''); if ($t !== '' && isset($map[$t])) $x[$k] = mobius_oid($map[$t]); } $out[] = $x; }
+    return $out;
+}
+// A new MS_INITIATED menu in Mobius with its first steps. Returns ['menu' => …, 'steps' => true|false, 'note' => why the steps could not be made].
+function mobius_create_built(array $cfg, string $name, string $code, string $starter, string $copyFrom = ''): array {
+    $l = mobius_list_menus($cfg); if (!$l['ok']) throw new RuntimeException('Could not read Mobius: '.$l['error']);
+    $dest = []; $count = []; foreach ($l['menus'] as $m) if ($m['shortcodeType'] === 'MS_INITIATED') foreach ($m['destinationID'] as $d) $count[$d] = ($count[$d] ?? 0) + 1;
+    if ($count) { arsort($count); $dest = [array_key_first($count)]; } // the destination most Mobius-built menus use
+    $r = mobius_save_menu($cfg, null, ['name' => $name, 'shortcode' => $code, 'shortcodeType' => 'MS_INITIATED', 'remoteURL' => '', 'destinationID' => $dest], $code, 'create');
+    $menu = $r['menu']; if (!$menu || $menu['menuID'] === '') return ['menu' => $menu, 'steps' => false, 'note' => 'Mobius created the menu but the portal could not read it back.'];
+    $_SESSION['mobius_unlock'][(string)$menu['menuID']] = time() + 1800; // just made by this user: editing is on
+    if ($starter === 'empty') return ['menu' => $menu, 'steps' => false, 'note' => ''];
+    try {
+        $steps = $starter === 'copy' ? mobius_copied_steps($cfg, $copyFrom, (string)$menu['menuID']) : mobius_starter_steps($starter, (string)$menu['menuID']);
+        mobius_steps_create($cfg, $steps, []);
+        $hid = mobius_record_change((string)$menu['menuID'], (string)$menu['shortcode'], 'step-add', null, null, 'Added '.count($steps).' first steps ('.($starter === 'copy' ? 'copied' : (mobius_starters()[$starter][0] ?? $starter)).')');
+        mobius_step_backup_put($hid, ['step' => mobius_id_text($steps[0]['_id'] ?? ''), 'how' => 'first', 'anchor' => '']);
+        return ['menu' => $menu, 'steps' => true, 'note' => ''];
+    } catch (RuntimeException $e) { return ['menu' => $menu, 'steps' => false, 'note' => $e->getMessage()]; }
+}
+// Who already uses a short code: ['portal' => bool, 'mobius' => menu|null].
+function ussd_code_taken(string $code, array $mobiusMenus): array {
+    $n = menu_normalize_shortcode($code); $portal = in_array($n, menu_shortcodes(), true);
+    if (!$portal) { $r = portal_pdo()->prepare("SELECT 1 FROM portal_short_codes WHERE channel_type='USSD' AND short_code=?"); $r->execute([$n]); $portal = (bool)$r->fetch(); }
+    $mob = null; foreach ($mobiusMenus as $m) if (trim((string)$m['shortcode']) !== '' && mobius_bare_code((string)$m['shortcode']) === mobius_bare_code($n)) $mob = $m;
+    return ['portal' => $portal, 'mobius' => $mob];
+}
+
 // For the export buttons: every menu exactly as Mobius gave it.
 function mobius_menus_export(array $menus): array { return array_map(fn($m) => mobius_menu_norm($m)['_raw'], $menus); }
 

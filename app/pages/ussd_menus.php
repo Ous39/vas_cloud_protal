@@ -44,7 +44,7 @@ declare(strict_types=1);
             <div><h3 class="mb-0">Menus</h3><div class="small text-muted">Every USSD short code: what it is, what is built, and whether it answers customers.</div></div>
             <input class="form-control w-auto ms-auto" id="mnFilter" placeholder="Search name or short code…" style="min-width:16rem">
             <?php if($canUrl):?><a class="btn btn-outline-secondary" href="?page=ussd_menus&mobius=1" title="Read the menus that exist in Mobius and compare"><i class="fa-solid fa-arrows-rotate me-1"></i>Check Mobius</a><?php endif;?>
-            <?php if($canEdit):?><button class="btn btn-primary" type="button" data-bs-toggle="collapse" data-bs-target="#addMenu"><i class="fa-solid fa-plus me-1"></i>Add new menu</button><?php endif;?>
+            <?php if($canEdit):?><a class="btn btn-primary" href="?page=ussd_new"><i class="fa-solid fa-plus me-1"></i>Create a menu</a><button class="btn btn-link btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#addMenu" title="The old form: name, code and items typed as lines">quick form</button><?php endif;?>
         </div>
         <?php if($canEdit):?>
         <div class="collapse <?=$formOpen?'show':''?> mt-3" id="addMenu">

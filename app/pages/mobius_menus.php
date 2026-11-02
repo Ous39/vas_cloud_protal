@@ -108,14 +108,15 @@ declare(strict_types=1);
     <div class="cardx">
         <div class="d-flex flex-wrap gap-2 align-items-center">
             <div class="me-auto"><h3 class="mb-0">USSD menus in Mobius</h3><div class="small text-muted"><?=$ok?count($menus).' menus':'Mobius cannot be read right now'?> — open one to build it, try it, see its calls and numbers.</div></div>
-            <a class="btn btn-primary" href="?page=mobius_menus&new=1"><i class="fa-solid fa-plus me-1"></i>New menu</a>
+            <a class="btn btn-primary" href="?page=ussd_new&where=mobius"><i class="fa-solid fa-plus me-1"></i>Create a menu</a>
             <div class="dropdown"><button class="btn btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown">More</button><ul class="dropdown-menu dropdown-menu-end">
                 <li><a class="dropdown-item" href="?page=mobius_menus"><i class="fa-solid fa-arrows-rotate fa-fw me-2"></i>Refresh from Mobius</a></li>
                 <?php if($ok):?><li><a class="dropdown-item" href="?page=mobius_menus&export=json"><i class="fa-solid fa-download fa-fw me-2"></i>Backup of all menus (JSON)</a></li><li><a class="dropdown-item" href="?page=mobius_menus&export=csv"><i class="fa-solid fa-table fa-fw me-2"></i>List as CSV (Excel)</a></li><?php endif;?>
-                <li><a class="dropdown-item" href="#mbHistory"><i class="fa-solid fa-clock-rotate-left fa-fw me-2"></i>History of changes</a></li></ul></div>
+                <li><a class="dropdown-item" href="#mbHistory"><i class="fa-solid fa-clock-rotate-left fa-fw me-2"></i>History of changes</a></li>
+                <li><hr class="dropdown-divider"></li><li><a class="dropdown-item" href="?page=mobius_menus&new=1"><i class="fa-solid fa-screwdriver-wrench fa-fw me-2"></i>Add a Mobius menu by hand (advanced)</a></li></ul></div>
         </div>
         <div class="d-flex flex-wrap gap-2 align-items-center mt-3">
-            <div class="position-relative flex-grow-1" style="max-width:32rem"><i class="fa-solid fa-magnifying-glass position-absolute text-muted" style="left:.75rem;top:.7rem"></i><input class="form-control ps-5" id="mbFilter" placeholder="Search by name or short code…" autocomplete="off"></div>
+            <div class="position-relative flex-grow-1" style="max-width:32rem"><i class="fa-solid fa-magnifying-glass position-absolute text-muted" style="left:.75rem;top:.7rem"></i><input class="form-control ps-5" id="mbFilter" placeholder="Search by name or short code…" autocomplete="off" value="<?=e((string)($_GET['q']??''))?>"></div>
             <div class="btn-group flex-wrap" role="group" id="mbKinds"><button type="button" class="btn btn-sm btn-outline-secondary active" data-kind="">All <span class="badge bg-light text-dark"><?=count($menus)?></span></button>
                 <?php foreach(MOBIUS_KINDS as $k=>[$lab,$cls]): if(!$kindN[$k]) continue;?><button type="button" class="btn btn-sm btn-outline-secondary" data-kind="<?=$k?>"><?=e($lab)?> <span class="badge bg-light text-dark"><?=$kindN[$k]?></span></button><?php endforeach;?></div>
             <select class="d-none" id="mbWho"><option value=""></option></select>
