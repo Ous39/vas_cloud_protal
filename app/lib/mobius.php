@@ -500,19 +500,56 @@ function mobius_destination_names(array $cfg): array {
 // Words for the History card.
 const MOBIUS_ACTION_LABELS = ['create' => 'Created', 'copy' => 'Copied', 'change' => 'Changed', 'rename' => 'Renamed', 'to-portal' => 'Sent to portal', 'restore' => 'Put back', 'delete' => 'Deleted', 'undelete' => 'Created again', 'undo-create' => 'Removed again'];
 function mobius_action_label(string $a): string { $refused = str_ends_with($a, '-refused'); $b = $refused ? substr($a, 0, -8) : $a; return (MOBIUS_ACTION_LABELS[$b] ?? ucfirst($b)).($refused ? ' — refused' : ''); }
-// The steps of a menu built inside Mobius (its Builder): [['ok', 'steps' => […] in tree order with 'depth']].
+// The steps of a menu built inside Mobius (its Builder): ['ok', 'steps' => [id => step], 'tree' => nested nodes, 'raw' => rows as Mobius gave them].
+// How Mobius links steps (seen on Main Menu *9606*02141#): WELCOME → nextStepID → MENU; a MENU's options are steps whose parentID is the menu and
+// whose localCode is the key the customer presses; COLLECT ("Question with input") → nextStepID → the following step; GO_TO_STEP jumps to a step of
+// this menu and GO_TO_MENU to another menu (both in nextStepID); MESSAGE ends the call.
 function mobius_menu_steps(array $cfg, string $menuId): array {
     $r = mobius_rest($cfg, 'ussdmenusteps/list_by_menu', ['key' => $menuId, 'pageSize' => 500, 'includePreviousKey' => false, 'reverse' => false]);
     if (!$r['ok']) return ['ok' => false, 'error' => $r['error']];
-    $steps = []; foreach (mobius_find_rows($r['json']) ?? [] as $s) {
-        $id = mobius_id_text($s['stepID'] ?? ($s['_id'] ?? ''));
-        $steps[$id] = ['id' => $id, 'parent' => mobius_id_text($s['parentID'] ?? ''), 'type' => (string)($s['stepType'] ?? ''), 'code' => (string)($s['localCode'] ?? ''), 'message' => (string)($s['message'] ?? ''),
-            'next' => mobius_id_text($s['nextStepID'] ?? ''), 'url' => (string)($s['externalUrl'] ?? ''), 'mapping' => (string)($s['mappingType'] ?? ''), 'error' => (string)($s['errorMessage'] ?? '')];
+    $raw = mobius_find_rows($r['json']) ?? []; $steps = [];
+    foreach ($raw as $s) {
+        $id = mobius_id_text($s['stepID'] ?? ($s['_id'] ?? '')); if ($id === '') continue;
+        $props = fn($k) => array_values(array_filter(array_map(fn($p) => is_array($p) ? ['name' => (string)($p['propertyName'] ?? ''), 'value' => (string)($p['propertyValue'] ?? ''), 'default' => (string)($p['defaultValue'] ?? '')] : null, (array)($s[$k] ?? []))));
+        $steps[$id] = ['id' => $id, 'parent' => mobius_id_text($s['parentID'] ?? ''), 'type' => strtoupper((string)($s['stepType'] ?? '')), 'code' => trim((string)($s['localCode'] ?? '')), 'message' => (string)($s['message'] ?? ''),
+            'next' => mobius_id_text($s['nextStepID'] ?? ''), 'url' => (string)($s['externalUrl'] ?? ''), 'mapping' => (string)($s['mappingType'] ?? ''), 'error' => (string)($s['errorMessage'] ?? ''),
+            'language' => (string)($s['language'] ?? ''), 'props' => $props('properties'), 'resp' => $props('responseProperties'), '_raw' => $s];
     }
-    $kids = []; foreach ($steps as $s) $kids[isset($steps[$s['parent']]) ? $s['parent'] : ''][] = $s['id'];
-    $out = []; $walk = function (string $p, int $depth) use (&$walk, &$out, $kids, $steps) { foreach ($kids[$p] ?? [] as $id) { if (isset($out[$id])) continue; $out[$id] = $steps[$id] + ['depth' => $depth]; $walk($id, $depth + 1); } };
-    $walk('', 0); foreach ($steps as $id => $s) if (!isset($out[$id])) $out[$id] = $s + ['depth' => 0];
-    return ['ok' => true, 'steps' => array_values($out), 'answer' => mobius_redact((string)($r['raw'] ?? ''), 1500)];
+    return ['ok' => true, 'steps' => $steps, 'tree' => mobius_steps_tree($steps), 'raw' => $raw];
+}
+// Steps as a tree for drawing: [['id', 'via' => 'option'|'next'|'root', 'kids' => […], 'ref' => true when the step is already drawn elsewhere]].
+function mobius_steps_tree(array $steps): array {
+    $byParent = []; foreach ($steps as $s) if ($s['parent'] !== '' && isset($steps[$s['parent']]) && $s['parent'] !== $s['id']) $byParent[$s['parent']][] = $s['id'];
+    $order = function (array $ids) use ($steps): array { usort($ids, function ($a, $b) use ($steps) { $ca = $steps[$a]['code']; $cb = $steps[$b]['code'];
+        if (($ca === '') !== ($cb === '')) return $ca === '' ? -1 : 1; return is_numeric($ca) && is_numeric($cb) ? $ca <=> $cb : strnatcasecmp($ca, $cb); }); return $ids; };
+    $placed = [];
+    $build = function (string $id, string $via, int $depth) use (&$build, &$placed, $steps, $byParent, $order): array {
+        if (isset($placed[$id]) || $depth > 40) return ['id' => $id, 'via' => $via, 'kids' => [], 'ref' => true];
+        $placed[$id] = true; $s = $steps[$id]; $kids = [];
+        foreach ($order($byParent[$id] ?? []) as $k) $kids[] = $build($k, 'option', $depth + 1);
+        $jump = in_array($s['type'], ['GO_TO_STEP', 'GO_TO_MENU'], true);
+        if (!$jump && $s['next'] !== '' && isset($steps[$s['next']]) && !in_array($s['next'], $byParent[$id] ?? [], true) && !isset($placed[$s['next']])) $kids[] = $build($s['next'], 'next', $depth + 1);
+        return ['id' => $id, 'via' => $via, 'kids' => $kids, 'ref' => false];
+    };
+    $roots = []; foreach ($steps as $s) if (in_array($s['type'], ['WELCOME', 'WELCOME_INCOMING'], true)) $roots[] = $build($s['id'], 'root', 0);
+    $nexts = []; foreach ($steps as $s) if ($s['next'] !== '') $nexts[$s['next']] = true;
+    foreach ($steps as $s) if (!isset($placed[$s['id']]) && ($s['parent'] === '' || !isset($steps[$s['parent']])) && !isset($nexts[$s['id']])) $roots[] = $build($s['id'], 'root', 0);
+    foreach ($steps as $s) if (!isset($placed[$s['id']])) $roots[] = $build($s['id'], 'root', 0); // whatever is left (loops)
+    return $roots;
+}
+// How Mobius' Builder names each kind of step, and the colour of its icon.
+const MOBIUS_STEP_KINDS = ['WELCOME' => ['Welcome', 'fa-hashtag', '#3fae5a'], 'WELCOME_INCOMING' => ['Welcome (incoming)', 'fa-hashtag', '#3fae5a'], 'MENU' => ['Menu', 'fa-list-ol', '#7b61ff'],
+    'VARIABLE_MENU' => ['Variable menu', 'fa-list-check', '#7b61ff'], 'MESSAGE' => ['Message Response', 'fa-comment', '#e5534b'], 'COLLECT' => ['Question with input', 'fa-keyboard', '#e0a800'],
+    'GO_TO_STEP' => ['Go to step', 'fa-arrow-right', '#5f6b7a'], 'GO_TO_MENU' => ['Go to menu', 'fa-rotate-right', '#5f6b7a'], 'EXTERNAL_SERVICE' => ['External service', 'fa-cloud-arrow-up', '#1f8ad1'], 'EMPTY' => ['Empty step', 'fa-plus', '#aab3be']];
+// The second line of a card: what the step says or where it goes.
+function mobius_step_summary(array $s, array $steps, array $menuNames): string {
+    $first = fn(string $t) => trim(strtok(str_replace("\r", '', $t), "\n") ?: $t);
+    switch ($s['type']) {
+        case 'GO_TO_MENU': return $menuNames[$s['next']] ?? ($s['next'] !== '' ? 'menu …'.substr($s['next'], -8) : '(no menu chosen)');
+        case 'GO_TO_STEP': $t = $steps[$s['next']] ?? null; return $t ? (MOBIUS_STEP_KINDS[$t['type']][0] ?? $t['type']).($t['code'] !== '' ? ' '.$t['code'] : '').': '.mb_strimwidth(mobius_step_summary($t, [], $menuNames), 0, 40, '…') : ($s['next'] !== '' ? 'step …'.substr($s['next'], -8) : '(no step chosen)');
+        case 'EXTERNAL_SERVICE': $u = parse_url($s['url']); return ($u['host'] ?? '').($u['path'] ?? '') ?: '(no address)';
+        default: return $s['message'] !== '' ? $first($s['message']) : ($s['error'] !== '' ? $s['error'] : '');
+    }
 }
 // For the export buttons: every menu exactly as Mobius gave it.
 function mobius_menus_export(array $menus): array { return array_map(fn($m) => mobius_menu_norm($m)['_raw'], $menus); }

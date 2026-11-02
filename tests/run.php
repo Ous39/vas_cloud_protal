@@ -618,7 +618,18 @@ t('Mobius menus: Copy, Delete (with Put back), Calls, Stats and Builder steps - 
         file_put_contents($tmp.'/zt_stub_mobius_steps.json', json_encode([['menuID' => 'aa0000000000000000000003', 'stepID' => 'b', 'parentID' => 'a', 'stepType' => 'MESSAGE', 'localCode' => '1', 'message' => 'Hi'], ['menuID' => 'aa0000000000000000000003', 'stepID' => 'a', 'stepType' => 'MENU', 'message' => 'Main']]));
         eq(mobius_destination_names($cfg), ['dd01' => 'SS7 HLR main', 'dd02' => 'HTTP Hera'], 'destination names are read (ussddestinationsettings/list)');
         eq([mobius_action_label('undelete'), mobius_action_label('create-refused')], ['Created again', 'Created — refused'], 'History uses plain words');
-        $sp = mobius_menu_steps($cfg, 'aa0000000000000000000003'); eq([$sp['steps'][0]['id'] ?? null, $sp['steps'][1]['depth'] ?? null], ['a', 1], 'Builder: the steps in tree order');
+        $sp = mobius_menu_steps($cfg, 'aa0000000000000000000003'); eq([$sp['tree'][0]['id'] ?? null, $sp['tree'][0]['kids'][0]['id'] ?? null], ['a', 'b'], 'Builder: the steps as a tree');
+        // laid out like Mobius' Builder (Main Menu *9606*02141#): Welcome -> Menu -> options by key; Question with input -> next Menu; Go to step / Go to menu jump
+        $mm = [['stepID' => 'w', 'stepType' => 'WELCOME', 'nextStepID' => 'm'], ['stepID' => 'm', 'parentID' => 'w', 'stepType' => 'MENU', 'message' => "SELECT\n1. A", 'nextStepID' => 'gone'],
+            ['stepID' => 'o0', 'parentID' => 'm', 'localCode' => '0', 'stepType' => 'MESSAGE', 'message' => 'Thanks'], ['stepID' => 'o10', 'parentID' => 'm', 'localCode' => '10', 'stepType' => 'GO_TO_MENU', 'nextStepID' => 'aa0000000000000000000001'],
+            ['stepID' => 'o2', 'parentID' => 'm', 'localCode' => '2', 'stepType' => 'COLLECT', 'message' => 'Number?', 'nextStepID' => 'm2'], ['stepID' => 'm2', 'parentID' => 'o2', 'stepType' => 'MENU', 'message' => 'Pick'],
+            ['stepID' => 'g1', 'parentID' => 'm2', 'localCode' => '1', 'stepType' => 'GO_TO_STEP', 'nextStepID' => 'o0']];
+        file_put_contents($tmp.'/zt_stub_mobius_steps.json', json_encode(array_map(fn($x) => $x + ['menuID' => 'mm1'], $mm)));
+        $t = mobius_menu_steps($cfg, 'mm1')['tree']; $m = $t[0]['kids'][0] ?? [];
+        eq([$t[0]['id'] ?? null, $m['id'] ?? null, array_column($m['kids'] ?? [], 'id')], ['w', 'm', ['o0', 'o2', 'o10']], 'Welcome, then the menu, its options in key order (0, 2, 10)');
+        eq(array_column($m['kids'][1]['kids'] ?? [], 'id'), ['m2'], 'a question leads to the next menu');
+        $st = mobius_menu_steps($cfg, 'mm1')['steps']; eq(mobius_step_summary($st['o10'], $st, ['aa0000000000000000000001' => 'Basic Data']), 'Basic Data', 'Go to menu shows the menu name');
+        eq(mobius_step_summary($st['g1'], $st, []), 'Message Response 0: Thanks', 'Go to step shows where it goes');
     } finally { foreach (['zt_stub_mobius_menus.json', 'zt_stub_mobius_strict.txt', 'zt_stub_mobius_calls.json', 'zt_stub_mobius_steps.json'] as $f) @unlink($tmp.'/'.$f); $db->exec("DELETE FROM mobius_menu_changes WHERE shortcode IN ('*7998#','*7999#','*7999')"); }
 });
 t('a menu is renamed in the portal: short code and name together', function () use ($db) {

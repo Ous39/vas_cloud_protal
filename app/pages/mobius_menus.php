@@ -73,7 +73,22 @@ declare(strict_types=1);
     $hideUrl=fn(string $u)=>preg_replace('~([?&]t=)[^&]+~','$1…',$u);
     layout_start('Mobius Menus'); ussd_subnav('mobius_menus');
     ?>
-    <style>.mb-kv th{background:none!important;color:var(--muted)!important;text-transform:none!important;letter-spacing:0!important;font-size:.85rem!important;width:9rem;padding:6px 8px!important}#mbTable td{vertical-align:middle}#mbTable .text-truncate{max-width:26rem}</style>
+    <style>.mb-kv th{background:none!important;color:var(--muted)!important;text-transform:none!important;letter-spacing:0!important;font-size:.85rem!important;width:9rem;padding:6px 8px!important}#mbTable td{vertical-align:middle}#mbTable .text-truncate{max-width:26rem}
+    .mbt-wrap{overflow:auto;padding:12px 4px;border:1px solid #e6eaef;border-radius:10px;background:#f8fafc;max-height:70vh}
+    .mbt{display:flex;align-items:center}
+    .mbt-kids{display:flex;flex-direction:column;margin-left:26px;position:relative}
+    .mbt-kids::before{content:'';position:absolute;left:-26px;top:50%;width:26px;border-top:1px solid #c3cbd5}
+    .mbt-kids>.mbt{position:relative;padding:4px 0 4px 22px}
+    .mbt-kids>.mbt::before{content:'';position:absolute;left:0;top:50%;width:22px;border-top:1px solid #c3cbd5}
+    .mbt-kids>.mbt::after{content:'';position:absolute;left:0;top:0;bottom:0;border-left:1px solid #c3cbd5}
+    .mbt-kids>.mbt:first-child::after{top:50%}.mbt-kids>.mbt:last-child::after{bottom:50%}.mbt-kids>.mbt:only-child::after{display:none}
+    .mbt-card{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #dde3ea;border-radius:8px;padding:6px 10px;width:250px;flex:none;cursor:pointer;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+    .mbt-card:hover,.mbt-card.on{border-color:var(--brand);box-shadow:0 0 0 2px var(--brand-light)}
+    .mbt-ref{border-style:dashed;opacity:.75}
+    .mbt-code{font-weight:700;min-width:1.2rem;text-align:center;color:#334}
+    .mbt-ic{width:28px;height:28px;border-radius:7px;display:inline-flex;align-items:center;justify-content:center;flex:none;font-size:.8rem}
+    .mbt-txt{display:flex;flex-direction:column;min-width:0}.mbt-kind{font-size:.7rem;color:var(--muted)}.mbt-sub{font-size:.82rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    #mbPager .btn{min-width:2.2rem}</style>
     <div class="cardx">
         <div class="d-flex flex-wrap gap-2 align-items-center">
             <div><h3 class="mb-0">Mobius menus</h3><div class="small text-muted">Every USSD short code in Mobius (the same list as Mobius → USSD Shortcodes). Search, open, change, create, and send a menu to this portal.</div></div>
@@ -139,12 +154,29 @@ declare(strict_types=1);
         <div class="row g-3"><?php foreach([['Top numbers',$sd['numbers']],['What customers typed',$sd['answers']],['Errors',$sd['errors']]] as [$k,$list]): if(!$list) continue;?><div class="col-md-4"><div class="fw-semibold small mb-1"><?=e($k)?></div><table class="table table-sm mb-0"><tbody><?php foreach($list as $x=>$n):?><tr><td class="small"><?=e(mb_strimwidth((string)$x,0,40,'…'))?></td><td class="text-end small"><?=$n?></td></tr><?php endforeach;?></tbody></table></div><?php endforeach;?></div>
         <?php endif;?>
     <?php elseif($act==='steps'): $pd=$actData;?>
-        <?php if($amOurs && menu_valid_shortcode(menu_normalize_shortcode($am['shortcode']))):?><div class="alert alert-info py-2 small">This menu calls the portal, so its screens are built in the portal: <a href="?page=ussd_build&short_code=<?=urlencode(menu_normalize_shortcode($am['shortcode']))?>">open it in Easy Builder</a>. Mobius' own steps for it (normally none) are below.</div><?php endif;?>
+        <?php if($amOurs && menu_valid_shortcode(menu_normalize_shortcode($am['shortcode']))):?><div class="alert alert-info py-2 small">This menu calls the portal, so its screens are built in the portal: <a href="?page=ussd_build&short_code=<?=urlencode(menu_normalize_shortcode($am['shortcode']))?>">open it in Easy Builder</a>.</div><?php endif;?>
         <?php if(!$pd['ok']):?><div class="alert alert-danger py-2">Mobius refused: <?=e($pd['error'])?></div>
         <?php elseif(!$pd['steps']):?><p class="text-muted mb-0">Mobius has no steps for this menu<?=$am['shortcodeType']==='PROXY'?' (a PROXY menu takes its screens from its address).':'.'?></p>
-        <?php else:?><p class="small text-muted">The menu as built in Mobius' Builder (read-only here). Indented = under the step above.</p><div class="table-scroll"><table class="table table-sm mb-0"><thead><tr><th>Step</th><th>Type</th><th>Code</th><th>Message</th><th>Goes to / address</th></tr></thead><tbody>
-            <?php foreach($pd['steps'] as $stp):?><tr><td class="small text-muted" style="padding-left:<?=0.5+$stp['depth']*1.2?>rem"><?=$stp['depth']?'└ ':''?><?=e(mb_substr($stp['id'],-8))?></td><td><span class="badge bg-light text-dark border"><?=e($stp['type'])?></span></td><td><code><?=e($stp['code'])?></code></td><td class="small" style="white-space:pre-wrap"><?=e($stp['message'])?></td><td class="small text-break"><?=e($stp['url']!==''?$hideUrl($stp['url']):($stp['next']!==''?'step '.mb_substr($stp['next'],-8):''))?></td></tr><?php endforeach;?>
-        </tbody></table></div><?php endif;?>
+        <?php else: $menuNames=[]; foreach($menus as $mm) $menuNames[$mm['menuID']]=$mm['name'].($mm['shortcode']!==''?' ('.$mm['shortcode'].')':'');
+            $steps=$pd['steps'];
+            $card=function(array $node) use (&$card,$steps,$menuNames,$am): void {
+                $st=$steps[$node['id']]; [$label,$icon,$col]=MOBIUS_STEP_KINDS[$st['type']]??[$st['type'],'fa-circle','#999'];
+                $sub=$st['type']==='WELCOME'?'Short code '.$am['shortcode']:mobius_step_summary($st,$steps,$menuNames);
+                $tip=trim($st['message']."\n".($st['url']!==''?$st['url']:'')); ?>
+                <div class="mbt"><div class="mbt-card<?=$node['ref']?' mbt-ref':''?>" tabindex="0" data-step="<?=e($st['id'])?>" title="<?=e($tip)?>">
+                    <?php if($st['code']!==''):?><span class="mbt-code"><?=e($st['code'])?></span><?php endif;?>
+                    <span class="mbt-ic" style="background:<?=$col?>22;color:<?=$col?>"><i class="fa-solid <?=$icon?>"></i></span>
+                    <span class="mbt-txt"><span class="mbt-kind"><?=e($label)?><?=$node['ref']?' (drawn above)':''?></span><span class="mbt-sub"><?=e(mb_strimwidth($sub,0,60,'…'))?:'&nbsp;'?></span></span></div>
+                    <?php if($node['kids'] && !$node['ref']):?><div class="mbt-kids"><?php foreach($node['kids'] as $k) $card($k);?></div><?php endif;?></div>
+            <?php };?>
+        <p class="small text-muted mb-2">Laid out like Mobius' Builder: the menu starts on the left; a number is the key the customer presses. Click a card to see everything about that step. <?=count($steps)?> steps.</p>
+        <div class="mbt-wrap"><?php foreach($pd['tree'] as $root) $card($root);?></div>
+        <div id="mbtDetail" class="border rounded p-2 mt-2 small bg-light" hidden></div>
+        <script type="application/json" id="mbtData"><?=json_encode(array_map(function($st) use ($steps,$menuNames){ return ['kind'=>MOBIUS_STEP_KINDS[$st['type']][0]??$st['type'],'type'=>$st['type'],'id'=>$st['id'],'code'=>$st['code'],'message'=>$st['message'],'invalid'=>$st['error'],'language'=>$st['language'],
+            'url'=>$st['url'],'format'=>$st['mapping'],'next'=>$st['next']!==''?($st['type']==='GO_TO_MENU'?($menuNames[$st['next']]??$st['next']):(isset($steps[$st['next']])?(MOBIUS_STEP_KINDS[$steps[$st['next']]['type']][0]??'').' '.$steps[$st['next']]['code'].' — '.mb_strimwidth($steps[$st['next']]['message'],0,50,'…'):$st['next'].' (not in this menu)')):'',
+            'sends'=>$st['props'],'receives'=>$st['resp']]; },$steps),JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_HEX_TAG|JSON_HEX_AMP)?></script>
+        <details class="mt-2"><summary class="small text-muted">Raw steps as Mobius stores them (for checking; read-only)</summary><pre class="small bg-light border rounded p-2 mb-0" style="max-height:20rem;overflow:auto;white-space:pre-wrap"><?=e(mobius_redact(json_encode($pd['raw'],JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE),60000))?></pre></details>
+        <?php endif;?>
     <?php elseif($act==='copy'):?>
         <p class="small">Makes a <b>new</b> menu in Mobius with every setting of <code><?=e($am['shortcode'])?></code> (type, address, destination, Extendable). The original is not changed. Put back in History removes the copy.</p>
         <form method="post" class="row g-2" data-confirm="Create the copy in Mobius now?"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="copy"><input type="hidden" name="menu_id" value="<?=e($am['menuID'])?>">
@@ -193,7 +225,10 @@ declare(strict_types=1);
                     <li><a class="dropdown-item" href="?page=mobius_menus&copy=<?=$q?>"><i class="fa-regular fa-copy fa-fw me-2"></i>Copy</a></li><li><a class="dropdown-item" href="?page=mobius_menus&edit=<?=$q?>"><i class="fa-solid fa-pen fa-fw me-2"></i>Edit</a></li><li><hr class="dropdown-divider"></li><li><a class="dropdown-item text-danger" href="?page=mobius_menus&delete=<?=$q?>"><i class="fa-solid fa-xmark fa-fw me-2"></i>Delete</a></li></ul></div></td>
         </tr><?php endforeach;?>
         <?php if(!$menus):?><tr><td colspan="9" class="text-muted">No menus read from Mobius.</td></tr><?php endif;?>
-    </tbody></table></div></div>
+    </tbody></table></div>
+    <div class="d-flex flex-wrap align-items-center gap-2 p-2 border-top" id="mbPager"><button class="btn btn-sm btn-outline-secondary" type="button" data-pg="first" title="First">«</button><button class="btn btn-sm btn-outline-secondary" type="button" data-pg="prev" title="Previous">‹</button>
+        <span class="small" id="mbPgInfo"></span><button class="btn btn-sm btn-outline-secondary" type="button" data-pg="next" title="Next">›</button><button class="btn btn-sm btn-outline-secondary" type="button" data-pg="last" title="Last">»</button>
+        <select class="form-select form-select-sm w-auto ms-auto" id="mbPgSize"><option>10</option><option>25</option><option>50</option><option value="100000">All</option></select><span class="small text-muted">per page</span></div></div>
     <?php endif;?>
 
     <div class="cardx mt-3"><h3 class="mb-2"><i class="fa-solid fa-clock-rotate-left me-2"></i>History</h3><p class="small text-muted">Every change the portal made in Mobius, with the menu as it was before. <b>Put back</b> sends the earlier values to Mobius again, creates a deleted menu again, or removes a menu the portal created or copied.</p>
@@ -209,8 +244,20 @@ declare(strict_types=1);
     </div>
     <script nonce="<?=e(csp_nonce())?>">
     (()=>{const f=document.getElementById('mbFilter'),w=document.getElementById('mbWho'),rows=[...document.querySelectorAll('#mbTable tbody tr[data-who]')];
-      const run=()=>{const q=(f.value||'').toLowerCase(),who=w.value;rows.forEach(r=>{r.style.display=(!q||r.textContent.toLowerCase().includes(q))&&(!who||r.dataset.who===who||r.dataset.type===who)?'':'none';});};
-      f&&f.addEventListener('input',run); w&&w.addEventListener('change',run);
+      let page=0; const sz=document.getElementById('mbPgSize'), info=document.getElementById('mbPgInfo');
+      const run=(keep)=>{ if(!keep) page=0; const q=(f?f.value:'').toLowerCase(),who=w?w.value:''; const hit=rows.filter(r=>(!q||r.textContent.toLowerCase().includes(q))&&(!who||r.dataset.who===who||r.dataset.type===who));
+        const n=parseInt(sz?sz.value:'10',10)||10, pages=Math.max(1,Math.ceil(hit.length/n)); page=Math.min(Math.max(page,0),pages-1);
+        const act=rows.findIndex(r=>r.classList.contains('table-active')); if(!keep && act>=0 && !q && !who){ const i=hit.indexOf(rows[act]); if(i>=0) page=Math.floor(i/n); }
+        rows.forEach(r=>r.style.display='none'); hit.slice(page*n,page*n+n).forEach(r=>r.style.display='');
+        if(info) info.textContent=hit.length?((page*n+1)+'–'+Math.min(hit.length,page*n+n)+' of '+hit.length+' menus'+(hit.length<rows.length?' (of '+rows.length+')':'')):'No menu matches';};
+      document.querySelectorAll('#mbPager [data-pg]').forEach(b=>b.addEventListener('click',()=>{const g=b.dataset.pg; page=g==='first'?0:g==='prev'?page-1:g==='next'?page+1:1e9; run(true);}));
+      f&&f.addEventListener('input',()=>run()); w&&w.addEventListener('change',()=>run()); sz&&sz.addEventListener('change',()=>run()); if(rows.length) run();
+      const dataEl=document.getElementById('mbtData'), box=document.getElementById('mbtDetail');
+      if(dataEl&&box){ const D=JSON.parse(dataEl.textContent), esc=t=>String(t??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+        const show=c=>{document.querySelectorAll('.mbt-card.on').forEach(x=>x.classList.remove('on')); c.classList.add('on'); const d=D[c.dataset.step]; if(!d) return;
+          const row=(k,v)=>v===''||v==null||(Array.isArray(v)&&!v.length)?'':'<tr><th class="text-muted fw-normal pe-3" style="background:none;color:var(--muted);text-transform:none;letter-spacing:0">'+k+'</th><td style="white-space:pre-wrap">'+(Array.isArray(v)?v.map(p=>esc(p.name)+(p.value?' = '+esc(p.value):'')+(p.default?' (default '+esc(p.default)+')':'')).join('<br>'):esc(v))+'</td></tr>';
+          box.innerHTML='<div class="fw-semibold mb-1">'+esc(d.kind)+(d.code?' — key '+esc(d.code):'')+'</div><table class="table table-sm mb-0 mb-kv"><tbody>'+row('Message',d.message)+row('Invalid option message',d.invalid)+row('Language',d.language)+row('Goes to',d.next)+row('Address',d.url)+row('Request format',d.format)+row('Sends',d.sends)+row('Reads back',d.receives)+row('Step id',d.id)+'</tbody></table>'; box.hidden=false;};
+        document.querySelectorAll('.mbt-card').forEach(c=>{c.addEventListener('click',()=>show(c)); c.addEventListener('keydown',e=>{if(e.key==='Enter')show(c);});}); }
       const b=document.getElementById('mbUsePortal'); b&&b.addEventListener('click',()=>{document.getElementById('mbUrl').value=b.dataset.url;const d=document.getElementById('mbDest');if(d)d.value=b.dataset.dest;});})();
     </script>
     <?php layout_end(); exit;
