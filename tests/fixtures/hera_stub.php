@@ -77,9 +77,18 @@ if ($parts[0] === 'mobius') {
             if (!empty($in['firstKey'])) { $at = array_search($in['firstKey'], array_column($calls, 'callID'), true); $calls = $at === false ? [] : array_slice($calls, $at + 1); }
             $j(['status' => 'SUCCESS', 'data' => array_slice($calls, 0, (int)($in['pageSize'] ?? 50))]); break;
         case 'ussddestinationsettings/list': $j(['status' => 'SUCCESS', 'data' => [['_id' => ['$oid' => 'dd01'], 'name' => 'SS7 HLR main'], ['_id' => ['$oid' => 'dd02'], 'name' => 'HTTP Hera']]]); break;
-        case 'ussdmenusteps/list_by_menu':
-            $steps = json_decode((string)@file_get_contents($dir.'/zt_stub_mobius_steps.json'), true) ?: [];
-            $j(['status' => 'SUCCESS', 'data' => array_values(array_filter($steps, fn($x) => $x['menuID'] === ($in['key'] ?? '')))]); break;
+        // steps live in zt_stub_mobius_steps.json, stored like the real Mobius: {"_id": {"$oid"}, "menuID": {"$oid"} (or text), "parentID", "nextStepID", …}
+        case 'ussdmenusteps/list_by_menu': case 'ussdmenusteps/set': case 'ussdmenusteps/delete':
+            $sf = $dir.'/zt_stub_mobius_steps.json'; $steps = json_decode((string)@file_get_contents($sf), true) ?: [];
+            $oid = fn($v) => is_array($v) ? (string)($v['$oid'] ?? '') : (string)$v; $sid = fn($x) => $oid($x['_id'] ?? ($x['stepID'] ?? ''));
+            if ($rest === 'ussdmenusteps/list_by_menu') { $j(['status' => 'SUCCESS', 'data' => array_values(array_filter($steps, fn($x) => $oid($x['menuID'] ?? '') === ($in['key'] ?? '')))]); break; }
+            if ($rest === 'ussdmenusteps/delete') { $n = count($steps); $steps = array_values(array_filter($steps, fn($x) => $sid($x) !== (string)($in['data'] ?? ''))); file_put_contents($sf, json_encode($steps)); $j(['status' => 'SUCCESS', 'data' => count($steps) < $n]); break; }
+            $d = $in['data'] ?? []; $known = ['menuID', 'parentID', 'localCode', 'stepType', 'message', 'language', 'errorMessage', 'externalUrl', 'externalHttpDestinationID', 'nextStepID', 'mappingType', 'properties', 'responseProperties', 'headers', '_id', 'stepID'];
+            foreach (array_keys($d) as $f) if (!in_array($f, $known, true)) { http_response_code(400); $j(['status' => 'ERROR', 'errorMessage' => 'Unrecognized field "'.$f.'"']); break 2; }
+            foreach (['parentID', 'nextStepID', 'menuID'] as $k) if (isset($d[$k]) && !is_array($d[$k])) { http_response_code(400); $j(['status' => 'ERROR', 'errorMessage' => 'Cannot deserialize '.$k.' from a string']); break 2; }
+            if ($sid($d) !== '') { $hit = false; foreach ($steps as $k => $x) if ($sid($x) === $sid($d)) { $steps[$k] = $d; $hit = true; } if (!$hit) { $j(['status' => 'ERROR', 'errorMessage' => 'step not found']); break; } }
+            else { $d['_id'] = ['$oid' => sprintf('5%07x%016x', count($steps), random_int(0, PHP_INT_MAX))]; $steps[] = $d; }
+            file_put_contents($sf, json_encode($steps)); $j(['status' => 'SUCCESS', 'data' => $d]); break;
         default: $j(['status' => 'ERROR', 'errorMessage' => 'unknown call']);
     }
     exit;

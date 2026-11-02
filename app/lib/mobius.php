@@ -395,6 +395,7 @@ function mobius_restore_change(array $cfg, int $changeId): array {
     mobius_menu_tables(); $st = portal_pdo()->prepare('SELECT * FROM mobius_menu_changes WHERE id=?'); $st->execute([$changeId]); $ch = $st->fetch();
     if (!$ch) throw new RuntimeException('That change is not in the history.');
     if (str_ends_with((string)$ch['action'], '-refused')) throw new RuntimeException('Mobius refused that change, so there is nothing to put back.');
+    if (str_starts_with((string)$ch['action'], 'step-')) return mobius_step_restore($cfg, $ch);
     $l = mobius_list_menus($cfg); if (!$l['ok']) throw new RuntimeException('Could not read Mobius: '.$l['error']);
     if ($ch['before_json'] === null) { // a menu the portal created (or copied): putting it back = removing it again
         $cur = mobius_find_menu($l['menus'], (string)$ch['menu_id']); if (!$cur) throw new RuntimeException('That menu is no longer in Mobius.');
@@ -486,6 +487,198 @@ function mobius_menu_stats(array $cfg, string $menuId, int $max = 1000): array {
     return ['ok' => true, 'total' => $total, 'read' => count($all), 'completed' => $done, 'failed' => $failed, 'days' => $days, 'numbers' => array_slice($numbers, 0, 10, true),
         'errors' => array_slice($errors, 0, 10, true), 'answers' => array_slice($answers, 0, 15, true), 'unique' => count($numbers), 'from' => $first, 'to' => $last];
 }
+// ---- Editing a menu's steps (like Mobius' Builder: Edit, Delete, add an option, add the next step) — REST ussdmenusteps/set and /delete ----
+// A step is kept exactly as Mobius gives it ({"_id": {"$oid"}, "menuID": {"$oid"}, "parentID": {"$oid"}|null, "localCode", "stepType", "message", "language",
+// "errorMessage", "externalUrl", "externalHttpDestinationID", "nextStepID": {"$oid"}|null, "mappingType", "properties", "responseProperties", "headers"}) and
+// only the fields the form changes are replaced. parentID is the step before (for an option: its menu), nextStepID the step after (or the jump target).
+const MOBIUS_STEP_FIELDS = ['menuID', 'parentID', 'localCode', 'stepType', 'message', 'language', 'errorMessage', 'externalUrl', 'externalHttpDestinationID', 'nextStepID', 'mappingType', 'properties', 'responseProperties', 'headers'];
+const MOBIUS_STEP_TYPES = ['MENU', 'MESSAGE', 'COLLECT', 'EXTERNAL_SERVICE', 'GO_TO_STEP', 'GO_TO_MENU', 'VARIABLE_MENU', 'WELCOME'];
+const MOBIUS_STEP_LANGS = ['DEFAULT', 'ENGLISH', 'ARABIC', 'TURKISH', 'PORTUGUES', 'SPANISH', 'UTF'];
+function mobius_oid(?string $id) { return $id === null || $id === '' ? null : ['$oid' => $id]; }
+// Steps that go on to a next step (the others end the call, or jump).
+function mobius_step_continues(string $type): bool { return in_array($type, ['WELCOME', 'WELCOME_INCOMING', 'COLLECT', 'EXTERNAL_SERVICE'], true); }
+function mobius_step_has_options(string $type): bool { return in_array($type, ['MENU', 'VARIABLE_MENU'], true); }
+// Header values are secrets (API keys, hashed passwords): never shown or written to History.
+function mobius_step_safe(array $raw): array {
+    if (!empty($raw['headers']) && is_array($raw['headers'])) foreach ($raw['headers'] as &$h) if (is_array($h)) { foreach (['propertyValue', 'defaultValue'] as $k) if (isset($h[$k]) && $h[$k] !== '') $h[$k] = '•••'; } unset($h);
+    return $raw;
+}
+// Editing a menu's steps needs it unlocked by typing its short code (or name); it stays unlocked for 30 minutes in this browser session.
+function mobius_steps_unlocked(string $menuId): bool { return (int)($_SESSION['mobius_unlock'][$menuId] ?? 0) > time(); }
+function mobius_steps_unlock(array $menu, string $typed): void {
+    if (!mobius_confirm_ok($menu, $typed)) throw new RuntimeException('Type '.(trim($menu['shortcode']) !== '' ? 'the short code '.$menu['shortcode'] : 'the name “'.$menu['name'].'”').' to unlock editing.');
+    $_SESSION['mobius_unlock'][(string)$menu['menuID']] = time() + 1800;
+}
+// What Put back needs for a step change (the full steps, header secrets included) is kept encrypted, apart from the History row.
+function mobius_step_backup_put(int $changeId, array $data): void {
+    portal_pdo()->exec("CREATE TABLE IF NOT EXISTS mobius_step_backups (change_id INT NOT NULL PRIMARY KEY, data_enc MEDIUMTEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+    portal_pdo()->prepare('INSERT INTO mobius_step_backups(change_id, data_enc) VALUES(?,?)')->execute([$changeId, encrypt_secret(json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES))]);
+}
+function mobius_step_backup_get(int $changeId): array {
+    try { $st = portal_pdo()->prepare('SELECT data_enc FROM mobius_step_backups WHERE change_id=?'); $st->execute([$changeId]); $v = $st->fetchColumn(); } catch (Throwable $e) { $v = false; }
+    return $v === false ? [] : (json_decode((string)decrypt_secret((string)$v), true) ?: []);
+}
+function mobius_step_words(array $raw): string { $t = strtoupper((string)($raw['stepType'] ?? '')); $c = (string)($raw['localCode'] ?? ''); $m = trim((string)($raw['message'] ?? ($raw['externalUrl'] ?? '')));
+    return ($c !== '' ? 'key '.$c.' — ' : '').(MOBIUS_STEP_KINDS[$t][0] ?? $t).($m !== '' ? ': '.mb_strimwidth(str_replace("\n", ' ', $m), 0, 60, '…') : ''); }
+// "name = value | default" lines <-> Mobius properties [{propertyName, propertyValue, defaultValue}].
+function mobius_props_parse(string $text, string $what): ?array {
+    $out = [];
+    foreach (preg_split('/\R/', $text) as $n => $line) {
+        $line = trim($line); if ($line === '') continue;
+        if (!preg_match('/^([^=|]+?)\s*(?:=\s*([^|]*?))?\s*(?:\|\s*(.*))?$/', $line, $m)) throw new RuntimeException($what.', line '.($n + 1).': write it as  name = value  (and  | default  if there is one).');
+        $name = trim($m[1]); if (!preg_match('/^[A-Za-z0-9_.\[\]$-]{1,120}$/', $name)) throw new RuntimeException($what.', line '.($n + 1).': "'.$name.'" is not a valid name.');
+        $v = isset($m[2]) && trim($m[2]) !== '' ? trim($m[2]) : null; $d = isset($m[3]) && trim($m[3]) !== '' ? trim($m[3]) : null;
+        $out[] = ['propertyName' => $name, 'propertyValue' => $v, 'defaultValue' => $d];
+    }
+    return $out ?: null;
+}
+function mobius_props_text($props): string {
+    $l = []; foreach ((array)$props as $p) if (is_array($p)) $l[] = ($p['propertyName'] ?? '').(($p['propertyValue'] ?? null) !== null ? ' = '.$p['propertyValue'] : '').(($p['defaultValue'] ?? null) !== null ? ' | '.$p['defaultValue'] : '');
+    return implode("\n", $l);
+}
+// Headers: "Name: value" lines. An empty box keeps the headers the step has.
+function mobius_headers_parse(string $text, $current) {
+    if (trim($text) === '') return $current;
+    $out = [];
+    foreach (preg_split('/\R/', $text) as $n => $line) {
+        $line = trim($line); if ($line === '') continue;
+        if (!preg_match('/^([A-Za-z0-9_-]{1,80})\s*:\s*(.+)$/', $line, $m)) throw new RuntimeException('Headers, line '.($n + 1).': write it as  Name: value');
+        $out[] = ['propertyName' => $m[1], 'propertyValue' => null, 'defaultValue' => trim($m[2])];
+    }
+    return $out ?: null;
+}
+// The step after the form, built on the step as Mobius had it (or an empty one).
+function mobius_step_from_input(array $in, ?array $raw, string $menuId, array $steps, array $menus): array {
+    $type = strtoupper(trim((string)($in['type'] ?? ($raw['stepType'] ?? 'MESSAGE'))));
+    if (!in_array($type, MOBIUS_STEP_TYPES, true) && $type !== ($raw['stepType'] ?? null)) throw new RuntimeException('Choose what the step does.');
+    $s = $raw ?? array_fill_keys(MOBIUS_STEP_FIELDS, null); $s['menuID'] = mobius_oid($menuId); $s['stepType'] = $type;
+    $lang = strtoupper(trim((string)($in['language'] ?? 'DEFAULT'))); if (!in_array($lang, MOBIUS_STEP_LANGS, true)) $lang = 'DEFAULT';
+    $msg = str_replace("\r", '', (string)($in['message'] ?? '')); $msgReq = in_array($type, ['MENU', 'MESSAGE', 'COLLECT'], true);
+    if ($msgReq && trim($msg) === '') throw new RuntimeException('Write the message the customer sees.');
+    if (mb_strlen($msg) > 1000) throw new RuntimeException('The message is too long (1,000 characters at most; a USSD screen shows about 160).');
+    foreach (['message', 'language', 'errorMessage', 'externalUrl', 'mappingType'] as $k) if (!in_array($type, ['EXTERNAL_SERVICE'], true) || in_array($k, ['message', 'language', 'errorMessage'], true)) {} // (kept below)
+    $s['message'] = $msgReq || $type === 'VARIABLE_MENU' ? ($msg === '' ? null : $msg) : null;
+    $s['language'] = $msgReq || $type === 'VARIABLE_MENU' ? $lang : null;
+    $s['errorMessage'] = mobius_step_has_options($type) ? (trim((string)($in['invalid'] ?? '')) === '' ? null : trim((string)$in['invalid'])) : null;
+    if ($type === 'COLLECT' || $type === 'VARIABLE_MENU') {
+        $var = trim((string)($in['variable'] ?? '')); if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]{0,60}$/', $var)) throw new RuntimeException('Give the variable a name (letters, digits and _), for example otherMsisdn.');
+        $s['properties'] = [['propertyName' => $var, 'propertyValue' => null, 'defaultValue' => null]];
+    } elseif ($type !== 'EXTERNAL_SERVICE') $s['properties'] = null;
+    if ($type === 'EXTERNAL_SERVICE') {
+        $url = trim((string)($in['url'] ?? '')); if (!filter_var($url, FILTER_VALIDATE_URL) || !preg_match('~^https?://~i', $url)) throw new RuntimeException('Give the full address of the service (http:// or https://).');
+        $fmt = strtoupper(trim((string)($in['format'] ?? 'JSON'))); if (!in_array($fmt, ['JSON', 'XML', 'ENCODED_FORM'], true)) $fmt = 'JSON';
+        $s['externalUrl'] = $url; $s['mappingType'] = $fmt;
+        $s['properties'] = mobius_props_parse((string)($in['sends'] ?? ''), 'Sends'); $s['responseProperties'] = mobius_props_parse((string)($in['reads'] ?? ''), 'Reads back');
+        $s['headers'] = mobius_headers_parse((string)($in['headers'] ?? ''), $raw['headers'] ?? null);
+    } else { $s['externalUrl'] = null; $s['mappingType'] = null; $s['responseProperties'] = null; if (($raw['stepType'] ?? '') === 'EXTERNAL_SERVICE') $s['headers'] = null; }
+    if ($type === 'GO_TO_STEP') { $t = (string)($in['target_step'] ?? ''); if (!isset($steps[$t])) throw new RuntimeException('Choose the step to go to.'); $s['nextStepID'] = mobius_oid($t); }
+    elseif ($type === 'GO_TO_MENU') { $t = (string)($in['target_menu'] ?? ''); if (!mobius_find_menu($menus, $t)) throw new RuntimeException('Choose the menu to go to.'); $s['nextStepID'] = mobius_oid($t); }
+    elseif (in_array($raw['stepType'] ?? '', ['GO_TO_STEP', 'GO_TO_MENU'], true)) $s['nextStepID'] = null; // was a jump: the target is not a next step
+    elseif (!mobius_step_continues($type) && !mobius_step_has_options($type)) { /* a message keeps whatever next Mobius had (often an end step) */ }
+    return $s;
+}
+// Read the steps of a menu, or fail.
+function mobius_steps_or_fail(array $cfg, string $menuId): array { $r = mobius_menu_steps($cfg, $menuId); if (!$r['ok']) throw new RuntimeException('Could not read the steps from Mobius: '.$r['error']); return $r; }
+function mobius_step_write(array $cfg, array $raw): array {
+    $r = mobius_rest($cfg, 'ussdmenusteps/set', ['data' => $raw]); if (!$r['ok']) throw new RuntimeException('Mobius refused: '.$r['error']);
+    $d = $r['json']['data'] ?? null; return ['id' => is_array($d) ? mobius_id_text($d['_id'] ?? ($d['stepID'] ?? '')) : '', 'raw' => (string)($r['raw'] ?? '')];
+}
+// Edit a step, or add one: $how = 'edit' | 'option' (under a menu, with its key) | 'next' (after $anchor) | 'first' (the Welcome of an empty menu).
+function mobius_step_save(array $cfg, array $menu, string $how, string $anchor, array $in): array {
+    $menuId = (string)$menu['menuID']; if (!mobius_steps_unlocked($menuId)) throw new RuntimeException('Unlock editing for this menu first (type its short code).');
+    $l = mobius_list_menus($cfg); $menus = $l['ok'] ? $l['menus'] : [];
+    $st = mobius_steps_or_fail($cfg, $menuId); $steps = $st['steps'];
+    $code = trim((string)($in['code'] ?? ''));
+    if ($how === 'edit') {
+        if (!isset($steps[$anchor])) throw new RuntimeException('That step is no longer in Mobius.');
+        $before = $steps[$anchor]['_raw']; $new = mobius_step_from_input($in, $before, $menuId, $steps, $menus);
+        if (($before['localCode'] ?? null) !== null || $code !== '') {
+            if ($code === '' && ($before['localCode'] ?? '') !== '') throw new RuntimeException('An option needs its key (the number the customer presses).');
+            foreach ($steps as $o) if ($o['id'] !== $anchor && $o['parent'] === $steps[$anchor]['parent'] && $o['code'] === $code && $code !== '') throw new RuntimeException('Key '.$code.' is already used in this menu.');
+            $new['localCode'] = $code === '' ? null : $code;
+        }
+        if ($new == $before) throw new RuntimeException('Nothing was changed.');
+        $w = mobius_step_write($cfg, $new);
+        $hid = mobius_record_change($menuId, (string)$menu['shortcode'], 'step-edit', null, null, 'Changed '.mobius_step_words($before).($before['stepType'] !== $new['stepType'] || ($before['message'] ?? null) !== ($new['message'] ?? null) ? ' → '.mobius_step_words($new) : ''));
+        mobius_step_backup_put($hid, ['step' => $anchor, 'before' => $before]);
+        audit('mobius_step_edit', null, 'mobius', (string)$menu['shortcode'], json_encode(['menu' => $menuId, 'step' => $anchor, 'type' => $new['stepType']]));
+        return ['id' => $anchor, 'change' => $hid];
+    }
+    if ($how === 'first') { foreach ($steps as $o) if (in_array($o['type'], ['WELCOME', 'WELCOME_INCOMING'], true)) throw new RuntimeException('This menu already starts with a Welcome step.'); $in['type'] = 'WELCOME'; $parent = null; }
+    else {
+        if (!isset($steps[$anchor])) throw new RuntimeException('That step is no longer in Mobius.'); $p = $steps[$anchor]; $parent = $anchor;
+        if ($how === 'option') {
+            if (!mobius_step_has_options($p['type'])) throw new RuntimeException('Options can only be added under a Menu.');
+            if (!preg_match('/^[0-9*#]{1,6}$/', $code)) throw new RuntimeException('Give the option its key: the number the customer presses (0-9, * or #).');
+            foreach ($steps as $o) if ($o['parent'] === $anchor && $o['code'] === $code) throw new RuntimeException('Key '.$code.' is already used in this menu.');
+        } elseif ($how === 'next') {
+            if (!mobius_step_continues($p['type'])) throw new RuntimeException('A '.(MOBIUS_STEP_KINDS[$p['type']][0] ?? $p['type']).' step does not lead on to a next step.');
+            if ($p['next'] !== '' && isset($steps[$p['next']])) throw new RuntimeException('That step already has a next step: change that one instead.');
+        } else throw new RuntimeException('Unknown action.');
+    }
+    $new = mobius_step_from_input($in, null, $menuId, $steps, $menus); $new['parentID'] = mobius_oid($parent); if ($how === 'option') $new['localCode'] = $code;
+    $w = mobius_step_write($cfg, $new); $id = $w['id'];
+    if ($id === '') { $after = mobius_steps_or_fail($cfg, $menuId)['steps']; foreach ($after as $sid => $o) if (!isset($steps[$sid]) && $o['type'] === $new['stepType'] && $o['parent'] === (string)$parent) $id = $sid; }
+    if ($id === '') throw new RuntimeException('Mobius accepted the new step but did not say its id; refresh to see it.');
+    if ($how === 'next') { $pr = $steps[$anchor]['_raw']; $pr['nextStepID'] = mobius_oid($id); mobius_step_write($cfg, $pr); }
+    $hid = mobius_record_change($menuId, (string)$menu['shortcode'], 'step-add', null, null, 'Added '.mobius_step_words($new));
+    mobius_step_backup_put($hid, ['step' => $id, 'how' => $how, 'anchor' => $anchor]);
+    audit('mobius_step_add', null, 'mobius', (string)$menu['shortcode'], json_encode(['menu' => $menuId, 'step' => $id, 'type' => $new['stepType'], 'how' => $how]));
+    return ['id' => $id, 'change' => $hid];
+}
+// The step and everything that hangs from it (its options, and the steps that follow it).
+function mobius_step_subtree(array $steps, string $id): array {
+    $out = []; $todo = [$id];
+    while ($todo) { $x = array_shift($todo); if (isset($out[$x]) || !isset($steps[$x])) continue; $out[$x] = true;
+        foreach ($steps as $o) if ($o['parent'] === $x) $todo[] = $o['id'];
+        $n = $steps[$x]['next']; if ($n !== '' && isset($steps[$n]) && !in_array($steps[$x]['type'], ['GO_TO_STEP', 'GO_TO_MENU'], true) && $steps[$n]['parent'] === $x) $todo[] = $n; }
+    return array_keys($out);
+}
+function mobius_step_delete(array $cfg, array $menu, string $stepId): array {
+    $menuId = (string)$menu['menuID']; if (!mobius_steps_unlocked($menuId)) throw new RuntimeException('Unlock editing for this menu first (type its short code).');
+    $st = mobius_steps_or_fail($cfg, $menuId); $steps = $st['steps']; if (!isset($steps[$stepId])) throw new RuntimeException('That step is no longer in Mobius.');
+    $ids = mobius_step_subtree($steps, $stepId); $gone = array_flip($ids);
+    $jumps = []; foreach ($steps as $o) if (!isset($gone[$o['id']]) && $o['type'] === 'GO_TO_STEP' && isset($gone[$o['next']])) $jumps[] = ($o['code'] !== '' ? 'key '.$o['code'] : $o['id']);
+    if ($jumps) throw new RuntimeException('Other steps jump to what you are deleting ('.implode(', ', $jumps).'). Change or delete those "Go to step" first.');
+    $before = array_map(fn($x) => $steps[$x]['_raw'], $ids);
+    $parentFix = null; foreach ($steps as $o) if (!isset($gone[$o['id']]) && $o['next'] === $stepId && !in_array($o['type'], ['GO_TO_STEP', 'GO_TO_MENU'], true)) $parentFix = $o;
+    foreach (array_reverse($ids) as $x) { $r = mobius_rest($cfg, 'ussdmenusteps/delete', ['data' => $x]); if (!$r['ok']) throw new RuntimeException('Mobius refused to delete a step: '.$r['error'].' (some steps may already be gone — refresh).'); }
+    if ($parentFix) { $pr = $parentFix['_raw']; $pr['nextStepID'] = null; mobius_step_write($cfg, $pr); }
+    $hid = mobius_record_change($menuId, (string)$menu['shortcode'], 'step-delete', null, null, 'Deleted '.mobius_step_words($before[0]).(count($before) > 1 ? ' and '.(count($before) - 1).' step(s) under it' : ''));
+    mobius_step_backup_put($hid, ['steps' => $before, 'relink' => $parentFix['id'] ?? null]);
+    audit('mobius_step_delete', null, 'mobius', (string)$menu['shortcode'], json_encode(['menu' => $menuId, 'step' => $stepId, 'count' => count($ids)]));
+    return ['count' => count($ids), 'change' => $hid];
+}
+// Put back a step change: an edit gets its earlier values, an added step is removed, deleted steps are created again (with new ids, linked as before).
+function mobius_step_restore(array $cfg, array $ch): array {
+    $info = mobius_step_backup_get((int)$ch['id']); $menuId = (string)$ch['menu_id']; if (!$info) throw new RuntimeException('The earlier values were not kept for that change.');
+    $l = mobius_list_menus($cfg); $menu = $l['ok'] ? mobius_find_menu($l['menus'], $menuId) : null; if (!$menu) throw new RuntimeException('That menu is no longer in Mobius.');
+    $st = mobius_steps_or_fail($cfg, $menuId); $steps = $st['steps'];
+    if ($ch['action'] === 'step-edit') {
+        $b = $info['before'] ?? null; if (!is_array($b)) throw new RuntimeException('The earlier values were not kept (the History row is too old).');
+        if (!isset($steps[(string)($info['step'] ?? '')])) throw new RuntimeException('That step is no longer in Mobius.');
+        mobius_step_write($cfg, $b); mobius_record_change($menuId, (string)$ch['shortcode'], 'step-restore', null, null, 'Put back '.mobius_step_words($b));
+        return ['menu' => mobius_menu_public($menu), 'change' => 0, 'steps' => true];
+    }
+    if ($ch['action'] === 'step-add') {
+        $id = (string)($info['step'] ?? ''); if (!isset($steps[$id])) throw new RuntimeException('That step is no longer in Mobius.');
+        $_SESSION['mobius_unlock'][$menuId] = time() + 60; mobius_step_delete($cfg, $menu, $id);
+        return ['menu' => mobius_menu_public($menu), 'change' => 0, 'steps' => true];
+    }
+    if ($ch['action'] === 'step-delete') {
+        $map = []; $list = (array)($info['steps'] ?? []); if (!$list) throw new RuntimeException('The deleted steps were not kept.');
+        foreach ($list as $raw) { $old = mobius_id_text($raw['_id'] ?? ''); $new = $raw; unset($new['_id']);
+            foreach (['parentID', 'nextStepID'] as $k) { $t = mobius_id_text($new[$k] ?? ''); if ($t !== '' && isset($map[$t])) $new[$k] = mobius_oid($map[$t]); }
+            $w = mobius_step_write($cfg, $new); if ($w['id'] === '') throw new RuntimeException('Mobius created a step but did not say its id; check the menu in Mobius.'); $map[$old] = $w['id']; }
+        foreach ($list as $raw) { $old = mobius_id_text($raw['_id'] ?? ''); $n = mobius_id_text($raw['nextStepID'] ?? ''); if ($n !== '' && isset($map[$n]) && mobius_id_text($raw['nextStepID']) !== $map[$n]) { $fix = $raw; $fix['_id'] = mobius_oid($map[$old]); foreach (['parentID', 'nextStepID'] as $k) { $t = mobius_id_text($fix[$k] ?? ''); if (isset($map[$t])) $fix[$k] = mobius_oid($map[$t]); } mobius_step_write($cfg, $fix); } }
+        $rel = (string)($info['relink'] ?? ''); $first = mobius_id_text($list[0]['_id'] ?? '');
+        if ($rel !== '' && isset($steps[$rel], $map[$first])) { $pr = $steps[$rel]['_raw']; $pr['nextStepID'] = mobius_oid($map[$first]); mobius_step_write($cfg, $pr); }
+        mobius_record_change($menuId, (string)$ch['shortcode'], 'step-undelete', null, null, 'Created again '.count($map).' step(s): '.mobius_step_words($list[0]));
+        return ['menu' => mobius_menu_public($menu), 'change' => 0, 'steps' => true];
+    }
+    throw new RuntimeException('That change cannot be put back.');
+}
+
 // Names of the USSD destinations (ussddestinationsettings/list), so a menu shows "SS7 HLR" rather than 69a198b7…: [id => name]. Read-only; [] when refused.
 function mobius_destination_names(array $cfg): array {
     static $memo = null; if ($memo !== null) return $memo;
@@ -498,7 +691,7 @@ function mobius_destination_names(array $cfg): array {
     return $memo = $out;
 }
 // Words for the History card.
-const MOBIUS_ACTION_LABELS = ['create' => 'Created', 'copy' => 'Copied', 'change' => 'Changed', 'rename' => 'Renamed', 'to-portal' => 'Sent to portal', 'restore' => 'Put back', 'delete' => 'Deleted', 'undelete' => 'Created again', 'undo-create' => 'Removed again'];
+const MOBIUS_ACTION_LABELS = ['create' => 'Created', 'copy' => 'Copied', 'change' => 'Changed', 'rename' => 'Renamed', 'to-portal' => 'Sent to portal', 'restore' => 'Put back', 'delete' => 'Deleted', 'undelete' => 'Created again', 'undo-create' => 'Removed again', 'step-edit' => 'Step changed', 'step-add' => 'Step added', 'step-delete' => 'Steps deleted', 'step-restore' => 'Step put back', 'step-undelete' => 'Steps created again'];
 function mobius_action_label(string $a): string { $refused = str_ends_with($a, '-refused'); $b = $refused ? substr($a, 0, -8) : $a; return (MOBIUS_ACTION_LABELS[$b] ?? ucfirst($b)).($refused ? ' — refused' : ''); }
 // The steps of a menu built inside Mobius (its Builder): ['ok', 'steps' => [id => step], 'tree' => nested nodes, 'raw' => rows as Mobius gave them].
 // How Mobius links steps (seen on Main Menu *9606*02141#): WELCOME → nextStepID → MENU; a MENU's options are steps whose parentID is the menu and
