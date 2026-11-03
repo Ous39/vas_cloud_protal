@@ -793,10 +793,10 @@ function mobius_steps_tree(array $steps): array {
     foreach ($steps as $s) if (!isset($placed[$s['id']])) $roots[] = $build($s['id'], 'root', 0); // whatever is left (loops)
     return $roots;
 }
-// How Mobius' Builder names each kind of step, and the colour of its icon.
-const MOBIUS_STEP_KINDS = ['WELCOME' => ['Welcome', 'fa-hashtag', '#3fae5a'], 'WELCOME_INCOMING' => ['Welcome (incoming)', 'fa-hashtag', '#3fae5a'], 'MENU' => ['Menu', 'fa-list-ol', '#7b61ff'],
-    'VARIABLE_MENU' => ['Variable menu', 'fa-list-check', '#7b61ff'], 'MESSAGE' => ['Message Response', 'fa-comment', '#e5534b'], 'COLLECT' => ['Question with input', 'fa-keyboard', '#e0a800'],
-    'GO_TO_STEP' => ['Go to step', 'fa-arrow-right', '#5f6b7a'], 'GO_TO_MENU' => ['Go to menu', 'fa-rotate-right', '#5f6b7a'], 'EXTERNAL_SERVICE' => ['External service', 'fa-cloud-arrow-up', '#1f8ad1'], 'EMPTY' => ['Empty step', 'fa-plus', '#aab3be']];
+// Step kinds as Mobius' Builder shows them: [label, icon, icon colour, icon background] (the same colours as Mobius).
+const MOBIUS_STEP_KINDS = ['WELCOME' => ['Welcome', 'fa-hashtag', '#66a50d', '#ebfcca'], 'WELCOME_INCOMING' => ['Welcome (incoming)', 'fa-hashtag', '#66a50d', '#ebfcca'], 'MENU' => ['Menu', 'fa-sitemap', '#7c3bed', '#ebe7fe'],
+    'VARIABLE_MENU' => ['Variable menu', 'fa-list-check', '#7c3bed', '#ebe7fe'], 'MESSAGE' => ['Message Response', 'fa-comment', '#dc2828', '#fee1e1'], 'COLLECT' => ['Question with input', 'fa-keyboard', '#c88a04', '#fef9c3'],
+    'GO_TO_STEP' => ['Go to step', 'fa-arrow-right', '#5f5f5f', '#f4f4f4'], 'GO_TO_MENU' => ['Go to menu', 'fa-share', '#2c7d41', '#f4f4f4'], 'EXTERNAL_SERVICE' => ['External service', 'fa-globe', '#236bd7', '#deebff'], 'EMPTY' => ['Empty step', 'fa-plus', '#8a96a3', '#f4f4f4']];
 // The second line of a card: what the step says or where it goes.
 function mobius_step_summary(array $s, array $steps, array $menuNames): string {
     $first = fn(string $t) => trim(strtok(str_replace("\r", '', $t), "\n") ?: $t);
