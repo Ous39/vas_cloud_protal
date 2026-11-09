@@ -14,7 +14,7 @@ declare(strict_types=1);
     $alertHistory=recent_alert_history($schema, 15);
     $pct=fn($n,$d)=>$d>0?round(100*$n/$d,1):0;
     $allOff = !$cfg['failure_rate_enabled'] && !$cfg['vendor_silent_enabled'] && !$cfg['vendor_slow_enabled'];
-    layout_start('Alerts & Monitoring');
+    layout_start('Alerts'); monitoring_subnav('alerts');
     ?>
     <div class="metric-grid">
         <div class="metric"><span>Customer transactions (last hour)</span><strong><?=number_format($stats['total'])?></strong></div>

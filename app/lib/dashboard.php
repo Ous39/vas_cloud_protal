@@ -6,7 +6,7 @@ declare(strict_types=1);
 // All of these are bounded to short, recent create_date windows so they only ever touch one or two
 // audit_log partitions, never a full-table scan of a 200M+ row table.
 
-function dashboard_kpis(...$a) { return cached('dashboard_kpis:'.md5(serialize($a)), 60, fn() => dashboard_kpis_uncached(...$a)); }
+function dashboard_kpis(...$a) { return cached('dashboard_kpis:'.md5(serialize($a)), LIVE_TTL, fn() => dashboard_kpis_uncached(...$a)); }
 function dashboard_kpis_uncached(string $schema): array {
     $out = ['tx_today'=>0, 'tx_today_success'=>0, 'tx_today_failed'=>0, 'lookups_today'=>0, 'lookups_failed'=>0, 'offers_active'=>0, 'offers_inactive'=>0, 'subscription_rows_est'=>0];
     if (table_exists($schema, AUDIT_LOG_TABLE)) {
@@ -28,7 +28,7 @@ function dashboard_kpis_uncached(string $schema): array {
     return $out;
 }
 
-function top_vendors_today(...$a) { return cached('top_vendors_today:'.md5(serialize($a)), 60, fn() => top_vendors_today_uncached(...$a)); }
+function top_vendors_today(...$a) { return cached('top_vendors_today:'.md5(serialize($a)), LIVE_TTL, fn() => top_vendors_today_uncached(...$a)); }
 function top_vendors_today_uncached(string $schema, int $limit = 6): array {
     if (!table_exists($schema, AUDIT_LOG_TABLE)) return [];
     $st = pdo($schema)->prepare("SELECT vendor_entity_name, COUNT(*) total, SUM(CASE WHEN NOT ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) failed FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= CURDATE() GROUP BY vendor_entity_name ORDER BY total DESC LIMIT ?");
@@ -38,7 +38,7 @@ function top_vendors_today_uncached(string $schema, int $limit = 6): array {
 
 // Hourly buckets over the last $hours (bounded, same one-or-two-partition footprint as the rest of
 // this section) for the trend charts on the Dashboard and Alerts pages.
-function hourly_transaction_trend(...$a) { return cached('hourly_transaction_trend:'.md5(serialize($a)), 60, fn() => hourly_transaction_trend_uncached(...$a)); }
+function hourly_transaction_trend(...$a) { return cached('hourly_transaction_trend:'.md5(serialize($a)), LIVE_TTL, fn() => hourly_transaction_trend_uncached(...$a)); }
 function hourly_transaction_trend_uncached(string $schema, int $hours = 24): array {
     if (!table_exists($schema, AUDIT_LOG_TABLE)) return [];
     $hours = max(1, min(168, $hours));
@@ -48,8 +48,20 @@ function hourly_transaction_trend_uncached(string $schema, int $hours = 24): arr
     return $st->fetchAll();
 }
 
+// Recompute the live figures the Dashboard and Monitoring pages show (same arguments as the pages use), so the
+// first visitor of the day/hour does not wait for the big audit_log queries. Called by the 5-minute job.
+function warm_live_figures(string $schema): void {
+    $GLOBALS['CACHE_REFRESH'] = true;
+    try { dashboard_kpis($schema); top_vendors_today($schema); hourly_transaction_trend($schema, 24); channel_activity_by_channel($schema, 30); vendor_activity_today($schema); }
+    catch (Throwable $e) { error_log('warm_live_figures: '.$e->getMessage()); }
+    finally { $GLOBALS['CACHE_REFRESH'] = false; }
+}
+// The dashboard's "Recent Activity": what people changed or sent. Routine entries (sign-ins, the 5-minute summary job,
+// page views) stay in the Audit Trail but are left out here, so real changes are not pushed out of the list.
+const RECENT_ACTIVITY_SKIP = ['login', 'logout', 'daily_summary', 'timeline_view'];
 function recent_activity(int $limit = 10): array {
-    $st = portal_pdo()->prepare('SELECT * FROM portal_audit_trail ORDER BY id DESC LIMIT ?');
+    $skip = implode(',', array_map(fn($a) => portal_pdo()->quote($a), RECENT_ACTIVITY_SKIP));
+    $st = portal_pdo()->prepare("SELECT * FROM portal_audit_trail WHERE action NOT IN ($skip) AND action NOT LIKE '%\\_view' ORDER BY id DESC LIMIT ?");
     $st->bindValue(1, $limit, PDO::PARAM_INT); $st->execute();
     return $st->fetchAll();
 }

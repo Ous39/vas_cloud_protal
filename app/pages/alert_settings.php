@@ -32,7 +32,7 @@ declare(strict_types=1);
     $seenReasons = array_column(failure_reasons_breakdown($schema, 24, 30), 'c', 'reason');
     unset($seenReasons['(no reason given)']);
     $allReasons = array_values(array_unique(array_merge(array_keys($seenReasons), $ignoredReasons)));
-    layout_start('Alert Settings');
+    layout_start('Alert Settings'); monitoring_subnav('alert_settings');
     ?>
     <div class="cardx">
         <h3>What to be alerted about</h3>

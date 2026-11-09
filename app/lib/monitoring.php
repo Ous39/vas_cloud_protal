@@ -50,7 +50,7 @@ function vendor_activity_today(string $schema, int $limit = 12): array { return 
 const LOOKUPS_LABEL = 'System lookups (no channel)';
 const LOOKUPS_SQL = "(channel IS NULL OR channel = '')";
 function activity_label(string $name, string $kind): string { return $name === '(none)' ? ($kind === 'channel' ? LOOKUPS_LABEL : '(no vendor recorded)') : $name; }
-function activity_by_column(...$a) { return cached('activity_by_column:'.md5(serialize($a)), 60, fn() => activity_by_column_uncached(...$a)); }
+function activity_by_column(...$a) { return cached('activity_by_column:'.md5(serialize($a)), LIVE_TTL, fn() => activity_by_column_uncached(...$a)); }
 function activity_by_column_uncached(string $schema, string $col, int $limit): array {
     if (!in_array($col, ['channel', 'vendor_entity_name'], true) || !table_exists($schema, AUDIT_LOG_TABLE)) return [];
     $db = pdo($schema); $limit = max(1, min(30, $limit)); $t = ident(AUDIT_LOG_TABLE);

@@ -23,6 +23,14 @@ function nav_can_see(string $page): bool {
 
 // The tab bar every USSD page shows under its title: the pages used every day in one row, the rest under "More".
 // (Refunds is not here any more: it is under Operations. The old builder "Advanced" is under More; Easy Builder replaces it.)
+// Tabs on the Monitoring pages (one entry in the main menu).
+function monitoring_subnav(string $current): void {
+    $tabs = [['monitoring','fa-heart-pulse','Monitoring'],['alerts','fa-triangle-exclamation','Alerts'],['status','fa-server','System Status'],['alert_settings','fa-bell','Alert Settings']];
+    $tabs = array_values(array_filter($tabs, fn($t) => nav_can_see($t[0]))); if (count($tabs) < 2) return;
+    echo '<ul class="nav nav-pills ussd-subnav mb-3">';
+    foreach ($tabs as [$p,$ic,$lb]) echo '<li class="nav-item"><a class="nav-link'.($p===$current?' active':'').'" href="?page='.$p.'"><i class="fa-solid '.$ic.' me-1"></i>'.e($lb).'</a></li>';
+    echo '</ul>';
+}
 function ussd_subnav(string $current): void {
     $main = [['ussd_menus','fa-list','Menus'],['ussd_build','fa-wand-magic-sparkles','Easy Builder'],['mobius_menus','fa-server','Mobius'],['ussd_sim','fa-mobile-screen','Simulator'],['ussd_flows','fa-diagram-project','Service Flows'],['ussd_quiz','fa-circle-question','Quiz'],['ussd_proxy','fa-plug','Proxy']];
     $more = [['ussd_menu','fa-sitemap','Advanced builder (old)'],['shortcodes','fa-hashtag','Short Codes'],['ussd_ivr','fa-route','Routing & IVR']];
@@ -40,14 +48,19 @@ function ussd_subnav(string $current): void {
 
 function layout_start(string $title): void {
     $u=user(); $schema=current_schema(); $current=$_GET['page']??'dashboard';
+    // The main menu: few entries. USSD and Monitoring are one entry each; their pages have their own tab bar.
+    // A top-level entry is [page, icon, label, pages it covers]; the first page of that list the user may open is the link.
+    $ussdPages = ['mobius_menus','ussd_menus','ussd_build','ussd_new','ussd_sim','ussd_flows','ussd_quiz','ussd_proxy','ussd_menu','ussd_ivr'];
     $nav = [
-        ['dashboard','fa-gauge','Dashboard'],
-        ['monitoring','fa-heart-pulse','Monitoring'],
-        ['group','fa-layer-group','Operations',[['refunds','fa-rotate-left','Refunds'],['subscriptions','fa-user-check','Subscriptions'],['offers','fa-tags','Offer Management'],['offer_health','fa-stethoscope','Offer Health'],['esim','fa-sim-card','eSIM Profiles'],['sales','fa-file-invoice-dollar','Sales & Invoices'],['friends_family','fa-user-group','Friends & Family'],['voting','fa-square-poll-vertical','Voting Service']]],
-        ['group','fa-tower-broadcast','Infrastructure',[['ussd_new','fa-plus','Create a USSD menu'],['ussd_menus','fa-list','USSD Menus (portal)'],['mobius_menus','fa-server','USSD Menus in Mobius'],['ussd_build','fa-wand-magic-sparkles','Easy Builder'],['ussd_sim','fa-mobile-screen','USSD Simulator'],['ussd_proxy','fa-plug','USSD Proxy'],['ussd_ivr','fa-route','Routing & IVR'],['integrations','fa-plug-circle-check','Integrations']]],
-        ['group','fa-chart-line','Reports',[['investigate','fa-headset','Complaint Investigation'],['timeline','fa-timeline','Customer Timeline'],['alerts','fa-triangle-exclamation','Alerts'],['offer_report','fa-bullhorn','Offer Performance'],['reports','fa-chart-line','Reports'],['sql','fa-code','SQL Console']]],
-        ['group','fa-gears','Admin',[['tables','fa-database','Database Tables'],['promotions','fa-bullhorn','Promotions'],['projects','fa-diagram-project','Projects'],['shortcodes','fa-hashtag','Short Codes'],['api_keys','fa-key','Partner API Keys'],['alert_settings','fa-bell','Alert Settings'],['retention','fa-database','Data Retention'],['status','fa-server','System Status'],['audit','fa-shield-halved','Audit Trail'],['users','fa-users-gear','Users']]],
+        ['dashboard','fa-gauge','Dashboard',['dashboard']],
+        ['ussd','fa-mobile-screen-button','USSD',$ussdPages],
+        ['monitoring','fa-heart-pulse','Monitoring',['monitoring','alerts','status','vendor']],
+        ['group','fa-layer-group','Operations',[['refunds','fa-rotate-left','Refunds'],['subscriptions','fa-user-check','Subscriptions'],['offers','fa-tags','Offer Management'],['offer_health','fa-stethoscope','Offer Health'],['friends_family','fa-user-group','Friends & Family'],['voting','fa-square-poll-vertical','Voting Service']]],
+        ['group','fa-chart-line','Reports',[['investigate','fa-headset','Complaint Investigation'],['timeline','fa-timeline','Customer Timeline'],['offer_report','fa-bullhorn','Offer Performance']]],
+        ['group','fa-gears','Admin',[['users','fa-users-gear','Users'],['audit','fa-shield-halved','Audit Trail'],['shortcodes','fa-hashtag','Short Codes'],['promotions','fa-bullhorn','Promotions'],['integrations','fa-plug-circle-check','Integrations'],['alert_settings','fa-bell','Alert Settings'],['retention','fa-database','Data Retention'],['tables','fa-table','Database Tables'],['sql','fa-code','SQL Console']]],
     ];
+    // Pages kept but no longer in the menu (little or no use): eSIM Profiles, Sales & Invoices, Projects, Partner API Keys, Reports (a list of links).
+    // They still open from their address (?page=esim, sales, projects, api_keys, reports) for whoever has the permission.
     ?>
 <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title><?=e($title)?> - VAS Cloud</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous" rel="stylesheet"><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" integrity="sha384-t1nt8BQoYMLFN5p42tRAtuAAFQaCQODekUVeKKZrEnEyp4H2R0RHFz0KWpmj7i8g" crossorigin="anonymous"><link href="style.css?v=<?=e(asset_version())?>" rel="stylesheet"><script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js" integrity="sha384-NrKB+u6Ts6AtkIhwPixiKTzgSKNblyhlk0Sohlgar9UHUBzai/sgnNNWWd291xqt" crossorigin="anonymous"></script></head><body>
 <nav class="topnav"><div class="topnav-inner">
@@ -66,9 +79,10 @@ function layout_start(string $title): void {
             <div class="topnav-menu"><?php foreach($children as $c):?><a class="<?=$current===$c[0]?'active':''?>" href="?page=<?=$c[0]?>"><i class="fa-solid <?=$c[1]?>"></i><?=e($c[2])?></a><?php endforeach;?></div>
         </details>
     <?php } else {
-            if (!nav_can_see($item[0])) continue;
+            $to = null; foreach ($item[3] as $pg) if (nav_can_see($pg)) { $to = $pg; break; }
+            if ($to === null) continue;
     ?>
-        <a class="<?=$current===$item[0]?'active':''?>" href="?page=<?=$item[0]?>"><i class="fa-solid <?=$item[1]?>"></i><?=e($item[2])?></a>
+        <a class="<?=in_array($current,$item[3],true)?'active':''?>" href="?page=<?=$to?>"><i class="fa-solid <?=$item[1]?>"></i><?=e($item[2])?></a>
     <?php } endforeach; ?>
     </div>
     <div class="topnav-side">

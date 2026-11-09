@@ -13,7 +13,7 @@ declare(strict_types=1);
     $prio=['down'=>0,'never'=>1,'stale'=>2,'up'=>3,'off'=>4];
     $ints=$snap['integrations']; usort($ints, fn($x,$y)=>($prio[integration_health($x)['state']]<=>$prio[integration_health($y)['state']]) ?: strcmp($x['name'],$y['name']));
     $activeInts=count(array_filter($ints, fn($i)=>$i['status']==='active'));
-    layout_start('Monitoring');
+    layout_start('Monitoring'); monitoring_subnav('monitoring');
     ?>
     <?php foreach($snap['alerts'] as $a):?><div class="alert alert-<?=e($a['level'])?> shadow-sm">⚠ <?=e($a['message'])?> <a class="alert-link" href="?page=alerts">View alerts</a></div><?php endforeach;?>
     <div class="metric-grid">

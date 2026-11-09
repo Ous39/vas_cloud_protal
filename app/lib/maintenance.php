@@ -6,11 +6,15 @@ declare(strict_types=1);
 // cached(key, ttl, fn): returns a stored result younger than ttl seconds, else runs fn and stores it. Kept in
 // vas_portal (not on the Hera server) so all replicas share it, and anything unexpected simply falls back
 // to running the query. Settings that change what a result means call cache_clear().
+// LIVE_TTL: the heavy "today" figures (dashboard, monitoring). The 5-minute job recomputes them in advance
+// (warm_live_figures), so pages read them at once and they are never more than about 5 minutes old.
+const LIVE_TTL = 360;
 function cached(string $key, int $ttl, callable $fn) {
     static $memo = [];
     $k = strlen($key) > 190 ? substr($key, 0, 120).md5($key) : $key;
-    if (array_key_exists($k, $memo)) return $memo[$k];
-    try {
+    $force = !empty($GLOBALS['CACHE_REFRESH']); // set by warm_live_figures: compute again and store
+    if (!$force && array_key_exists($k, $memo)) return $memo[$k];
+    if (!$force) try {
         $st = portal_pdo()->prepare('SELECT value FROM metric_cache WHERE cache_key=? AND expires_at > ?');
         $st->execute([$k, time()]); $v = $st->fetchColumn();
         if ($v !== false) { $d = json_decode((string)$v, true); if (is_array($d) && array_key_exists('v', $d)) return $memo[$k] = $d['v']; }

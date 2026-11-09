@@ -5,7 +5,7 @@ declare(strict_types=1);
     require_perm('manage_api_keys');
     $sections=system_status();
     $bad=0; $warn=0; foreach($sections as $sec) foreach($sec['rows'] as $r0){ if($r0['state']==='bad') $bad++; elseif($r0['state']==='warn') $warn++; }
-    layout_start('System Status');
+    layout_start('System Status'); monitoring_subnav('status');
     ?>
     <div class="cardx">
         <div class="d-flex flex-wrap justify-content-between align-items-center gap-2"><h3 class="mb-0"><i class="fa-solid fa-server me-2"></i>System Status</h3>

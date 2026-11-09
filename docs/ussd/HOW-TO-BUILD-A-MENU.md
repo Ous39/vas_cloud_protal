@@ -1,8 +1,8 @@
 # How to build a USSD menu in VAS Cloud
 
-Everything is on **Infrastructure → USSD Menus (portal)** and **Easy Builder**. You never need to restart anything: customers see an item the moment it is **Active**.
+Everything is under **USSD** in the main menu (its tab bar: Create a menu, Menus, Easy Builder, Mobius, Simulator, …). You never need to restart anything: customers see an item the moment it is **Active**.
 
-## Start here: the Menus page (Infrastructure → USSD Menus)
+## Start here: the Menus page (USSD → Menus)
 
 The Menus page lists every short code — its name, how many items are on or still draft, whether the Menu check is clean and whether it is answering on phones — like the Menus list in Mobius.
 
@@ -12,7 +12,7 @@ The next screen is a **setup checklist** with the exact values to type in **Mobi
 
 **Mobius, from the same page.** Press **Check Mobius** (admins with the settings permission): the portal reads Mobius' own list of menus (the same list as Mobius → USSD Shortcodes) and adds an **In Mobius** column — *in Mobius* (it calls this portal), *points elsewhere* (a menu with that short code exists but belongs to something else) or *not in Mobius*, with a **Create** button that makes the PROXY menu there for you, copying the address and destinations from the menu that already calls this portal. The ✎ button on a row changes the **name and short code** (and, for a menu that is in Mobius, *Extendable*) in the portal and, if you leave the box ticked, in Mobius too. On this page the other menus of the operator (airtime recharge, data usage…) are listed read-only; they are managed on the **Mobius** tab (below). Nothing is ever deleted from Mobius by the portal, and every change is in the audit trail. If Mobius refuses something, its message is shown.
 
-**Create a menu — one way for every menu.** Press **Create a menu** (first in the USSD tab bar, in Infrastructure, and on the Menus, Easy Builder and Mobius pages). Three steps: (1) name and short code — the portal checks as you type that nobody uses it, in the portal or in Mobius; (2) what it should do — *Sell offers, bundles, balance, quiz…* (built in the portal with the Easy Builder; the Mobius PROXY menu is created for you) or *Messages, questions and services* (built in Mobius' Builder from the portal); (3) how it starts — empty, a ready example (*Menu with options*, *Question and reply*, *One message*) or a copy of another menu. The right builder then opens. A menu built in Mobius is tried with its **Try it** tab; one built in the portal with the **Simulator**.
+**Create a menu — one way for every menu.** Press **Create a menu** (first in the USSD tab bar, and on the Menus, Easy Builder and Mobius pages). Three steps: (1) name and short code — the portal checks as you type that nobody uses it, in the portal or in Mobius; (2) what it should do — *Sell offers, bundles, balance, quiz…* (built in the portal with the Easy Builder; the Mobius PROXY menu is created for you) or *Messages, questions and services* (built in Mobius' Builder from the portal); (3) how it starts — empty, a ready example (*Menu with options*, *Question and reply*, *One message*) or a copy of another menu. The right builder then opens. A menu built in Mobius is tried with its **Try it** tab; one built in the portal with the **Simulator**.
 
 **Mobius tab — every menu in Mobius.** USSD → **Mobius** lists every menu in plain words — *Built in Mobius*, *Runs in the portal*, *Push message*, *Other service* (buttons to filter, a search box, 10 a page). **Open** a menu to get its page with tabs: **Builder** (build and change it), **Try it** (a phone on screen that runs the menu: press keys, see each screen; services are not called — you type what they would answer), **Calls**, **Numbers**, **Settings** and **Copy**; **Delete** is at the top right. In the Builder, unlock with the short code, then click a card to change it or a **+** card to add a step; a *Question* or *External service* is added together with the message after it. *Sends* and *Reads back* of a service are a table (+ Add row, ✕, **Paste lines** for long lists). The technical list of what Mobius answered is under *Technical details*.
 - **Builder** — the menu drawn like Mobius' Builder (left to right: Welcome → Menu → one branch per key → Message Response / Go to menu / Question with input / External service / Go to step). Click a card to see everything about the step. To change it, **unlock editing** by typing the menu's short code (30 minutes), then on a card: **Edit**, **+ Add option** (under a Menu, with its key), **+ Add next step** (after Welcome, a question or a service) or **Delete** (the step and everything under it; refused while a *Go to step* still jumps there). An empty menu starts with **Start: add the Welcome step**. Each change goes live in Mobius at once and is in History with **Put back**. Header values of services (API keys, passwords) are never shown: leave the Headers box empty to keep them. A menu that calls the portal is built in Easy Builder instead.
@@ -31,7 +31,7 @@ The calls are those Mobius still keeps; their time is read from Mobius' record i
 
 If the count and the list disagree (e.g. *Mobius lists 0 menus, count says 270*), open **What Mobius answered** on the Mobius tab: it shows Mobius' exact answers (session ids and the portal token hidden). The portal already tries the list in three ways and finds the rows wherever they are in the answer; if it still cannot, send that box to whoever maintains the portal.
 
-## The easiest way: the Easy Builder (Infrastructure → Easy Builder)
+## The easiest way: the Easy Builder (USSD → Easy Builder)
 
 Pick a short code. You see a **phone** on the left showing the screen you are building (drafts included, so you can check before customers can). **Click a line on the phone** to go into that menu; **0. Back** goes up.
 
@@ -88,7 +88,7 @@ If a mistake gets through: **History** (right) keeps every change. Press **Resto
 
 **A phone screen holds about 180 characters.** The Menu check warns when a list is too long — move some items into a submenu.
 
-## Special menus: Service Flows (Admin → Infrastructure → Service Flows)
+## Special menus: Service Flows (USSD → Service Flows)
 
 For anything more than a list — asking for a number, reading something from Hera, a purchase that can succeed, run out of balance or fail, an offer of a loan — build a **service flow**, then put it in a menu with the item type **Service flow**.
 

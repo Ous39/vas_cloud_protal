@@ -26,7 +26,7 @@ The visual design (red `#ff4d4d` Comium theme, top navbar with logo, card/table 
 follows the reference at `Ous39/VASCloud` (branch `VAS_Cloud`) — a separate Spring Boot SMS
 campaign tool built for the same brand. Only the look and feel was adopted, not the tech stack or
 feature set: this app keeps its full page set (19 pages vs. their 6), organized into dropdown nav
-groups (Operations, Infrastructure, Reports, Admin) since a flat navbar doesn't scale to that many
+groups (Operations, Reports, Admin) since a flat navbar doesn't scale to that many. USSD and Monitoring are single entries: their pages share a tab bar (ussd_subnav / monitoring_subnav). Little-used pages (eSIM, Sales, Projects, Partner API Keys, Reports) are kept but left out of the menu
 pages. `Dashboard` and `Monitoring` stay as standalone top-level links by request. The nav
 structure and per-item permission gating live in `layout_start()` / `nav_can_see()` in
 `app/public/index.php`; the color tokens and component styles are in `app/public/style.css`.
