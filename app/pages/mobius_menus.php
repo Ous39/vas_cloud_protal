@@ -5,6 +5,7 @@ declare(strict_types=1);
 // Included by index.php inside its try/catch, after the sign-in, CSRF and $page checks. The rules are in app/lib/mobius.php (mobius_save_menu).
 
     require_perm('manage_api_keys'); $cfg=ussd_proxy_config();
+    if ($_SERVER['REQUEST_METHOD']!=='POST') mobius_sched_tick($cfg); // schedules that are due start / end now
     if ($_SERVER['REQUEST_METHOD']==='POST') {
         $do=(string)($_POST['do']??''); $back='?page=mobius_menus';
         try {
@@ -30,6 +31,11 @@ declare(strict_types=1);
             } elseif ($do==='delete') {
                 $r=mobius_delete_menu($cfg,(string)($_POST['menu_id']??''),(string)($_POST['confirm']??''));
                 flash($r['gone']===false?'warning':'success',($r['gone']===false?'Mobius said yes, but the menu is still listed — check it in Mobius: ':'Deleted from Mobius: ').($r['menu']['shortcode']??'').' — “'.($r['menu']['name']??'').'”. Put back in History creates it again with the same settings.');
+            } elseif ($do==='sched_add' || $do==='sched_stop') {
+                $mid=(string)($_POST['menu_id']??''); $back.='&schedule='.urlencode($mid);
+                if ($do==='sched_add') { mobius_sched_add($cfg,$mid,(string)($_POST['live_code']??''),(string)($_POST['start']??''),(string)($_POST['end']??'')); $r=mobius_sched_apply($cfg);
+                    flash('success','Schedule saved.'.($r['started']?' It started now (the start time had come).':' It starts by itself at the time you chose (within about 5 minutes).')); }
+                else { $how=mobius_sched_stop($cfg,(int)($_POST['id']??0)); flash('success',$how==='cancelled'?'Schedule cancelled: nothing was changed in Mobius.':'Ended now: the short codes are back as they were before.'); }
             } elseif (in_array($do,['unlock','step_save','step_delete'],true)) {
                 $mid=(string)($_POST['menu_id']??''); $l0=mobius_list_menus($cfg); $mm=$l0['ok']?mobius_find_menu($l0['menus'],$mid):null; if(!$mm) throw new RuntimeException('That menu is no longer in Mobius.');
                 $back.='&steps='.urlencode($mid);
@@ -42,6 +48,7 @@ declare(strict_types=1);
             if ($do==='step_save' && str_contains($e->getMessage(), MOBIUS_NO_CREATE)) { $_SESSION['flash']=array_values(array_filter($_SESSION['flash']??[],fn($f)=>$f['msg']!==$e->getMessage())); flash('warning','Mobius does not let the portal create new steps (its API answers with an error). Add this step in Mobius\' own Builder with + (the “Open in Mobius Builder” link below), press Save Menu there, then come back: edit, preview and History work here.'); }
             if ($do==='step_save' && !empty($_POST['menu_id'])) { $_SESSION['mobius_step_form']=(array)($_POST['s']??[]); $q=['op'=>($_POST['how']??'edit')==='edit'?'edit':'add','how'=>(string)($_POST['how']??''),'at'=>(string)($_POST['at']??'')]; $back.='&'.http_build_query($q); }
             if ($do==='save') { $_SESSION['mobius_form']=['menu_id'=>(string)($_POST['menu_id']??''),'m'=>(array)($_POST['m']??[])]; $back.=($_POST['menu_id']??'')!==''?'&edit='.urlencode((string)$_POST['menu_id']):'&new=1'; }
+            elseif ($do==='sched_add'||$do==='sched_stop') $back.='&schedule='.urlencode((string)($_POST['menu_id']??''));
             elseif ($do==='copy'||$do==='delete') $back.='&'.$do.'='.urlencode((string)($_POST['menu_id']??''));
             elseif (!empty($_POST['menu_id'])) $back.='&view='.urlencode((string)$_POST['menu_id']);
         }
@@ -60,7 +67,7 @@ declare(strict_types=1);
     }
     $portalCodes=array_flip(array_map(fn($c)=>rtrim($c,'#'),menu_shortcodes()));
     $viewId=trim((string)($_GET['view']??'')); $editId=trim((string)($_GET['edit']??'')); $isNew=isset($_GET['new']);
-    $act=''; $actId=''; foreach(['calls','stats','steps','try','copy','delete'] as $a) if(trim((string)($_GET[$a]??''))!==''){ $act=$a; $actId=trim((string)$_GET[$a]); break; }
+    $act=''; $actId=''; foreach(['calls','stats','steps','try','schedule','copy','delete'] as $a) if(trim((string)($_GET[$a]??''))!==''){ $act=$a; $actId=trim((string)$_GET[$a]); break; }
     $actMenu=$act!==''?mobius_find_menu($menus,$actId):null; $actData=null;
     if($actMenu && $act==='calls') $actData=mobius_menu_calls($cfg,$actMenu['menuID'],(string)($_GET['msisdn']??''),50,isset($_GET['from'])?(string)$_GET['from']:null);
     if($actMenu && $act==='stats') $actData=mobius_menu_stats($cfg,$actMenu['menuID'],(int)($_GET['max']??1000));
@@ -117,6 +124,8 @@ declare(strict_types=1);
                 <li><a class="dropdown-item" href="#mbHistory"><i class="fa-solid fa-clock-rotate-left fa-fw me-2"></i>History of changes</a></li>
                 <li><hr class="dropdown-divider"></li><li><a class="dropdown-item" href="?page=mobius_menus&new=1"><i class="fa-solid fa-screwdriver-wrench fa-fw me-2"></i>Add a Mobius menu by hand (advanced)</a></li></ul></div>
         </div>
+        <?php $openS=mobius_sched_list(null,true); if($openS):?><div class="alert alert-info py-2 mt-3 mb-0 small"><b><i class="fa-regular fa-clock me-1"></i>Scheduled:</b>
+            <?php foreach($openS as $x): [$sl,$sc]=MOBIUS_SCHED_STATES[$x['state']];?><span class="d-inline-block me-3"><a href="?page=mobius_menus&schedule=<?=urlencode($x['menu_id'])?>"><?=e($x['menu_name'])?></a> → <code><?=e($x['live_code'])?></code> <span class="badge bg-<?=$sc?>"><?=e($sl)?></span> <?=$x['state']==='waiting'?'from '.e(substr($x['start_at'],0,16)):''?><?=$x['end_at']?' until '.e(substr($x['end_at'],0,16)):''?></span><?php endforeach;?></div><?php endif;?>
         <div class="d-flex flex-wrap gap-2 align-items-center mt-3">
             <div class="position-relative flex-grow-1" style="max-width:32rem"><i class="fa-solid fa-magnifying-glass position-absolute text-muted" style="left:.75rem;top:.7rem"></i><input class="form-control ps-5" id="mbFilter" placeholder="Search by name or short code…" autocomplete="off" value="<?=e((string)($_GET['q']??''))?>"></div>
             <div class="btn-group flex-wrap" role="group" id="mbKinds"><button type="button" class="btn btn-sm btn-outline-secondary active" data-kind="">All <span class="badge bg-light text-dark"><?=count($menus)?></span></button>
@@ -135,7 +144,7 @@ declare(strict_types=1);
     <?php else:?>
     <div class="d-flex flex-wrap align-items-center gap-2 mb-1"><a class="btn btn-outline-secondary" href="?page=mobius_menus"><i class="fa-solid fa-arrow-left me-1"></i>All menus</a><span class="small text-muted">Mobius → <?=count($menus)?> menus</span><?php if(!$ok):?><div class="alert alert-danger py-1 px-2 mb-0 small">Could not read Mobius: <?=e($list['error'])?></div><?php endif;?></div>
     <?php $cur=$actMenu?:($view?:$edit); if($cur): $ck=mobius_menu_kind($cur,$cfg); [$ckl,$ckc]=MOBIUS_KINDS[$ck]; $cq=urlencode($cur['menuID']); $tab=$act!==''?$act:($view?'view':'edit');
-        $tabs=[['steps','fa-sitemap','Builder'],['try','fa-mobile-screen','Try it'],['calls','fa-phone','Calls'],['stats','fa-chart-column','Numbers'],['view','fa-gear','Settings'],['copy','fa-regular fa-copy','Copy']];
+        $tabs=[['steps','fa-sitemap','Builder'],['try','fa-mobile-screen','Try it'],['calls','fa-phone','Calls'],['stats','fa-chart-column','Numbers'],['schedule','fa-regular fa-clock','Schedule'],['view','fa-gear','Settings'],['copy','fa-regular fa-copy','Copy']];
         if($ck!=='mobius') $tabs=array_values(array_filter($tabs,fn($t)=>!in_array($t[0],['try'],true)));?>
     <div class="cardx mb-0 pb-0"><div class="d-flex flex-wrap align-items-center gap-2"><div class="me-auto"><h3 class="mb-0"><?=e($cur['name'])?></h3><div class="small"><?=$cur['shortcode']!==''?'<code class="fs-6">'.e($cur['shortcode']).'</code>':'<span class="text-muted">no short code</span>'?> <span class="badge <?=$ckc?> ms-1"><?=e($ckl)?></span></div></div>
         <?php if($ck==='portal' && menu_valid_shortcode(menu_normalize_shortcode($cur['shortcode']))):?><a class="btn btn-sm btn-outline-success" href="?page=ussd_build&short_code=<?=urlencode(menu_normalize_shortcode($cur['shortcode']))?>"><i class="fa-solid fa-wand-magic-sparkles me-1"></i>Easy Builder</a><?php endif;?>
@@ -163,7 +172,7 @@ declare(strict_types=1);
 
     <?php if($act!=='' && !$actMenu):?><div class="alert alert-warning mt-3">That menu is no longer in Mobius (refresh the list).</div><?php endif;?>
     <?php if($actMenu): $am=$actMenu; $amOurs=mobius_menu_is_ours($am,$cfg); $amWord=mobius_confirm_word($am); $base='?page=mobius_menus&'.$act.'='.urlencode($am['menuID']);
-        $titles=['calls'=>'Calls','stats'=>'Numbers','steps'=>'Builder','try'=>'Try it','copy'=>'Copy to a new short code','delete'=>'Delete this menu'];?>
+        $titles=['calls'=>'Calls','stats'=>'Numbers','steps'=>'Builder','try'=>'Try it','schedule'=>'Schedule: when this menu is live','copy'=>'Copy to a new short code','delete'=>'Delete this menu'];?>
     <div class="cardx mt-3 <?=$act==='delete'?'border-danger':'border-primary'?>"><div class="d-flex justify-content-between align-items-start"><h3 class="mb-2 h5"><?=e($titles[$act])?></h3></div>
     <?php if($act==='calls'): $cd=$actData;?>
         <form class="d-flex gap-2 mb-2" method="get"><input type="hidden" name="page" value="mobius_menus"><input type="hidden" name="calls" value="<?=e($am['menuID'])?>"><input class="form-control w-auto" name="msisdn" value="<?=e((string)($_GET['msisdn']??''))?>" placeholder="Number, e.g. 2207700001"><button class="btn btn-outline-primary">Filter</button><?php if(($_GET['msisdn']??'')!==''):?><a class="btn btn-link" href="?page=mobius_menus&calls=<?=urlencode($am['menuID'])?>">All numbers</a><?php endif;?></form>
@@ -196,7 +205,7 @@ declare(strict_types=1);
         if($pd['ok']):?>
         <div class="d-flex flex-wrap align-items-center gap-2 mb-2 p-2 rounded <?=$unl?'bg-success-subtle border border-success':'bg-light border'?>">
             <?php if($unl):?><i class="fa-solid fa-lock-open text-success"></i><span class="small"><b>Editing is on</b> until <?=e(date('H:i',(int)$_SESSION['mobius_unlock'][$am['menuID']]))?>. Click a card, then Edit, Delete or Add. Changes go live in Mobius at once; History → Put back undoes them.</span>
-            <?php if(!$pd['steps']):?><a class="btn btn-sm btn-primary ms-auto" href="<?=e($sb)?>&op=add&how=first">Start: add the Welcome step</a><?php endif;?>
+            <?php if(!$pd['steps']):?><a class="btn btn-sm btn-primary ms-auto" href="<?=e($sb)?>&op=add&how=first">Start: add the first screen</a><?php endif;?>
             <?php else:?><i class="fa-solid fa-lock text-muted"></i><span class="small">To change this menu's steps, unlock editing: type <?=trim($am['shortcode'])!==''?'its short code':'its name'?> <code><?=e($amWord)?></code>.</span>
             <form method="post" class="d-flex gap-2 ms-auto"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="unlock"><input type="hidden" name="menu_id" value="<?=e($am['menuID'])?>"><input class="form-control form-control-sm font-monospace" name="confirm" placeholder="<?=e($amWord)?>" required autocomplete="off" style="width:12rem"><button class="btn btn-sm btn-outline-primary"><i class="fa-solid fa-lock-open me-1"></i>Unlock editing</button></form><?php endif;?>
         </div>
@@ -237,15 +246,15 @@ declare(strict_types=1);
         <?php elseif($unl && ($editStep || ($addMode && ($stepHow==='first' || isset($steps[$stepAt]))))):
             $r0=$editStep['_raw']??null; $f=$stepForm??[];
             $v=fn($k,$d='')=>array_key_exists($k,$f)?(string)$f[$k]:$d;
-            $type=$v('type',$editStep?$editStep['type']:($stepHow==='first'?'WELCOME':'MESSAGE'));
-            $title=$editStep?'Edit '.mobius_step_words($r0):($stepHow==='first'?'Add the Welcome step':($stepHow==='option'?'Add an option to '.mobius_step_words($steps[$stepAt]['_raw']):'Add the step after '.mobius_step_words($steps[$stepAt]['_raw'])));
+            $type=$v('type',$editStep?$editStep['type']:($stepHow==='first'?'MENU':'MESSAGE'));
+            $title=$editStep?'Edit '.mobius_step_words($r0):($stepHow==='first'?'Start the menu: its first screen':($stepHow==='option'?'Add an option to '.mobius_step_words($steps[$stepAt]['_raw']):'Add the step after '.mobius_step_words($steps[$stepAt]['_raw'])));
             $usedKeys=[]; $pid=$editStep?$editStep['parent']:$stepAt; foreach($steps as $o) if($o['parent']===$pid && $o['code']!=='' && (!$editStep||$o['id']!==$editStep['id'])) $usedKeys[]=$o['code'];
             $nextKey=''; if($stepHow==='option'){ for($k=1;$k<=9;$k++) if(!in_array((string)$k,$usedKeys,true)){ $nextKey=(string)$k; break; } }
             $varName=$editStep&&is_array($r0['properties']??null)?(string)($r0['properties'][0]['propertyName']??''):'';?>
         <div class="modal fade mbs-auto" id="mbsModal" tabindex="-1" data-bs-backdrop="static" data-close="<?=e($sb.($stepAt!==''?'&focus='.urlencode($stepAt):''))?>"><div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content"><div class="modal-header py-2"><h5 class="modal-title h6"><?=e($title)?></h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div><div class="modal-body" id="mbsForm">
             <?php if($editStep):?><div class="d-flex flex-wrap gap-2 mb-2"><?php if(mobius_step_has_options($editStep['type'])):?><a class="btn btn-sm btn-outline-primary" href="<?=e($sb)?>&op=add&how=option&at=<?=urlencode($editStep['id'])?>">+ Add option</a><?php endif;?><?php if(mobius_step_continues($editStep['type']) && !($editStep['next']!=='' && isset($steps[$editStep['next']]))):?><a class="btn btn-sm btn-outline-primary" href="<?=e($sb)?>&op=add&how=next&at=<?=urlencode($editStep['id'])?>">+ Add next step</a><?php endif;?><?php if($editStep['type']!=='WELCOME'):?><a class="btn btn-sm btn-outline-danger ms-auto" href="<?=e($sb)?>&op=delete&at=<?=urlencode($editStep['id'])?>">Delete this step</a><?php endif;?></div><?php endif;?>
             <form method="post" class="row g-2"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="step_save"><input type="hidden" name="menu_id" value="<?=e($am['menuID'])?>"><input type="hidden" name="how" value="<?=e($editStep?'edit':$stepHow)?>"><input type="hidden" name="at" value="<?=e($stepAt)?>">
-                <div class="col-12"><label class="small text-muted mb-0">What this step does</label><select class="form-select" name="s[type]" id="mbsType" <?=$stepHow==='first'?'disabled':''?>><?php foreach(($stepHow==='first'?['WELCOME']:array_diff(MOBIUS_STEP_TYPES,['WELCOME'])) as $t):?><option value="<?=$t?>" <?=$type===$t?'selected':''?>><?=e(MOBIUS_STEP_KINDS[$t][0]??$t)?></option><?php endforeach;?><?php if($editStep && !in_array($type,MOBIUS_STEP_TYPES,true)):?><option selected value="<?=e($type)?>"><?=e($type)?></option><?php endif;?></select><?php if($stepHow==='first'):?><input type="hidden" name="s[type]" value="WELCOME"><?php endif;?></div>
+                <div class="col-12"><label class="small text-muted mb-0">What this step does</label><select class="form-select" name="s[type]" id="mbsType"><?php foreach(($stepHow==='first'?['MENU','MESSAGE']:array_diff(MOBIUS_STEP_TYPES,['WELCOME'])) as $t):?><option value="<?=$t?>" <?=$type===$t?'selected':''?>><?=e(MOBIUS_STEP_KINDS[$t][0]??$t)?></option><?php endforeach;?><?php if($editStep && !in_array($type,MOBIUS_STEP_TYPES,true)):?><option selected value="<?=e($type)?>"><?=e($type)?></option><?php endif;?></select><?php if($stepHow==='first'):?><div class="small text-muted">Mobius starts every menu with a Welcome step; it is created together with this first screen.</div><?php endif;?></div>
                 <?php if($stepHow==='option' || ($editStep && $editStep['code']!=='')):?><div class="col-6"><label class="small text-muted mb-0">Key (customer presses)</label><input class="form-control font-monospace" name="s[code]" value="<?=e($v('code',$editStep['code']??$nextKey))?>" maxlength="6" required><?php if($usedKeys):?><div class="small text-muted">Used: <?=e(implode(', ',$usedKeys))?></div><?php endif;?></div><?php endif;?>
                 <div class="col-6" data-for="MENU MESSAGE COLLECT VARIABLE_MENU"><label class="small text-muted mb-0">Language</label><select class="form-select" name="s[language]"><?php foreach(MOBIUS_STEP_LANGS as $lg):?><option <?=$v('language',$r0['language']??'DEFAULT')===$lg?'selected':''?>><?=$lg?></option><?php endforeach;?></select></div>
                 <div class="col-12" data-for="MENU MESSAGE COLLECT VARIABLE_MENU"><label class="small text-muted mb-0">Message (what the customer sees; {variable} puts in a value)</label><textarea class="form-control font-monospace" name="s[message]" rows="5" maxlength="1000"><?=e($v('message',(string)($r0['message']??'')))?></textarea><div class="small text-muted"><span id="mbsCount">0</span> characters (a USSD screen shows about 160)</div><div class="mbt-phone mt-2" id="mbsPhone"></div></div>
@@ -280,6 +289,22 @@ declare(strict_types=1);
         </div></div>
         <script type="application/json" id="simData"><?=json_encode(['steps'=>$sim],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_HEX_TAG|JSON_HEX_AMP)?></script>
         <?php endif;?>
+    <?php elseif($act==='schedule'): $scheds=mobius_sched_list($am['menuID']); $ownLive=false; foreach($scheds as $x) if(in_array($x['state'],['waiting','live'],true)) $ownLive=true;?>
+        <p class="small text-muted mb-2">Mobius has no schedule, so the portal does it with the short codes. <b>At the start</b> this menu gets the live short code; if another menu has that code now (for example the old version), it is parked on a spare code. <b>At the end</b> both go back as they were. It runs by itself within about 5 minutes of the time. Every change is in History.</p>
+        <form method="post" class="row g-2 align-items-end mb-3"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="sched_add"><input type="hidden" name="menu_id" value="<?=e($am['menuID'])?>">
+            <div class="col-md-3"><label class="small text-muted mb-0">Live on short code</label><input class="form-control font-monospace" name="live_code" value="<?=e($am['shortcode'])?>" placeholder="*606#" required></div>
+            <div class="col-md-3"><label class="small text-muted mb-0">Start (empty = now)</label><input type="datetime-local" class="form-control" name="start"></div>
+            <div class="col-md-3"><label class="small text-muted mb-0">End (optional)</label><input type="datetime-local" class="form-control" name="end"></div>
+            <div class="col-md-3"><button class="btn btn-primary w-100"><i class="fa-regular fa-clock me-1"></i>Save schedule</button></div>
+            <div class="col-12 small text-muted">Typical uses: build the new version on a test code (e.g. <code>*9606*0*1#</code>) and schedule it onto <code>*606#</code> for the launch time; or give a promotion menu an end time so it stops by itself. To only take this menu off at a time, keep its own code and fill <b>End</b>.</div>
+        </form>
+        <?php if(!$scheds):?><p class="text-muted mb-0">No schedule for this menu yet.</p><?php else:?>
+        <div class="table-responsive"><table class="table table-sm align-middle mb-0"><thead><tr><th>Short code</th><th>Start</th><th>End</th><th>State</th><th>What happened</th><th></th></tr></thead><tbody>
+        <?php foreach($scheds as $x): [$sl,$sc]=MOBIUS_SCHED_STATES[$x['state']]??[$x['state'],'secondary'];?><tr>
+            <td><code><?=e($x['live_code'])?></code></td><td class="small"><?=e(substr($x['start_at'],0,16))?></td><td class="small"><?=$x['end_at']?e(substr($x['end_at'],0,16)):'<span class="text-muted">—</span>'?></td>
+            <td><span class="badge bg-<?=$sc?><?=$sc==='light'?' text-dark border':''?>"><?=e($sl)?></span></td><td class="small"><?=e((string)$x['note'])?><?=$x['created_by']?'<div class="text-muted">by '.e($x['created_by']).'</div>':''?></td>
+            <td class="text-end"><?php if(in_array($x['state'],['waiting','live'],true)):?><form method="post" class="d-inline" data-confirm="<?=$x['state']==='live'?'End it now and put the short codes back?':'Cancel this schedule?'?>"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="sched_stop"><input type="hidden" name="menu_id" value="<?=e($am['menuID'])?>"><input type="hidden" name="id" value="<?=(int)$x['id']?>"><button class="btn btn-sm <?=$x['state']==='live'?'btn-outline-danger':'btn-outline-secondary'?>"><?=$x['state']==='live'?'End now':'Cancel'?></button></form><?php endif;?></td></tr>
+        <?php endforeach;?></tbody></table></div><?php endif;?>
     <?php elseif($act==='copy'):?>
         <p class="small">Makes a <b>new</b> menu in Mobius with every setting of <code><?=e($am['shortcode'])?></code> (type, address, destination, Extendable). The original is not changed. Put back in History removes the copy.</p>
         <form method="post" class="row g-2" data-confirm="Create the copy in Mobius now?"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="copy"><input type="hidden" name="menu_id" value="<?=e($am['menuID'])?>">

@@ -646,11 +646,13 @@ t('Mobius Builder: unlock, add Welcome / next / options (message, question + rep
       thrown(fn() => mobius_step_save($cfg, $menu, 'first', '', []), 'Unlock editing', 'locked by default');
       thrown(fn() => mobius_steps_unlock($menu, '*7998#'), 'Type the short code', 'unlock needs the code');
       mobius_steps_unlock($menu, '*7999');
-      $w = mobius_step_save($cfg, $menu, 'first', '', ['type' => 'WELCOME']); ok($w['id'] !== '' && preg_match('/^[0-9a-f]{24}$/', $w['id']), 'welcome added although Mobius answers 500 to a step without an id ('.$w['id'].')');
-      ok(count(json_decode(file_get_contents($tmp.'/zt_stub_mobius_steps.json'), true)) === 1, 'and only once');
-      $m = mobius_step_save($cfg, $menu, 'next', $w['id'], ['type' => 'MENU', 'message' => "Pick\n1. Hello\n2. Data", 'language' => 'DEFAULT', 'invalid' => 'Wrong key']);
-      $st = mobius_menu_steps($cfg, 'aa0000000000000000000009')['steps']; ok($st[$w['id']]['next'] === $m['id'] && $st[$m['id']]['parent'] === $w['id'] && $st[$m['id']]['error'] === 'Wrong key', 'menu linked after welcome (next + parent)');
+      thrown(fn() => mobius_step_save($cfg, $menu, 'first', '', ['type' => 'MENU', 'message' => '']), 'Type the text of the first screen', 'first screen needs its text');
+      $m = mobius_step_save($cfg, $menu, 'first', '', ['type' => 'MENU', 'message' => "Pick\n1. Hello\n2. Data", 'language' => 'DEFAULT', 'invalid' => 'Wrong key']);
+      $st = mobius_menu_steps($cfg, 'aa0000000000000000000009')['steps']; $w = ['id' => (string)array_key_first(array_filter($st, fn($x) => $x['type'] === 'WELCOME'))];
+      ok(count($st) === 2 && $w['id'] !== '' && $st[$w['id']]['next'] === $m['id'] && $st[$m['id']]['parent'] === $w['id'] && $st[$m['id']]['error'] === 'Wrong key', 'Welcome and the first screen created together, linked (Mobius refuses a Welcome alone)');
+      thrown(fn() => mobius_step_save($cfg, $menu, 'first', '', ['type' => 'MESSAGE', 'message' => 'x']), 'already starts', 'only one Welcome');
       $raw = json_decode(file_get_contents($tmp.'/zt_stub_mobius_steps.json'), true); ok(is_array($raw[0]['nextStepID']) && $raw[1]['menuID'] === ['$oid' => 'aa0000000000000000000009'], 'ids written as {$oid}');
+      thrown(fn() => mobius_step_delete($cfg, $menu, $m['id']), 'first screen after Welcome', 'the first screen cannot be deleted (Mobius would drop the whole menu)');
       $a = mobius_step_save($cfg, $menu, 'option', $m['id'], ['type' => 'MESSAGE', 'code' => '1', 'message' => 'Hello there']);
       thrown(fn() => mobius_step_save($cfg, $menu, 'option', $m['id'], ['type' => 'MESSAGE', 'code' => '1', 'message' => 'dup']), 'already used', 'duplicate key refused');
       thrown(fn() => mobius_step_save($cfg, $menu, 'option', $m['id'], ['type' => 'COLLECT', 'code' => '2', 'message' => 'Number?', 'variable' => 'otherMsisdn']), MOBIUS_NO_CREATE, 'like the real Mobius: a question alone is refused');
@@ -716,6 +718,36 @@ t('Create a menu: a Mobius-built menu with a ready example, a question, a copy o
       thrown(fn() => mobius_create_built($cfg, 'Dup', '*7777', 'empty'), 'already used', 'a code in use is refused');
       file_put_contents($tmp.'/zt_stub_mobius_nocreate.txt', '1'); $n = mobius_create_built($cfg, 'No steps', '*7781#', 'options'); ok($n['steps'] === false && str_contains($n['note'], MOBIUS_NO_CREATE) && $n['menu'], 'if Mobius refuses the steps: menu made, clear note'); @unlink($tmp.'/zt_stub_mobius_nocreate.txt');
     } finally { foreach (['step500.txt', 'strict.txt', 'nocreate.txt', 'steps.json', 'menus.json'] as $f) @unlink($tmp.'/zt_stub_mobius_'.$f); $db->exec("DELETE b FROM mobius_step_backups b JOIN mobius_menu_changes c ON c.id=b.change_id WHERE c.shortcode LIKE '*77%'"); $db->exec("DELETE FROM mobius_menu_changes WHERE shortcode LIKE '*77%'"); unset($_SESSION['mobius_unlock']); }
+});
+t('Schedules for Mobius menus: live on a short code at a time (the old menu parked), back as before at the end', function () use ($cfgFor, $stub, $db) {
+    $tmp = sys_get_temp_dir(); $store = $tmp.'/zt_stub_mobius_menus.json'; $o = fn($x) => ['$oid' => $x];
+    $cfg = $cfgFor(['mobius_base' => "$stub/mobius/rest/", 'mobius_user' => 'u', 'mobius_pass' => encrypt_secret(md5('p')), 'token' => 'ZT-TOKEN', 'shortcode_proxy' => '*8800#', 'mobius_session' => '', 'mobius_variant' => '0', 'mobius_step_shape' => '']);
+    $mk = fn($id, $name, $code) => ['name' => $name, 'applicationDestinationID' => $o('dd09'), 'shortcodeType' => 'MS_INITIATED', 'shortcode' => $code, 'isExtendable' => false, 'remoteURL' => null, 'tps' => 10, '_id' => $o($id)];
+    $code = fn($id) => mobius_find_menu(mobius_list_menus($cfg)['menus'], $id)['shortcode'] ?? null;
+    try {
+      file_put_contents($tmp.'/zt_stub_mobius_strict.txt', '1');
+      file_put_contents($store, json_encode([$mk('aa00000000000000000000a1', 'Promo old', '*7606#'), $mk('aa00000000000000000000b1', 'Promo new', '*7606*9#'), $mk('aa00000000000000000000c1', 'Other', '*7607#')]));
+      mobius_sched_ready(); $db->exec("DELETE FROM mobius_schedules WHERE live_code LIKE '*76%'");
+      thrown(fn() => mobius_sched_add($cfg, 'aa00000000000000000000b1', '*7606#', '2026-01-01 10:00', '2026-01-01 09:00'), 'end time must be after', 'end before start refused');
+      thrown(fn() => mobius_sched_add($cfg, 'aa00000000000000000000a1', '*7606#', ''), 'already on *7606#', 'same code without an end time refused');
+      $start = date('Y-m-d H:i', time() + 3600); $end = date('Y-m-d H:i', time() + 7200);
+      $id = mobius_sched_add($cfg, 'aa00000000000000000000b1', '*7606#', $start, $end);
+      thrown(fn() => mobius_sched_add($cfg, 'aa00000000000000000000c1', '*7606', $start), 'Another schedule already uses', 'two schedules on one code at once refused');
+      $r = mobius_sched_apply($cfg); ok($r['started'] === 0 && $code('aa00000000000000000000b1') === '*7606*9#', 'nothing happens before the start time');
+      $r = mobius_sched_apply($cfg, date('Y-m-d H:i:s', time() + 3700));
+      ok($r['started'] === 1 && $code('aa00000000000000000000b1') === '*7606#' && $code('aa00000000000000000000a1') === '*0*7606#', 'at the start: new menu on *7606#, old one parked on *0*7606#');
+      $s = mobius_sched_list('aa00000000000000000000b1')[0]; ok($s['state'] === 'live' && $s['prev_menu_id'] === 'aa00000000000000000000a1' && str_contains($s['note'], 'parked'), 'schedule live, remembers the parked menu');
+      $r = mobius_sched_apply($cfg, date('Y-m-d H:i:s', time() + 7300));
+      ok($r['ended'] === 1 && $code('aa00000000000000000000b1') === '*7606*9#' && $code('aa00000000000000000000a1') === '*7606#', 'at the end: both back as before');
+      $h = $db->query("SELECT action FROM mobius_menu_changes WHERE shortcode LIKE '%7606%' ORDER BY id DESC LIMIT 4")->fetchAll(PDO::FETCH_COLUMN); ok(in_array('schedule-live', $h, true) && in_array('schedule-restore', $h, true), 'every step is in History');
+      // end time only: the menu already on the code is parked at the end
+      $e = mobius_sched_add($cfg, 'aa00000000000000000000c1', '*7607#', '', date('Y-m-d H:i', time() + 600)); ok(mobius_sched_list('aa00000000000000000000c1')[0]['state'] === 'live', 'end only: live at once');
+      mobius_sched_apply($cfg, date('Y-m-d H:i:s', time() + 700)); ok($code('aa00000000000000000000c1') === '*0*7607#', 'end only: parked at the end, the code stops answering');
+      // cancel and end now
+      $w = mobius_sched_add($cfg, 'aa00000000000000000000b1', '*7606#', date('Y-m-d H:i', time() + 86400)); ok(mobius_sched_stop($cfg, $w) === 'cancelled' && $code('aa00000000000000000000b1') === '*7606*9#', 'cancel a waiting schedule: nothing changes');
+      $n = mobius_sched_add($cfg, 'aa00000000000000000000b1', '*7606#', ''); mobius_sched_apply($cfg); ok($code('aa00000000000000000000b1') === '*7606#', 'start now');
+      ok(mobius_sched_stop($cfg, $n) === 'ended' && $code('aa00000000000000000000b1') === '*7606*9#' && $code('aa00000000000000000000a1') === '*7606#', 'end now: back as before');
+    } finally { foreach (['strict.txt', 'menus.json'] as $f) @unlink($tmp.'/zt_stub_mobius_'.$f); $db->exec("DELETE FROM mobius_schedules WHERE live_code LIKE '*76%'"); $db->exec("DELETE FROM mobius_menu_changes WHERE shortcode LIKE '%76%'"); }
 });
 t('a menu is renamed in the portal: short code and name together', function () use ($db) {
     $clean = fn() => array_map(fn($t) => $db->exec("DELETE FROM $t WHERE short_code IN ('*8811#','*8812#','*8813#')"), ['ussd_menu_nodes', 'ussd_menu_versions', 'portal_short_codes']);

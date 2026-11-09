@@ -11,7 +11,7 @@ declare(strict_types=1);
         header('Content-Type: application/json'); $c=menu_normalize_shortcode((string)$_GET['check']); $t=ussd_code_taken($c,$mob);
         echo json_encode(['code'=>$c,'valid'=>(bool)preg_match('/^\*[0-9*]{1,38}#$/',$c),'portal_ok'=>menu_valid_shortcode($c),'portal'=>$t['portal'],'mobius'=>$t['mobius']?['name'=>$t['mobius']['name'],'id'=>$t['mobius']['menuID']]:null]); exit;
     }
-    $f=['name'=>trim((string)($_GET['name']??'')),'code'=>trim((string)($_GET['code']??'')),'where'=>($_GET['where']??'')==='mobius'?'mobius':'portal','start'=>'empty','starter'=>'options','copy_portal'=>'','copy_mobius'=>''];
+    $f=['name'=>trim((string)($_GET['name']??'')),'code'=>trim((string)($_GET['code']??'')),'where'=>($_GET['where']??'')==='mobius'?'mobius':'portal','start'=>'starter','starter'=>'options','copy_portal'=>'','copy_mobius'=>''];
     if ($_SERVER['REQUEST_METHOD']==='POST') {
         foreach ($f as $k=>$v) $f[$k]=trim((string)($_POST[$k]??$v));
         try {
@@ -33,9 +33,9 @@ declare(strict_types=1);
                 $start=$f['start']==='copy'?'copy':($f['start']==='empty'?'empty':$f['starter']);
                 if ($start==='copy' && $f['copy_mobius']==='') throw new RuntimeException('Choose the menu to copy.');
                 $r=mobius_create_built($cfg,$name,$code,$start,$f['copy_mobius']); $mid=(string)($r['menu']['menuID']??'');
-                if ($r['steps']) flash('success','Created '.$code.' — “'.$name.'” in Mobius with its first screens. Change the texts in the Builder, then use Try it.');
+                if ($r['steps']) flash('success','Created '.$code.' — “'.$name.'” in Mobius with its first screens. Change the texts in the Builder, test it with Try it, and use the Schedule tab to choose when it goes live.');
                 elseif ($r['note']!=='') flash('warning','Created '.$code.' in Mobius, but its first screens could not be added ('.mb_strimwidth($r['note'],0,200,'…').'). Open “Open in Mobius Builder” on the next page to add the first step there; after that everything else works here.');
-                else flash('success','Created '.$code.' — “'.$name.'” in Mobius. Add its first screen in the Builder.');
+                else flash('success','Created '.$code.' — “'.$name.'” in Mobius. Press “Start: add the first screen” in the Builder.');
                 redirect($mid!==''?'?page=mobius_menus&steps='.urlencode($mid):'?page=mobius_menus');
             }
             throw new RuntimeException('Choose what the menu should do.');
@@ -78,9 +78,11 @@ declare(strict_types=1);
         <div class="d-flex align-items-center gap-3"><button class="btn btn-primary btn-lg"><i class="fa-solid fa-check me-1"></i>Create the menu</button><span class="small text-muted">Nothing is shown to customers until you publish (portal) or until it is ready (Mobius); you can undo from History.</span></div>
     </form>
     <script nonce="<?=e(csp_nonce())?>">
-    (()=>{ const F=document.getElementById('cmForm'); const sync=()=>{ const w=F.where.value, s=F.start.value;
-        F.querySelectorAll('[data-where]').forEach(x=>{ const ok=x.dataset.where===w && (!x.dataset.start || x.dataset.start===s); x.hidden=!ok; x.querySelectorAll('input,select').forEach(i=>i.disabled=!ok); });
-        if(w==='portal' && s==='starter'){ F.querySelector('#cs0').checked=true; } };
+    (()=>{ const F=document.getElementById('cmForm'); let startTouched=false; F.querySelectorAll('[name=start]').forEach(r=>r.addEventListener('change',()=>startTouched=true));
+      const sync=()=>{ const w=F.where.value; let s=F.start.value;
+        if(w==='portal' && s==='starter'){ F.querySelector('#cs0').checked=true; s='empty'; } // the ready examples are for Mobius menus
+        if(w==='mobius' && s==='empty' && !startTouched){ F.querySelector('#cs1').checked=true; s='starter'; } // a Mobius menu starts best from an example
+        F.querySelectorAll('[data-where]').forEach(x=>{ const ok=x.dataset.where===w && (!x.dataset.start || x.dataset.start===s); x.hidden=!ok; x.querySelectorAll('input,select').forEach(i=>i.disabled=!ok); }); };
       F.addEventListener('change',sync); sync();
       const c=document.getElementById('cmCode'), out=document.getElementById('cmCheck'); let t;
       c.addEventListener('input',()=>{ clearTimeout(t); t=setTimeout(async()=>{ const v=c.value.trim(); if(!v){ out.textContent='Type the short code: the portal checks it is free.'; out.className='small mt-1'; return; }

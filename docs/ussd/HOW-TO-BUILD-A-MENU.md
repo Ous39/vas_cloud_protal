@@ -184,3 +184,15 @@ Open **Menu check** first — it names the item and says why. Typical messages:
 - *"…a submenu with nothing Active inside"* — turn something on inside it, or turn the submenu off.
 - *"…too long for one phone screen"* — split the list.
 - *"The USSD Proxy is not fully live"* — endpoint off, Capture mode, or not answering through Mobius (USSD Proxy page).
+
+## When a Mobius menu is live: the Schedule tab
+
+Open the menu (USSD → Menus → In Mobius) and choose the **Schedule** tab. Mobius has no schedule of its own, so the portal does it with the short codes, within about 5 minutes of the time you choose:
+
+- **Start**: the menu gets the **live short code**. If another menu has that code now (for example the old version), it is parked on a spare code (`*0*<code>#`) so the two never clash.
+- **End** (optional): the menu goes back to the code it had before, and the parked menu gets the live code back. To only take a menu off at a time, keep its own code and fill just **End**.
+- **Cancel** a waiting schedule, or **End now** a live one. Every change is in History (Put back works too), and the Mobius list shows what is scheduled.
+
+Typical launch: create the new version on a test code (e.g. `*9606*0*1#`) with **Create a menu**, build it in the Builder, test it with **Try it**, then schedule it onto the real code for the launch time.
+
+A new empty Mobius menu starts with **Start: add the first screen**: Mobius refuses a Welcome step on its own, so the Welcome and the first screen are created together.

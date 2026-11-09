@@ -653,7 +653,19 @@ function mobius_step_save(array $cfg, array $menu, string $how, string $anchor, 
         audit('mobius_step_edit', null, 'mobius', (string)$menu['shortcode'], json_encode(['menu' => $menuId, 'step' => $anchor, 'type' => $new['stepType']]));
         return ['id' => $anchor, 'change' => $hid];
     }
-    if ($how === 'first') { foreach ($steps as $o) if (in_array($o['type'], ['WELCOME', 'WELCOME_INCOMING'], true)) throw new RuntimeException('This menu already starts with a Welcome step.'); $in['type'] = 'WELCOME'; $parent = null; }
+    if ($how === 'first') { // Mobius refuses a Welcome on its own: the Welcome and the first screen are created together
+        foreach ($steps as $o) if (in_array($o['type'], ['WELCOME', 'WELCOME_INCOMING'], true)) throw new RuntimeException('This menu already starts with a Welcome step.');
+        $type = in_array($in['type'] ?? '', ['MENU', 'MESSAGE'], true) ? $in['type'] : 'MENU'; $in['type'] = $type;
+        if (trim((string)($in['message'] ?? '')) === '') throw new RuntimeException('Type the text of the first screen.');
+        $wid = mobius_new_oid(); $sid = mobius_new_oid();
+        $w = array_fill_keys(MOBIUS_STEP_FIELDS, null); $w['menuID'] = mobius_oid($menuId); $w['stepType'] = 'WELCOME'; $w['_id'] = mobius_oid($wid); $w['nextStepID'] = mobius_oid($sid);
+        $first = mobius_step_from_input($in, null, $menuId, $steps, $menus); $first['parentID'] = mobius_oid($wid); $first['_id'] = mobius_oid($sid);
+        mobius_steps_create($cfg, [$w, $first], $steps);
+        $hid = mobius_record_change($menuId, (string)$menu['shortcode'], 'step-add', null, null, 'Added the Welcome and '.mobius_step_words($first));
+        mobius_step_backup_put($hid, ['step' => $wid, 'how' => 'first', 'anchor' => '']);
+        audit('mobius_step_add', null, 'mobius', (string)$menu['shortcode'], json_encode(['menu' => $menuId, 'step' => $wid, 'type' => 'WELCOME+'.$type, 'how' => 'first']));
+        return ['id' => $sid, 'change' => $hid];
+    }
     else {
         if (!isset($steps[$anchor])) throw new RuntimeException('That step is no longer in Mobius.'); $p = $steps[$anchor]; $parent = $anchor;
         if ($how === 'option') {
@@ -698,6 +710,7 @@ function mobius_step_delete(array $cfg, array $menu, string $stepId): array {
     if ($jumps) throw new RuntimeException('Other steps jump to what you are deleting ('.implode(', ', $jumps).'). Change or delete those "Go to step" first.');
     $before = array_map(fn($x) => $steps[$x]['_raw'], $ids);
     $parentFix = null; foreach ($steps as $o) if (!isset($gone[$o['id']]) && $o['next'] === $stepId && !in_array($o['type'], ['GO_TO_STEP', 'GO_TO_MENU'], true)) $parentFix = $o;
+    if ($parentFix && in_array($parentFix['type'], ['WELCOME', 'WELCOME_INCOMING'], true)) throw new RuntimeException('This is the first screen after Welcome: Mobius would remove the whole menu with it. Change it (Edit) instead of deleting it.');
     foreach (array_reverse($ids) as $x) { $r = mobius_rest($cfg, 'ussdmenusteps/delete', ['data' => $x]); if (!$r['ok']) throw new RuntimeException('Mobius refused to delete a step: '.$r['error'].' (some steps may already be gone — refresh).'); }
     if ($parentFix) { $pr = $parentFix['_raw']; $pr['nextStepID'] = null; mobius_step_write($cfg, $pr); }
     $hid = mobius_record_change($menuId, (string)$menu['shortcode'], 'step-delete', null, null, 'Deleted '.mobius_step_words($before[0]).(count($before) > 1 ? ' and '.(count($before) - 1).' step(s) under it' : ''));
@@ -754,7 +767,7 @@ function mobius_menu_kind(array $m, array $cfg): string {
     return $t === 'MS_INITIATED' ? 'mobius' : ($t === 'NETWORK_INITIATED' ? 'push' : 'other');
 }
 // Words for the History card.
-const MOBIUS_ACTION_LABELS = ['create' => 'Created', 'copy' => 'Copied', 'change' => 'Changed', 'rename' => 'Renamed', 'to-portal' => 'Sent to portal', 'restore' => 'Put back', 'delete' => 'Deleted', 'undelete' => 'Created again', 'undo-create' => 'Removed again', 'step-edit' => 'Step changed', 'step-add' => 'Step added', 'step-delete' => 'Steps deleted', 'step-restore' => 'Step put back', 'step-undelete' => 'Steps created again'];
+const MOBIUS_ACTION_LABELS = ['schedule-live' => 'Went live (schedule)', 'schedule-park' => 'Parked (schedule)', 'schedule-end' => 'Ended (schedule)', 'schedule-restore' => 'Back live (schedule)', 'create' => 'Created', 'copy' => 'Copied', 'change' => 'Changed', 'rename' => 'Renamed', 'to-portal' => 'Sent to portal', 'restore' => 'Put back', 'delete' => 'Deleted', 'undelete' => 'Created again', 'undo-create' => 'Removed again', 'step-edit' => 'Step changed', 'step-add' => 'Step added', 'step-delete' => 'Steps deleted', 'step-restore' => 'Step put back', 'step-undelete' => 'Steps created again'];
 function mobius_action_label(string $a): string { $refused = str_ends_with($a, '-refused'); $b = $refused ? substr($a, 0, -8) : $a; return (MOBIUS_ACTION_LABELS[$b] ?? ucfirst($b)).($refused ? ' — refused' : ''); }
 // The steps of a menu built inside Mobius (its Builder): ['ok', 'steps' => [id => step], 'tree' => nested nodes, 'raw' => rows as Mobius gave them].
 // How Mobius links steps (seen on Main Menu *9606*02141#): WELCOME → nextStepID → MENU; a MENU's options are steps whose parentID is the menu and
@@ -1020,4 +1033,116 @@ function ussd_proxy_endpoint(): never {
     ussd_proxy_write_log($mode, $ip, $get, $raw, $res['body'], (int)round((microtime(true) - $t0) * 1000), $res['note'] ?? '');
     header('Content-Type: '.$res['ctype']); header('Cache-Control: no-store'); header('X-Content-Type-Options: nosniff');
     echo $res['body']; exit;
+}
+
+// ---- Schedules for menus in Mobius: put a menu live on a short code at a time, and (optionally) take it off at another ----
+// Mobius has no schedule of its own, so the portal does it with the short codes:
+//  * at the start, the menu gets the live short code. If another menu has that code now (e.g. the old version), that menu is
+//    parked on a spare code (*0*<code>#) so the two do not clash;
+//  * at the end, the menu goes back to the code it had before, and the parked menu gets the live code back.
+//    If the menu was already on the live code (an end time only), it is parked, so the code stops answering.
+// Run by the 5-minute job and whenever the Mobius page is opened (so the start/end happen within about 5 minutes).
+function mobius_sched_ready(): void {
+    static $done = false; if ($done) return;
+    portal_pdo()->exec("CREATE TABLE IF NOT EXISTS mobius_schedules (id INT NOT NULL AUTO_INCREMENT PRIMARY KEY, menu_id VARCHAR(40) NOT NULL, menu_name VARCHAR(190) NOT NULL DEFAULT '',
+        live_code VARCHAR(60) NOT NULL, own_code VARCHAR(60) NOT NULL DEFAULT '', start_at DATETIME NOT NULL, end_at DATETIME NULL, state VARCHAR(12) NOT NULL DEFAULT 'waiting',
+        prev_menu_id VARCHAR(40) NULL, prev_name VARCHAR(190) NULL, parked_code VARCHAR(60) NULL, note VARCHAR(500) NULL, created_by VARCHAR(80) NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, KEY st (state, start_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+    $done = true;
+}
+const MOBIUS_SCHED_STATES = ['waiting' => ['Waiting', 'secondary'], 'live' => ['Live', 'success'], 'ended' => ['Ended', 'dark'], 'cancelled' => ['Cancelled', 'light'], 'failed' => ['Failed', 'danger']];
+function mobius_sched_list(?string $menuId = null, bool $openOnly = false): array {
+    mobius_sched_ready(); $w = []; $p = [];
+    if ($menuId !== null) { $w[] = 'menu_id=?'; $p[] = $menuId; }
+    if ($openOnly) $w[] = "state IN ('waiting','live')";
+    $st = portal_pdo()->prepare('SELECT * FROM mobius_schedules'.($w ? ' WHERE '.implode(' AND ', $w) : '').' ORDER BY (state IN (\'waiting\',\'live\')) DESC, start_at DESC, id DESC LIMIT 100');
+    $st->execute($p); return $st->fetchAll();
+}
+// A short code nobody uses, to park a menu on: *0*606# for *606#, then *0*606*1#, ...
+function mobius_sched_spare_code(array $menus, string $live): string {
+    $digits = trim(mobius_bare_code($live), '*'); $used = []; foreach ($menus as $m) $used[mobius_bare_code((string)$m['shortcode'])] = true;
+    for ($i = 0; $i < 50; $i++) { $c = '*0*'.$digits.($i ? '*'.$i : '').'#'; if (!isset($used[mobius_bare_code($c)])) return $c; }
+    throw new RuntimeException('No spare short code found to park the other menu.');
+}
+function mobius_sched_add(array $cfg, string $menuId, string $liveCode, string $start, string $end = ''): int {
+    mobius_sched_ready();
+    $l = mobius_list_menus($cfg); if (!$l['ok']) throw new RuntimeException('Could not read Mobius: '.$l['error']);
+    $m = mobius_find_menu($l['menus'], $menuId) ?? throw new RuntimeException('That menu is no longer in Mobius.');
+    $liveCode = preg_replace('/\s+/', '', $liveCode); if ($liveCode !== '' && !str_ends_with($liveCode, '#')) $liveCode .= '#';
+    if (!preg_match('/^\*[0-9*]{1,38}#$/', $liveCode)) throw new RuntimeException('The live short code looks like *606# — a *, numbers, ending with #.');
+    $from = menu_parse_when($start); $until = menu_parse_when($end);
+    $own = trim((string)$m['shortcode']); $already = mobius_bare_code($own) === mobius_bare_code($liveCode);
+    if ($already && $until === null) throw new RuntimeException('This menu is already on '.$liveCode.'. Give an end time to take it off, or build the new version on a test code and schedule that one onto '.$liveCode.'.');
+    if ($from === null) $from = date('Y-m-d H:i:00');
+    if ($until !== null && $until <= $from) throw new RuntimeException('The end time must be after the start time.');
+    if ($until !== null && $until <= date('Y-m-d H:i:s')) throw new RuntimeException('The end time is already past.');
+    foreach (mobius_sched_list(null, true) as $o) if (mobius_bare_code($o['live_code']) === mobius_bare_code($liveCode) && ($o['end_at'] === null || $o['end_at'] > $from) && ($until === null || $o['start_at'] < $until))
+        throw new RuntimeException('Another schedule already uses '.$liveCode.' at that time (“'.$o['menu_name'].'”, from '.substr($o['start_at'], 0, 16).'). Cancel it first.');
+    $u = function_exists('user') ? (user()['username'] ?? null) : null;
+    portal_pdo()->prepare('INSERT INTO mobius_schedules(menu_id, menu_name, live_code, own_code, start_at, end_at, state, created_by) VALUES(?,?,?,?,?,?,?,?)')
+        ->execute([$menuId, (string)$m['name'], $liveCode, $own, $from, $until, $already ? 'live' : 'waiting', $u]);
+    $id = (int)portal_pdo()->lastInsertId();
+    audit('mobius_schedule_add', null, 'mobius', $liveCode, json_encode(['menu' => $menuId, 'from' => $from, 'until' => $until]));
+    return $id;
+}
+function mobius_sched_set(int $id, array $f): void {
+    $k = array_keys($f); portal_pdo()->prepare('UPDATE mobius_schedules SET '.implode(',', array_map(fn($x) => "$x=?", $k)).' WHERE id=?')->execute([...array_values($f), $id]);
+}
+// Give a menu a new short code (whoever owns it: the code typed as confirmation is the menu's own).
+function mobius_sched_recode(array $cfg, array $menus, string $menuId, string $code, string $action): void {
+    $m = mobius_find_menu($menus, $menuId) ?? throw new RuntimeException('Menu '.$menuId.' is no longer in Mobius.');
+    if (mobius_bare_code((string)$m['shortcode']) === mobius_bare_code($code)) return;
+    $in = mobius_menu_public($m); $in['shortcode'] = $code;
+    mobius_save_menu($cfg, $menuId, $in, trim((string)$m['shortcode']) !== '' ? (string)$m['shortcode'] : (string)$m['name'], $action);
+}
+function mobius_sched_start(array $cfg, array $s): void {
+    $l = mobius_list_menus($cfg); if (!$l['ok']) throw new RuntimeException('Could not read Mobius: '.$l['error']);
+    $holder = null; foreach ($l['menus'] as $m) { $m = mobius_menu_norm($m); if ((string)$m['menuID'] !== $s['menu_id'] && mobius_bare_code((string)$m['shortcode']) === mobius_bare_code($s['live_code'])) $holder = $m; }
+    $f = ['state' => 'live'];
+    if ($holder) {
+        $park = mobius_sched_spare_code($l['menus'], $s['live_code']);
+        mobius_sched_recode($cfg, $l['menus'], (string)$holder['menuID'], $park, 'schedule-park');
+        $f += ['prev_menu_id' => (string)$holder['menuID'], 'prev_name' => (string)$holder['name'], 'parked_code' => $park];
+        $l = mobius_list_menus($cfg); if (!$l['ok']) throw new RuntimeException('Could not read Mobius: '.$l['error']);
+    }
+    mobius_sched_recode($cfg, $l['menus'], $s['menu_id'], $s['live_code'], 'schedule-live');
+    $f['note'] = 'Live on '.$s['live_code'].' since '.date('Y-m-d H:i').($holder ? '; “'.$holder['name'].'” parked on '.$f['parked_code'] : '');
+    mobius_sched_set((int)$s['id'], $f);
+}
+function mobius_sched_end(array $cfg, array $s): void {
+    $l = mobius_list_menus($cfg); if (!$l['ok']) throw new RuntimeException('Could not read Mobius: '.$l['error']);
+    $back = $s['own_code'];
+    if ($back === '' || mobius_bare_code($back) === mobius_bare_code($s['live_code'])) $back = mobius_sched_spare_code($l['menus'], $s['live_code']); // it was already live: park it
+    mobius_sched_recode($cfg, $l['menus'], $s['menu_id'], $back, 'schedule-end');
+    $note = 'Ended '.date('Y-m-d H:i').': back on '.$back;
+    if (!empty($s['prev_menu_id'])) {
+        $l = mobius_list_menus($cfg); if (!$l['ok']) throw new RuntimeException('Could not read Mobius: '.$l['error']);
+        mobius_sched_recode($cfg, $l['menus'], (string)$s['prev_menu_id'], $s['live_code'], 'schedule-restore'); $note .= '; “'.$s['prev_name'].'” is on '.$s['live_code'].' again';
+    }
+    mobius_sched_set((int)$s['id'], ['state' => 'ended', 'note' => mb_substr($note, 0, 500)]);
+}
+// Start and end whatever is due. Returns ['started' => n, 'ended' => n, 'failed' => n].
+function mobius_sched_apply(array $cfg, ?string $now = null): array {
+    mobius_sched_ready(); $now = $now ?? date('Y-m-d H:i:s'); $r = ['started' => 0, 'ended' => 0, 'failed' => 0];
+    $due = portal_pdo()->prepare("SELECT * FROM mobius_schedules WHERE (state='waiting' AND start_at<=?) OR (state='live' AND end_at IS NOT NULL AND end_at<=?) ORDER BY start_at, id"); $due->execute([$now, $now]);
+    foreach ($due->fetchAll() as $s) {
+        try {
+            if ($s['state'] === 'waiting') { if ($s['end_at'] !== null && $s['end_at'] <= $now) { mobius_sched_set((int)$s['id'], ['state' => 'ended', 'note' => 'Start and end both passed before it could run; nothing was changed.']); continue; }
+                mobius_sched_start($cfg, $s); $r['started']++; }
+            else { mobius_sched_end($cfg, $s); $r['ended']++; }
+        } catch (Throwable $e) { $r['failed']++; mobius_sched_set((int)$s['id'], ['state' => 'failed', 'note' => mb_substr(($s['state'] === 'waiting' ? 'Could not go live: ' : 'Could not end: ').$e->getMessage(), 0, 500)]); error_log('mobius schedule '.$s['id'].': '.$e->getMessage()); }
+    }
+    if ($r['started'] + $r['ended'] + $r['failed']) audit('mobius_schedule_applied', null, 'mobius', null, json_encode($r));
+    return $r;
+}
+function mobius_sched_tick(array $cfg): void {
+    if ($cfg['mobius_user'] === '') return;
+    try { cached('mobius_schedule_tick', 30, fn() => mobius_sched_apply($cfg)); } catch (Throwable $e) { error_log('mobius schedule: '.$e->getMessage()); }
+}
+// Cancel a waiting schedule, or end a live one now.
+function mobius_sched_stop(array $cfg, int $id): string {
+    mobius_sched_ready(); $st = portal_pdo()->prepare('SELECT * FROM mobius_schedules WHERE id=?'); $st->execute([$id]); $s = $st->fetch() ?: throw new RuntimeException('That schedule no longer exists.');
+    if ($s['state'] === 'waiting') { mobius_sched_set($id, ['state' => 'cancelled', 'note' => 'Cancelled '.date('Y-m-d H:i')]); audit('mobius_schedule_cancel', null, 'mobius', $s['live_code'], (string)$id); return 'cancelled'; }
+    if ($s['state'] === 'live') { mobius_sched_end($cfg, $s); audit('mobius_schedule_end_now', null, 'mobius', $s['live_code'], (string)$id); return 'ended'; }
+    throw new RuntimeException('That schedule has already finished.');
 }

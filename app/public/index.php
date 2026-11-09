@@ -10,6 +10,7 @@ if ($page==='alert_cron') {
     foreach (['HeraProduction','HeraTesting'] as $s) dispatch_pending_alert_notifications($s);
     portal_housekeeping();
     foreach (['HeraProduction'] as $s) if (in_array($s, allowed_schemas(), true)) warm_live_figures($s);
+    try { $mc = ussd_proxy_config(); if ($mc['mobius_user'] !== '') mobius_sched_apply($mc); } catch (Throwable $e) { error_log('mobius schedule: '.$e->getMessage()); }
     try { menu_apply_schedules(); } catch (Throwable $e) { error_log('menu schedule: '.$e->getMessage()); }
     if (in_array('HeraProduction', allowed_schemas(), true)) { try { maybe_send_daily_summary('HeraProduction'); } catch (Throwable $e) { error_log('daily summary: '.$e->getMessage()); } }
     header('Content-Type: text/plain'); exit('OK');
