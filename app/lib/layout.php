@@ -22,7 +22,7 @@ function nav_can_see(string $page): bool {
 }
 
 // The tab bar every USSD page shows under its title: the pages used every day in one row, the rest under "More".
-// (Refunds is not here any more: it is under Operations. The old builder "Advanced" is under More; Easy Builder replaces it.)
+// (Refunds is not here any more: it is under Operations. The old builder "Advanced" is under the USSD tab bar's Settings; Easy Builder replaces it.)
 // Tabs on the Monitoring pages (one entry in the main menu).
 function monitoring_subnav(string $current): void {
     $tabs = [['monitoring','fa-heart-pulse','Monitoring'],['alerts','fa-triangle-exclamation','Alerts'],['status','fa-server','System Status'],['alert_settings','fa-bell','Alert Settings']];
@@ -31,19 +31,36 @@ function monitoring_subnav(string $current): void {
     foreach ($tabs as [$p,$ic,$lb]) echo '<li class="nav-item"><a class="nav-link'.($p===$current?' active':'').'" href="?page='.$p.'"><i class="fa-solid '.$ic.' me-1"></i>'.e($lb).'</a></li>';
     echo '</ul>';
 }
+// The USSD tab bar: few entries. Pages that do the same kind of job share one entry, and a small switch under the bar
+// moves between them (Menus: in the portal / in Mobius; Special menus: Service Flows / Quiz). Set-once pages are under Settings.
 function ussd_subnav(string $current): void {
-    $main = [['ussd_menus','fa-list','Menus'],['ussd_build','fa-wand-magic-sparkles','Easy Builder'],['mobius_menus','fa-server','Mobius'],['ussd_sim','fa-mobile-screen','Simulator'],['ussd_flows','fa-diagram-project','Service Flows'],['ussd_quiz','fa-circle-question','Quiz'],['ussd_proxy','fa-plug','Proxy']];
-    $more = [['ussd_menu','fa-sitemap','Advanced builder (old)'],['shortcodes','fa-hashtag','Short Codes'],['ussd_ivr','fa-route','Routing & IVR']];
-    $more = array_values(array_filter($more, fn($t) => nav_can_see($t[0]))); $inMore = null; foreach ($more as $t) if ($t[0] === $current) $inMore = $t;
-    echo '<ul class="nav nav-pills ussd-subnav mb-3">';
+    $groups = [
+        ['fa-list', 'Menus', [['ussd_menus', 'In the portal'], ['mobius_menus', 'In Mobius']]],
+        ['fa-wand-magic-sparkles', 'Builder', [['ussd_build', 'Easy Builder']]],
+        ['fa-mobile-screen', 'Try it', [['ussd_sim', 'Simulator']]],
+        ['fa-diagram-project', 'Special menus', [['ussd_flows', 'Service Flows'], ['ussd_quiz', 'Quiz']]],
+    ];
+    $settings = [['ussd_proxy', 'fa-plug', 'Proxy (connection to Mobius)'], ['shortcodes', 'fa-hashtag', 'Short Codes'], ['ussd_ivr', 'fa-route', 'Routing & IVR'], ['ussd_menu', 'fa-sitemap', 'Advanced builder (old)']];
+    $settings = array_values(array_filter($settings, fn($t) => nav_can_see($t[0]))); $inSet = null; foreach ($settings as $t) if ($t[0] === $current) $inSet = $t;
+    $switch = null;
+    echo '<ul class="nav nav-pills ussd-subnav mb-2">';
     if (nav_can_see('ussd_new')) echo '<li class="nav-item"><a class="nav-link nav-create'.($current==='ussd_new'?' active':'').'" href="?page=ussd_new"><i class="fa-solid fa-plus me-1"></i>Create a menu</a></li>';
-    foreach ($main as [$p,$ic,$lb]) { if (!nav_can_see($p)) continue; echo '<li class="nav-item"><a class="nav-link'.($p===$current?' active':'').'" href="?page='.$p.'"><i class="fa-solid '.$ic.' me-1"></i>'.e($lb).'</a></li>'; }
-    if ($more) {
-        echo '<li class="nav-item dropdown"><a class="nav-link dropdown-toggle'.($inMore?' active':'').'" href="#" role="button" data-bs-toggle="dropdown" data-bs-popper-config=\'{"strategy":"fixed"}\' aria-expanded="false">'.($inMore?'<i class="fa-solid '.$inMore[1].' me-1"></i>'.e($inMore[2]):'More').'</a><ul class="dropdown-menu dropdown-menu-end">';
-        foreach ($more as [$p,$ic,$lb]) echo '<li><a class="dropdown-item'.($p===$current?' active':'').'" href="?page='.$p.'"><i class="fa-solid '.$ic.' fa-fw me-2"></i>'.e($lb).'</a></li>';
+    foreach ($groups as [$ic, $lb, $pages]) {
+        $pages = array_values(array_filter($pages, fn($p) => nav_can_see($p[0]))); if (!$pages) continue;
+        $on = in_array($current, array_column($pages, 0), true); if ($on && count($pages) > 1) $switch = $pages;
+        echo '<li class="nav-item"><a class="nav-link'.($on?' active':'').'" href="?page='.$pages[0][0].'"><i class="fa-solid '.$ic.' me-1"></i>'.e($lb).'</a></li>';
+    }
+    if ($settings) {
+        echo '<li class="nav-item dropdown"><a class="nav-link dropdown-toggle'.($inSet?' active':'').'" href="#" role="button" data-bs-toggle="dropdown" data-bs-popper-config=\'{"strategy":"fixed"}\' aria-expanded="false"><i class="fa-solid '.($inSet?$inSet[1]:'fa-gear').' me-1"></i>'.($inSet?e($inSet[2]):'Settings').'</a><ul class="dropdown-menu dropdown-menu-end">';
+        foreach ($settings as [$p,$ic,$lb]) echo '<li><a class="dropdown-item'.($p===$current?' active':'').'" href="?page='.$p.'"><i class="fa-solid '.$ic.' fa-fw me-2"></i>'.e($lb).'</a></li>';
         echo '</ul></li>';
     }
     echo '</ul>';
+    if ($switch) {
+        echo '<div class="btn-group btn-group-sm ussd-switch mb-3" role="group">';
+        foreach ($switch as [$p, $lb]) echo '<a class="btn '.($p===$current?'btn-dark':'btn-outline-secondary').'" href="?page='.$p.'">'.e($lb).'</a>';
+        echo '</div>';
+    } else echo '<div class="mb-2"></div>';
 }
 
 function layout_start(string $title): void {
