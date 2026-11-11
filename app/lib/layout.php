@@ -141,6 +141,41 @@ document.querySelectorAll('main table').forEach(t => {
     Array.from(t.tBodies).forEach(b => Array.from(b.rows).forEach(r => { let i = 0; Array.from(r.cells).forEach(c => { if (c.colSpan === 1 && !c.hasAttribute('data-label')) c.setAttribute('data-label', names[i] || ''); i += c.colSpan || 1; }); }));
     t.classList.add('stack-ready');
 });
+// Long lists: a table with more than 25 rows shows them a page at a time (10 / 25 / 50 / 100 / All, remembered per page) with
+// ‹ › to move. Rows a search box or filter button hides ([hidden]) are left out of the count, and changing the search starts again
+// at page 1. A table marked .no-pager shows every row.
+document.querySelectorAll('main table').forEach(t => {
+    const body = t.tBodies[0]; if (!body || t.classList.contains('no-pager') || t.closest('.modal')) return;
+    const real = () => Array.from(body.rows).filter(r => !(r.cells.length === 1 && r.cells[0].colSpan > 1));
+    if (real().length <= 25) return;
+    const key = 'pg:' + (new URLSearchParams(location.search).get('page') || '') + ':' + (t.id || Array.from(document.querySelectorAll('main table')).indexOf(t));
+    let size = 25; try { const v = parseInt(localStorage.getItem(key) ?? '25', 10); if ([0, 10, 25, 50, 100].includes(v)) size = v; } catch (e) {} // 0 = All
+    let page = 1;
+    const bar = document.createElement('div'); bar.className = 'pg-bar';
+    bar.innerHTML = '<span class="pg-info"></span><span class="pg-size">Show <select class="form-select form-select-sm" aria-label="Rows per page">'
+        + [10, 25, 50, 100, 0].map(n => '<option value="' + n + '">' + (n || 'All') + '</option>').join('') + '</select></span>'
+        + '<span class="pg-nav"><button type="button" class="btn btn-sm btn-outline-secondary pg-prev" aria-label="Previous page">‹</button>'
+        + '<span class="pg-page"></span><button type="button" class="btn btn-sm btn-outline-secondary pg-next" aria-label="Next page">›</button></span>';
+    (t.closest('.table-scroll') || t).insertAdjacentElement('afterend', bar);
+    const sel = bar.querySelector('select'); sel.value = String(size); if (sel.value !== String(size)) { size = 25; sel.value = '25'; }
+    const show = () => {
+        const rows = real(), shown = rows.filter(r => !r.hasAttribute('hidden')), n = shown.length, per = size || n || 1, pages = Math.max(1, Math.ceil(n / per));
+        if (page > pages) page = pages;
+        rows.forEach(r => r.classList.remove('pg-hide'));
+        shown.forEach((r, i) => { if (size && (i < (page - 1) * per || i >= page * per)) r.classList.add('pg-hide'); });
+        const from = n ? (page - 1) * per + 1 : 0, to = Math.min(n, page * per);
+        bar.querySelector('.pg-info').textContent = n ? from + '–' + to + ' of ' + n : 'Nothing to show';
+        bar.querySelector('.pg-page').textContent = page + ' / ' + pages;
+        bar.querySelector('.pg-prev').disabled = page <= 1; bar.querySelector('.pg-next').disabled = page >= pages;
+        bar.querySelector('.pg-nav').hidden = !size || pages < 2;
+    };
+    sel.addEventListener('change', () => { size = parseInt(sel.value, 10); page = 1; try { localStorage.setItem(key, String(size)); } catch (e) {} show(); });
+    const go = d => { page += d; show(); (t.closest('.cardx') || t).scrollIntoView({ block: 'start', behavior: 'smooth' }); };
+    bar.querySelector('.pg-prev').addEventListener('click', () => go(-1)); bar.querySelector('.pg-next').addEventListener('click', () => go(1));
+    let pending = false; // a search box or filter button changed which rows are hidden: back to page 1
+    new MutationObserver(() => { if (pending) return; pending = true; requestAnimationFrame(() => { pending = false; page = 1; show(); }); }).observe(body, { subtree: true, attributes: true, attributeFilter: ['hidden'] });
+    show();
+});
 // Mobile nav toggle.
 const topnavToggle = document.getElementById('topnav-toggle'), topnavCollapse = document.getElementById('topnav-collapse');
 topnavToggle?.addEventListener('click', () => { const open = topnavCollapse.classList.toggle('open'); topnavToggle.setAttribute('aria-expanded', open ? 'true' : 'false'); });

@@ -340,7 +340,7 @@ declare(strict_types=1);
     <?php endif;?>
 
     <?php if($ok && !$focus):?>
-    <div class="cardx table-card mt-3"><div class="table-scroll"><table class="table table-hover align-middle mb-0" id="mbTable"><thead><tr><th>Menu</th><th>What it is</th><th class="text-end">Open</th></tr></thead><tbody>
+    <div class="cardx table-card mt-3"><div class="table-scroll"><table class="table table-hover align-middle mb-0 no-pager" id="mbTable"><thead><tr><th>Menu</th><th>What it is</th><th class="text-end">Open</th></tr></thead><tbody>
         <?php foreach($menus as $m): $mo=mobius_menu_is_ours($m,$cfg); $kd=mobius_menu_kind($m,$cfg); [$kl,$kc]=MOBIUS_KINDS[$kd]; $q=urlencode($m['menuID']); $open=$kd==='mobius'?'steps':'view';?>
         <tr data-who="<?=$mo?'portal':'other'?>" data-type="<?=e($m['shortcodeType']?:'—')?>" data-kind="<?=$kd?>"<?=$view&&$view['menuID']===$m['menuID']?' class="table-active"':''?>>
             <td style="max-width:30rem"><a class="fw-semibold text-decoration-none text-reset" href="?page=mobius_menus&<?=$open?>=<?=$q?>"><?=e($m['name'])?></a>

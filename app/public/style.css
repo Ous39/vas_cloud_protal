@@ -310,3 +310,15 @@ main code{overflow-wrap:anywhere}
 @media(max-width:900px) and (min-width:641px){
   .ussd-subnav .nav-link{padding:.3rem .65rem;font-size:.85rem}
 }
+
+/* Long lists a page at a time (layout_end's script) */
+tr.pg-hide{display:none!important}
+.pg-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;padding:10px 14px;border-top:1px solid var(--line-soft,#eef2f7);font-size:.875rem;color:#475569}
+.pg-bar .pg-info{font-weight:600}
+.pg-bar .pg-size{display:inline-flex;align-items:center;gap:6px;margin-left:auto}
+.pg-bar .pg-size select{width:auto;font-size:.85rem}
+.pg-bar .pg-nav{display:inline-flex;align-items:center;gap:6px}
+.pg-bar .pg-nav[hidden]{display:none}
+.pg-bar .pg-page{min-width:3.5rem;text-align:center}
+.pg-bar .btn{min-width:2.2rem}
+@media(max-width:640px){ .pg-bar{justify-content:center} .pg-bar .pg-size{margin-left:0} .pg-bar .pg-size select{font-size:16px} }
