@@ -133,6 +133,8 @@ declare(strict_types=1);
         <p class="small text-muted mb-3">Mobius answers a short code with only one menu, so the others on the same code are leftovers (old UAT / PREPROD copies) or a mistake.
         <b>Calls</b> is how many calls Mobius has for each menu (a count only — no numbers are read). The best way: keep the menu that is used and <b>park</b> the others —
         parking moves a menu to a spare code such as <code>*0*606#</code>, so it stops competing but is not deleted; <b>Put back</b> in History undoes it. Nothing changes until you save.</p>
+        <?php $allN=[]; foreach($shared as $ms1) foreach($ms1 as $x) $allN[]=mobius_menu_call_count($cfg,(string)$x['menuID']);
+            if($allN && !array_filter($allN)):?><div class="alert alert-danger py-2 small"><i class="fa-solid fa-triangle-exclamation me-1"></i><b>Mobius gave 0 calls for every menu here</b>, even for services that are in use — the counts are probably not available. Do not park on these numbers: open each menu's <i class="fa-solid fa-chart-column"></i> Numbers first, or ask the owner.</div><?php endif;?>
         <?php foreach($shared as $bare=>$ms0): $n=[]; foreach($ms0 as $x) $n[$x['menuID']]=mobius_menu_call_count($cfg,(string)$x['menuID']);
             $used=array_filter($n,fn($v)=>$v); arsort($used); $keep=count($used)>=1?array_key_first($used):null;
             $verdict=!$used?['secondary','None of them has calls — probably all test copies. Keep the one you need, park the rest.']

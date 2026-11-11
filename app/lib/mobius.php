@@ -479,14 +479,23 @@ function mobius_menu_calls(array $cfg, string $menuId, string $msisdn = '', int 
     if (!$rows && $msisdn === '') { unset($req['msisdn']); $r2 = mobius_rest($cfg, 'ussdcalls/list_by_menu', $req); if ($r2['ok'] && ($x = mobius_find_rows($r2['json']))) { $r = $r2; $rows = $x; } } // an empty number may mean "only calls with no number"
     $calls = array_map('mobius_call_norm', $rows);
     usort($calls, fn($a, $b) => ($b['time'] ?? 0) <=> ($a['time'] ?? 0));
-    $c = mobius_rest($cfg, 'ussdcalls/count_by_menu', ['data' => $menuId, 'msisdn' => $msisdn]); $total = $c['ok'] ? mobius_find_count($c['json']) : null;
+    if ($msisdn === '') $total = mobius_menu_call_count($cfg, $menuId); // all calls (an empty number would count only calls without one)
+    else { $c = mobius_rest($cfg, 'ussdcalls/count_by_menu', ['data' => $menuId, 'msisdn' => $msisdn]); $total = $c['ok'] ? mobius_find_count($c['json']) : null; }
     $last = $rows ? mobius_id_text(end($rows)['callID'] ?? (end($rows)['_id'] ?? '')) : '';
     return ['ok' => true, 'calls' => $calls, 'next' => count($rows) >= $size && $last !== '' ? $last : null, 'total' => $total, 'answer' => mobius_redact((string)($r['raw'] ?? ''), 1500)];
 }
 // How many calls Mobius has for a menu — a count only (no numbers, no call records). Kept 15 minutes. null = Mobius did not say.
 function mobius_menu_call_count(array $cfg, string $menuId): ?int {
     if ($menuId === '') return null;
-    return cached('mobius_calls_n:'.$menuId, 900, function () use ($cfg, $menuId) { $c = mobius_rest($cfg, 'ussdcalls/count_by_menu', ['data' => $menuId, 'msisdn' => '']); return $c['ok'] ? mobius_find_count($c['json']) : null; });
+    // An empty msisdn means "calls with no number" to Mobius (always 0), so ask without it first; the empty one only if Mobius insists on the field.
+    return cached('mobius_calls_n2:'.$menuId, 900, function () use ($cfg, $menuId) {
+        $best = null;
+        foreach ([['data' => $menuId], ['data' => $menuId, 'msisdn' => '']] as $req) {
+            $c = mobius_rest($cfg, 'ussdcalls/count_by_menu', $req); $n = $c['ok'] ? mobius_find_count($c['json']) : null;
+            if ($n !== null && ($best === null || $n > $best)) $best = $n; if ($n) break;
+        }
+        return $best;
+    });
 }
 // Short codes that Mobius has on more than one menu: [bare code => [menus…]] (only one menu of each answers).
 function mobius_shared_codes(array $menus): array {
