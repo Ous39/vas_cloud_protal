@@ -483,6 +483,16 @@ function mobius_menu_calls(array $cfg, string $menuId, string $msisdn = '', int 
     $last = $rows ? mobius_id_text(end($rows)['callID'] ?? (end($rows)['_id'] ?? '')) : '';
     return ['ok' => true, 'calls' => $calls, 'next' => count($rows) >= $size && $last !== '' ? $last : null, 'total' => $total, 'answer' => mobius_redact((string)($r['raw'] ?? ''), 1500)];
 }
+// How many calls Mobius has for a menu — a count only (no numbers, no call records). Kept 15 minutes. null = Mobius did not say.
+function mobius_menu_call_count(array $cfg, string $menuId): ?int {
+    if ($menuId === '') return null;
+    return cached('mobius_calls_n:'.$menuId, 900, function () use ($cfg, $menuId) { $c = mobius_rest($cfg, 'ussdcalls/count_by_menu', ['data' => $menuId, 'msisdn' => '']); return $c['ok'] ? mobius_find_count($c['json']) : null; });
+}
+// Short codes that Mobius has on more than one menu: [bare code => [menus…]] (only one menu of each answers).
+function mobius_shared_codes(array $menus): array {
+    $g = []; foreach ($menus as $m) { $b = rtrim(trim((string)$m['shortcode']), '#'); if ($b !== '') $g[$b][] = $m; }
+    $g = array_filter($g, fn($x) => count($x) > 1); uksort($g, 'strnatcmp'); return $g;
+}
 // Numbers for one menu from its most recent calls (up to $max): per day, completed / errors, top numbers and top answers.
 function mobius_menu_stats(array $cfg, string $menuId, int $max = 1000): array {
     $all = []; $from = null; $total = null;

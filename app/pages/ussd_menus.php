@@ -50,6 +50,7 @@ declare(strict_types=1);
         $rows[]=['code'=>(string)$m['shortcode'],'kind'=>$kind,'p'=>null,'reg'=>null,'ms'=>['state'=>in_array($kind,['other','push'],true)?'elsewhere':'ours','menu'=>$m]]; }
     usort($rows,fn($a,$b)=>[$a['code']==='',$a['code']]<=>[$b['code']==='',$b['code']] ?: strnatcmp($a['code'],$b['code'])); // by code; menus without a code (push) last
     $kinds=['all'=>['All',count($rows)],'portal'=>['Built in the portal',0],'mobius'=>['Built in Mobius',0],'push'=>['Push messages',0],'other'=>['Other services',0]]; foreach($rows as $r0) $kinds[$r0['kind']][1]++;
+    $shared=$mobOk?mobius_shared_codes($mob['menus']):[]; if($shared) $kinds['twice']=['Same code twice',count($shared)];
     $fk=(string)($_GET['f']??'all'); if(!isset($kinds[$fk])) $fk='all';
     layout_start('USSD Menus'); ussd_subnav('ussd_menus');
     ?>
@@ -127,11 +128,34 @@ declare(strict_types=1);
         <?php foreach($kinds as $k=>[$lb,$n]): if($k!=='all' && !$n) continue;?><button type="button" class="btn btn-sm <?=$k===$fk?'btn-dark':'btn-outline-secondary'?>" data-kind="<?=e($k)?>"><?=e($lb)?> <span class="badge rounded-pill <?=$k===$fk?'bg-light text-dark':'bg-secondary'?>"><?=$n?></span></button><?php endforeach;?>
         <?php if($mobOk && $canMobPage):?><a class="small ms-auto" href="?page=mobius_menus"><i class="fa-solid fa-server me-1"></i>More Mobius tools (history, calls, export)</a><?php endif;?>
     </div>
+    <?php if($fk==='twice' && $shared): $pick=[];?>
+    <div class="cardx mb-3 border-warning"><h3 class="mb-1"><i class="fa-solid fa-clone me-2 text-warning"></i>Short codes on more than one menu</h3>
+        <p class="small text-muted mb-3">Mobius answers a short code with only one menu, so the others on the same code are leftovers (old UAT / PREPROD copies) or a mistake.
+        <b>Calls</b> is how many calls Mobius has for each menu (a count only — no numbers are read). The best way: keep the menu that is used and <b>park</b> the others —
+        parking moves a menu to a spare code such as <code>*0*606#</code>, so it stops competing but is not deleted; <b>Put back</b> in History undoes it. Nothing changes until you save.</p>
+        <?php foreach($shared as $bare=>$ms0): $n=[]; foreach($ms0 as $x) $n[$x['menuID']]=mobius_menu_call_count($cfg,(string)$x['menuID']);
+            $used=array_filter($n,fn($v)=>$v); arsort($used); $keep=count($used)>=1?array_key_first($used):null;
+            $verdict=!$used?['secondary','None of them has calls — probably all test copies. Keep the one you need, park the rest.']
+                :(count($used)===1?['success','Only one is used — keep it, park the others.']:['warning','More than one has calls — check with the owner which one should answer before parking.']);?>
+        <div class="border rounded p-2 mb-2"><div class="d-flex flex-wrap gap-2 align-items-center mb-1"><code class="fs-6"><?=e($bare)?></code><span class="badge bg-<?=$verdict[0]?><?=$verdict[0]==='warning'?' text-dark':''?>"><?=e($verdict[1])?></span></div>
+            <table class="table table-sm mb-0"><thead><tr><th>Menu</th><th>Kind</th><th class="text-end">Calls</th><th></th><th class="text-end"></th></tr></thead><tbody>
+            <?php foreach($ms0 as $x): $id=(string)$x['menuID']; $k=mobius_menu_kind($x,$cfg); $cnt=$n[$id]; $isKeep=$id===$keep;?>
+                <tr><td><?=e($x['name'])?> <span class="text-muted small"><?=e($x['shortcode'])?></span></td>
+                    <td><span class="badge <?=e(MOBIUS_KINDS[$k][1]??'bg-light text-dark')?>"><?=e(MOBIUS_KINDS[$k][0]??$k)?></span></td>
+                    <td class="text-end"><?=$cnt===null?'<span class="text-muted" title="Mobius did not give a count">?</span>':number_format($cnt)?></td>
+                    <td><?php if($isKeep && count($used)===1):?><span class="badge bg-success">keep</span><?php elseif($used && !$cnt && count($used)===1):?><span class="badge bg-secondary">park</span><?php endif;?></td>
+                    <td class="text-end text-nowrap"><?php if($canMobPage):?><a class="btn btn-sm btn-outline-secondary" href="?page=mobius_menus&view=<?=urlencode($id)?>" title="Open it"><i class="fa-solid fa-up-right-from-square"></i></a>
+                        <a class="btn btn-sm btn-outline-secondary" href="?page=mobius_menus&stats=<?=urlencode($id)?>" title="Its numbers per day"><i class="fa-solid fa-chart-column"></i></a>
+                        <a class="btn btn-sm <?=!$isKeep&&$used&&!$cnt?'btn-warning':'btn-outline-warning'?>" href="?page=mobius_menus&edit=<?=urlencode($id)?>&park=1" title="Move it to a spare code (you confirm on the next page)"><i class="fa-solid fa-square-parking me-1"></i>Park it</a><?php endif;?></td></tr>
+            <?php endforeach;?></tbody></table></div>
+        <?php endforeach;?></div>
+    <?php endif;?>
     <div class="cardx table-card"><div class="table-scroll"><table class="table table-hover align-middle mb-0" id="mnTable"><thead><tr><th>Name</th><th>Short code</th><th>Built in</th><th>What is built</th><th>On phones</th><th class="text-end">Actions</th></tr></thead><tbody>
     <?php foreach($rows as $r): $c=$r['code']; $m=$r['p']; $rg=$r['reg']; $ms=$r['ms']; $mm=$ms['menu']??null; $kind=$r['kind']; $mid=(string)($mm['menuID']??''); $mq=urlencode($mid);
         $name=$rg['service_name']??($mm['name']??''); $stt=$kind==='portal'?shortcode_state($c,$cfg,$reg):null;
         $host=$mm?(string)(parse_url((string)$mm['remoteURL'],PHP_URL_HOST)??''):''; $sch=$mid!==''?($openSched[$mid]??[]):[];?>
-        <tr id="row-<?=md5($c)?>" data-kind="<?=e($kind)?>" <?=$fk!=='all'&&$fk!==$kind?'hidden':''?>>
+        <?php $isTwice=$c!=='' && isset($shared[rtrim($c,'#')]);?>
+        <tr id="row-<?=md5($c)?>" data-kind="<?=e($kind)?>" data-twice="<?=$isTwice?1:0?>" <?=$fk!=='all'&&$fk!==$kind&&!($fk==='twice'&&$isTwice)?'hidden':''?>>
             <td><?php if($name!==''):?><strong><?=e($name)?></strong><?php else:?><span class="text-muted">(no name yet)</span><?php endif;?>
                 <?php if($kind==='portal' && !$rg):?> <a class="small" href="?page=shortcodes&new=<?=urlencode($c)?>">name it</a><?php elseif($rg && strtolower((string)$rg['status'])!=='active'):?> <span class="badge status-<?=e(strtolower($rg['status']))?>"><?=e($rg['status'])?></span><?php endif;?></td>
             <td><?php if($c===''):?><span class="text-muted small">no code</span><?php else:?><code><?=e($c)?></code><?php endif;?><?php if($c!=='' && ($twice[rtrim($c,'#')]??0)>1):?> <span class="badge bg-warning text-dark" title="Mobius has <?=(int)$twice[rtrim($c,'#')]?> menus on this code — only one of them answers. Check them on the Mobius page.">same code ×<?=(int)$twice[rtrim($c,'#')]?></span><?php endif;?></td>
@@ -175,10 +199,10 @@ declare(strict_types=1);
     (function(){ // search box + "Built in" buttons, together; the choice stays in the address so Refresh keeps it
         var kind=<?=json_encode($fk)?>, box=document.getElementById('mnFilter');
         function show(){ var q=(box&&box.value||'').toLowerCase().trim(), n=0;
-            document.querySelectorAll('#mnTable tbody tr[data-kind]').forEach(function(r){ var ok=(kind==='all'||r.dataset.kind===kind)&&(q===''||r.textContent.toLowerCase().indexOf(q)>=0); r.hidden=!ok; if(ok) n++; });
+            document.querySelectorAll('#mnTable tbody tr[data-kind]').forEach(function(r){ var ok=(kind==='all'||r.dataset.kind===kind||(kind==='twice'&&r.dataset.twice==='1'))&&(q===''||r.textContent.toLowerCase().indexOf(q)>=0); r.hidden=!ok; if(ok) n++; });
             var none=document.getElementById('mnNone'); if(none) none.hidden=n>0; }
         box&&box.addEventListener('input',show);
-        document.querySelectorAll('#mnKinds [data-kind]').forEach(function(b){ b.addEventListener('click',function(){ kind=b.dataset.kind;
+        document.querySelectorAll('#mnKinds [data-kind]').forEach(function(b){ b.addEventListener('click',function(){ if(b.dataset.kind==='twice'||kind==='twice'){ location.href='?page=ussd_menus'+(b.dataset.kind==='all'?'':'&f='+b.dataset.kind); return; } kind=b.dataset.kind;
             document.querySelectorAll('#mnKinds [data-kind]').forEach(function(x){ var on=x===b; x.className='btn btn-sm '+(on?'btn-dark':'btn-outline-secondary'); var bd=x.querySelector('.badge'); if(bd) bd.className='badge rounded-pill '+(on?'bg-light text-dark':'bg-secondary'); });
             var u=new window.URL(location.href); if(kind==='all') u.searchParams.delete('f'); else u.searchParams.set('f',kind); history.replaceState(null,'',u.href); show(); }); });
     })();

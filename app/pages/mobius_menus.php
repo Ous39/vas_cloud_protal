@@ -80,6 +80,8 @@ declare(strict_types=1);
         $base=$edit?mobius_menu_public($edit):['name'=>'','shortcode'=>'','shortcodeType'=>'PROXY','isExtendable'=>false,'remoteURL'=>$tpl['remoteURL']??'','destinationID'=>$tpl['destinationID']??[]];
         if ($saved && $saved['menu_id']===($edit['menuID']??'')) { $s=$saved['m']; $base=['name'=>$s['name']??'','shortcode'=>$s['shortcode']??'','shortcodeType'=>$s['shortcodeType']??'PROXY','isExtendable'=>!empty($s['isExtendable']),'remoteURL'=>$s['remoteURL']??'','destinationID'=>preg_split('/[\s,;]+/',(string)($s['destinationID']??''),-1,PREG_SPLIT_NO_EMPTY)]; }
         $form=$base;
+        $parking=false; if ($edit && isset($_GET['park']) && !$saved) { // "Park it" from USSD Menus → Same code twice: a spare code, nothing saved until Save
+            try { $form['shortcode']=mobius_sched_spare_code($menus,(string)$edit['shortcode']); $parking=true; } catch (RuntimeException $e) { flash('warning',$e->getMessage()); } }
     }
     $mk=mobius_menu_keys($menus)['keys']; $hasDest=$mk['destinationID']!==null; $hasExt=$mk['isExtendable']!==null;
     $dests=[]; foreach($menus as $m) foreach($m['destinationID'] as $d) $dests[$d]=($dests[$d]??0)+1; arsort($dests);
@@ -156,6 +158,7 @@ declare(strict_types=1);
     <?php if($form!==null): $other=$edit && !mobius_menu_is_ours($edit,$cfg);?>
     <div class="cardx mt-3 <?=$other?'border-danger':'border-primary'?>"><div class="d-flex justify-content-between"><h3 class="mb-2"><?=$edit?'Change '.e($edit['shortcode']).' in Mobius':'New menu in Mobius'?></h3><a class="btn-close" href="?page=mobius_menus<?=$edit?'&view='.urlencode($edit['menuID']):''?>" aria-label="Close"></a></div>
         <?php if($other):?><div class="alert alert-danger py-2 small"><b>This menu belongs to another service</b> (it does not call this portal). Customers dialling <code><?=e($edit['shortcode'])?></code> use it right now — a wrong address or code stops that service. The portal keeps the menu as it is now, so you can put it back from <b>History</b>.</div><?php endif;?>
+        <?php if(!empty($parking)):?><div class="alert alert-warning py-2 small"><i class="fa-solid fa-square-parking me-1"></i><b>Parking</b>: the short code below is a spare one (<code><?=e($form['shortcode'])?></code>). Press <b>Save</b> to move this menu off <code><?=e($edit['shortcode'])?></code>, so the other menu on that code is the only one left. Nothing else changes; <b>Put back</b> in History moves it back.</div><?php endif;?>
         <form method="post" class="row g-2" id="mbForm"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="save"><input type="hidden" name="menu_id" value="<?=e($edit['menuID']??'')?>">
             <div class="col-md-5"><label class="small text-muted mb-0">Name</label><input class="form-control" name="m[name]" value="<?=e($form['name'])?>" maxlength="150" required></div>
             <div class="col-md-3"><label class="small text-muted mb-0">Short code</label><input class="form-control font-monospace" name="m[shortcode]" value="<?=e($form['shortcode'])?>" maxlength="40" placeholder="*9606*7070#"></div>
