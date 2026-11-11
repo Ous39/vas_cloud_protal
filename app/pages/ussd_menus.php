@@ -36,14 +36,27 @@ declare(strict_types=1);
     $ov=menu_overview(); $codes=array_values(array_unique(array_merge(array_keys($ov),array_keys($reg)))); sort($codes);
     $setup=trim((string)($_GET['setup']??'')); $setupOk=$setup!=='' && (isset($ov[$setup])||isset($reg[$setup]));
     $url=($canUrl && $cfg['token']!=='') ? 'ussd.php?t='.$cfg['token'].'&m=proxy' : '';
-    $mob=($canUrl && isset($_GET['mobius'])) ? mobius_list_menus($cfg) : null; $mobOk=$mob && $mob['ok']; $editCode=trim((string)($_GET['edit']??''));
+    // Mobius is read every time the page opens (kept for a minute; Refresh reads it again) — no more "Check Mobius" first.
+    $mob=($canUrl && $cfg['mobius_user']!=='') ? mobius_list_menus_cached($cfg, isset($_GET['refresh'])) : null; $mobOk=$mob && $mob['ok']; $editCode=trim((string)($_GET['edit']??''));
+    if (isset($_GET['refresh'])) redirect('?page=ussd_menus'.(isset($_GET['f'])?'&f='.urlencode((string)$_GET['f']):''));
+    $canMobPage=nav_can_see('mobius_menus');
+    // One list: every portal menu, and every menu in Mobius. A portal menu and the Mobius menu that calls it are one row.
+    $rows=[]; $byBare=[];
+    foreach($codes as $c){ $rows[]=['code'=>$c,'kind'=>'portal','p'=>$ov[$c]??null,'reg'=>$reg[$c]??null,'ms'=>$mobOk?mobius_menu_state($c,$mob['menus'],$cfg):null]; $byBare[rtrim($c,'#')]=true; }
+    $openSched=[]; if($mobOk){ try{ foreach(mobius_sched_list(null,true) as $s) $openSched[$s['menu_id']][]=$s; }catch(Throwable $e){} }
+    if($mobOk) foreach($mob['menus'] as $m){ $bare=rtrim((string)$m['shortcode'],'#'); if(isset($byBare[$bare])) continue;
+        $kind=$m['shortcodeType']==='MS_INITIATED'?'mobius':(mobius_menu_is_ours($m,$cfg)?'portal':'other');
+        $rows[]=['code'=>(string)$m['shortcode'],'kind'=>$kind,'p'=>null,'reg'=>null,'ms'=>['state'=>$kind==='other'?'elsewhere':'ours','menu'=>$m]]; }
+    usort($rows,fn($a,$b)=>strnatcmp($a['code'],$b['code']));
+    $kinds=['all'=>['All',count($rows)],'portal'=>['Built in the portal',0],'mobius'=>['Built in Mobius',0],'other'=>['Other services',0]]; foreach($rows as $r0) $kinds[$r0['kind']][1]++;
+    $fk=(string)($_GET['f']??'all'); if(!isset($kinds[$fk])) $fk='all';
     layout_start('USSD Menus'); ussd_subnav('ussd_menus');
     ?>
     <div class="cardx">
         <div class="d-flex flex-wrap gap-2 align-items-center">
-            <div><h3 class="mb-0">Menus</h3><div class="small text-muted">Every USSD short code: what it is, what is built, and whether it answers customers.</div></div>
+            <div><h3 class="mb-0">Menus</h3><div class="small text-muted">Every USSD short code — built in the portal or in Mobius — and whether it answers customers.</div></div>
             <input class="form-control w-auto ms-auto" id="mnFilter" placeholder="Search name or short code…" style="min-width:16rem">
-            <?php if($canUrl):?><a class="btn btn-outline-secondary" href="?page=ussd_menus&mobius=1" title="Read the menus that exist in Mobius and compare"><i class="fa-solid fa-arrows-rotate me-1"></i>Check Mobius</a><?php endif;?>
+            <?php if($mob!==null):?><a class="btn btn-outline-secondary" href="?page=ussd_menus&refresh=1<?=$fk!=='all'?'&f='.$fk:''?>" title="Read Mobius again<?=$mobOk&&!empty($mob['at'])?' (last read '.date('H:i:s',(int)$mob['at']).')':''?>"><i class="fa-solid fa-arrows-rotate me-1"></i>Refresh</a><?php endif;?>
             <?php if($canEdit):?><a class="btn btn-primary" href="?page=ussd_new"><i class="fa-solid fa-plus me-1"></i>Create a menu</a><button class="btn btn-link btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#addMenu" title="The old form: name, code and items typed as lines">quick form</button><?php endif;?>
         </div>
         <?php if($canEdit):?>
@@ -64,15 +77,8 @@ declare(strict_types=1);
         <?php endif;?>
     </div>
 
-    <?php if($mob!==null):?>
-    <div class="cardx mt-3"><h3 class="mb-2"><i class="fa-solid fa-arrows-rotate me-2"></i>Mobius</h3>
-        <?php if(!$mobOk):?><div class="alert alert-danger mb-0 py-2">Could not read Mobius: <?=e($mob['error'])?> <a href="?page=ussd_proxy">Check the Mobius connection</a>.</div>
-        <?php else: $oursN=count(array_filter($mob['menus'],fn($m)=>mobius_menu_is_ours($m,$cfg))); $others=array_values(array_filter($mob['menus'],fn($m)=>!mobius_menu_is_ours($m,$cfg)));?>
-        <p class="mb-2 small">Mobius lists <b><?=count($mob['menus'])?></b> menu<?=count($mob['menus'])===1?'':'s'?><?=$mob['count']!==null&&$mob['count']!==count($mob['menus'])?' <span class="badge bg-warning text-dark" title="The count Mobius gives differs from the number listed — the list may be cut short">count says '.(int)$mob['count'].'</span>':''?>; <b><?=$oursN?></b> call this portal (the portal can edit those). The other <?=count($others)?> belong to other services — they are changed only on the Mobius page, with a typed confirmation and a way back.</p>
-        <p class="small mb-2"><a href="?page=mobius_menus"><i class="fa-solid fa-server me-1"></i>Manage every Mobius menu</a> — search all of them, change one, send a code to this portal, put a change back.</p>
-        <details><summary class="small">Other menus in Mobius (read-only here)</summary><div class="table-scroll mt-2"><table class="table table-sm mb-0"><thead><tr><th>Name</th><th>Short code</th><th>Type</th><th>Extendable</th><th>Address</th></tr></thead><tbody>
-            <?php foreach($others as $m):?><tr><td><?=e($m['name']??'')?></td><td><code><?=e($m['shortcode']??'')?></code></td><td><?=e($m['shortcodeType']??'')?></td><td><?=!empty($m['isExtendable'])?'yes':'no'?></td><td class="text-muted small"><?=e(preg_replace('~([?&]t=)[^&]+~','$1…',mb_strimwidth((string)($m['remoteURL']??''),0,70,'…')))?></td></tr><?php endforeach;?></tbody></table></div></details>
-        <?php endif;?></div>
+    <?php if($mob!==null && !$mobOk):?>
+    <div class="alert alert-warning mt-3 mb-0 py-2"><i class="fa-solid fa-triangle-exclamation me-1"></i>Could not read Mobius, so only the portal's menus are listed: <?=e($mob['error'])?> <a href="?page=ussd_proxy">Check the Mobius connection</a> · <a href="?page=ussd_menus&refresh=1">Try again</a></div>
     <?php endif;?>
     <?php if($canEdit && $editCode!=='' && (isset($ov[$editCode])||isset($reg[$editCode]))): $erg=$reg[$editCode]??null; $ems=$mobOk?mobius_menu_state($editCode,$mob['menus'],$cfg):null;?>
     <div class="cardx mt-3 border-primary"><div class="d-flex justify-content-between"><h3 class="mb-2">Edit <?=e($editCode)?></h3><a class="btn-close" href="?page=ussd_menus<?=$mobOk?'&mobius=1':''?>" aria-label="Close"></a></div>
@@ -94,41 +100,83 @@ declare(strict_types=1);
     <?php if($setupOk): $o=$ov[$setup]??['items'=>0,'active'=>0,'draft'=>0,'errors'=>0,'warns'=>0]; $stt=shortcode_state($setup,$cfg,$reg); $builder='?page=ussd_build&short_code='.urlencode($setup);
         $mname=$reg[$setup]['service_name']??$setup; $flat=menu_nodes_flat($setup); $labels=[]; foreach($flat as $fn) $labels[(int)$fn['id']]=$fn['prompt_text']; $dc=menu_direct_codes($setup); $lvl=substr_count(rtrim($setup,'#'),'*')+1;
         $first=array_filter($dc,fn($c)=>substr_count(rtrim($c,'#'),'*')===$lvl);
+        $sms=$mobOk?mobius_menu_state($setup,$mob['menus'],$cfg):null; // how the code stands in Mobius, read live
+        $mobStep=$sms===null?[null,'In Mobius','Mobius could not be read, so this is not checked.',null,null]
+            :($sms['state']==='ours'?[true,'In Mobius','as “'.($sms['menu']['name']??'').'”, calling this portal',null,null]
+            :($sms['state']==='elsewhere'?[false,'In Mobius','the code is used in Mobius by “'.($sms['menu']['name']??'').'”, which does not call this portal — pick another code or change that menu in Mobius','?page=mobius_menus&view='.urlencode((string)($sms['menu']['menuID']??'')),'Open it']
+            :[false,'In Mobius','not yet — press Create on its row in the list','?page=ussd_menus#row-'.md5($setup),'Go to its row']));
         $steps=[[$o['items']>0,'Items are built',$o['items'].' item'.($o['items']===1?'':'s'),$builder,'Open the Builder'],
             [$o['items']>0&&!$o['errors'],'Menu check is clean',$o['errors'].' to fix, '.$o['warns'].' to look at',$builder,'See the check'],
             [$o['active']>0&&!$o['draft'],'Items are switched on',$o['active'].' on, '.$o['draft'].' still draft',$builder,'Activate'],
             [isset($reg[$setup]),'In the Short Code register',isset($reg[$setup])?'as “'.$reg[$setup]['service_name'].'”':'not yet','?page=shortcodes&new='.urlencode($setup),'Register it'],
-            [null,'Created in Mobius','By hand, in Mobius → Menus → Add new row, with the values on the right. The portal cannot see Mobius menus yet.',null,null],
-            [$stt['live'],'Answering on phones',$stt['live']?'The USSD endpoint is live.':'Not yet: '.$stt['why'].'.','?page=ussd_proxy','Open Proxy']];?>
+            $mobStep,
+            ($sms && $sms['state']!=='ours') ? [false,'Answering on phones','not until the code is in Mobius and calls this portal (step above).',null,null]
+                : [$stt['live'],'Answering on phones',$stt['live']?'The USSD endpoint is live.':'Not yet: '.$stt['why'].'.','?page=ussd_proxy','Open Proxy']];?>
     <div class="cardx mt-3 border-primary"><div class="d-flex justify-content-between"><h3 class="mb-2">Set up <?=e($setup)?> <small class="text-muted">— <?=e($mname)?></small></h3><a class="btn-close" href="?page=ussd_menus" aria-label="Close"></a></div>
         <div class="row g-3"><div class="col-lg-7"><ul class="list-unstyled mb-0">
-            <?php foreach($steps as [$ok,$tt,$dd,$lk,$lt]):?><li class="py-1 d-flex gap-2"><span class="badge <?=$ok===null?'bg-secondary':($ok?'bg-success':'bg-warning text-dark')?> mt-1" style="min-width:4.2rem"><?=$ok===null?'by hand':($ok?'done':'to do')?></span><span><b><?=e($tt)?></b> <span class="text-muted"><?=e($dd)?></span><?php if($lk&&!$ok):?> <a href="<?=e($lk)?>"><?=e($lt)?></a><?php endif;?></span></li><?php endforeach;?></ul>
+            <?php foreach($steps as [$ok,$tt,$dd,$lk,$lt]):?><li class="py-1 d-flex gap-2"><span class="badge <?=$ok===null?'bg-secondary':($ok?'bg-success':'bg-warning text-dark')?> mt-1" style="min-width:4.2rem"><?=$ok===null?'unknown':($ok?'done':'to do')?></span><span><b><?=e($tt)?></b> <span class="text-muted"><?=e($dd)?></span><?php if($lk&&!$ok):?> <a href="<?=e($lk)?>"><?=e($lt)?></a><?php endif;?></span></li><?php endforeach;?></ul>
             <?php if($first):?><div class="small mt-3"><b>Direct codes</b> — dial these to jump straight to an item (add them in Mobius too, or ask for a wildcard on <code><?=e(rtrim($setup,'#'))?>*</code>):<br><?php foreach($first as $nid=>$c):?><code><?=e($c)?></code> <span class="text-muted"><?=e($labels[$nid]??'')?></span><br><?php endforeach;?></div><?php endif;?></div>
-        <div class="col-lg-5"><div class="border rounded p-2 bg-light"><div class="fw-semibold mb-1">Type this in Mobius → Menus → Add new row</div>
+        <?php if($sms===null || $sms['state']==='missing'):?><div class="col-lg-5"><div class="border rounded p-2 bg-light"><div class="fw-semibold mb-1">Or type it in Mobius yourself (Menus → Add new row)</div>
             <table class="table table-sm mb-0"><tbody><tr><th class="text-muted fw-normal">Name</th><td><?=e($mname)?></td></tr><tr><th class="text-muted fw-normal">Shortcode</th><td><code><?=e($setup)?></code></td></tr><tr><th class="text-muted fw-normal">Extendable</th><td>false</td></tr><tr><th class="text-muted fw-normal">Type</th><td>PROXY</td></tr>
-            <tr><th class="text-muted fw-normal">URL</th><td><?php if($url):?><button class="btn btn-sm btn-outline-primary" type="button" data-copy-url="<?=e($url)?>"><i class="fa-regular fa-copy me-1"></i>Copy the URL</button> <small class="text-muted">secret — do not share</small><?php else:?><span class="text-muted">an admin can copy it from Proxy → Connection</span><?php endif;?></td></tr></tbody></table></div></div></div>
+            <tr><th class="text-muted fw-normal">URL</th><td><?php if($url):?><button class="btn btn-sm btn-outline-primary" type="button" data-copy-url="<?=e($url)?>"><i class="fa-regular fa-copy me-1"></i>Copy the URL</button> <small class="text-muted">secret — do not share</small><?php else:?><span class="text-muted">an admin can copy it from Proxy → Connection</span><?php endif;?></td></tr></tbody></table></div></div><?php endif;?></div>
     </div>
     <?php endif;?>
 
-    <div class="cardx table-card mt-3"><div class="table-scroll"><table class="table table-hover align-middle mb-0" id="mnTable"><thead><tr><th>Name</th><th>Short code</th><th>Type</th><th>Menu</th><th>On phones</th><th>Register</th><?php if($mobOk):?><th>In Mobius</th><?php endif;?><th class="text-end">Actions</th></tr></thead><tbody>
-    <?php foreach($codes as $c): $m=$ov[$c]??null; $rg=$reg[$c]??null; $stt=shortcode_state($c,$cfg,$reg); $ms=$mobOk?mobius_menu_state($c,$mob['menus'],$cfg):null;?>
-        <tr><td><?php if($rg):?><strong><?=e($rg['service_name'])?></strong><?php else:?><span class="text-muted">(no name yet)</span> <a class="small" href="?page=shortcodes&new=<?=urlencode($c)?>">name it</a><?php endif;?></td>
-            <td><code><?=e($c)?></code></td><td>PROXY</td>
-            <td><?php if(!$m):?><span class="badge bg-secondary">empty</span> <a class="small" href="?page=ussd_build&short_code=<?=urlencode($c)?>">build</a><?php else:?><?=$m['active']?> on<?=$m['draft']?' · '.$m['draft'].' draft':''?><?=$m['scheduled']?' · <span class="text-info" title="Go live by themselves"><i class="fa-regular fa-clock"></i> '.$m['scheduled'].' scheduled</span>':''?> <?php if($m['errors']):?><span class="badge bg-danger"><?=$m['errors']?> to fix</span><?php elseif($m['warns']):?><span class="badge bg-warning text-dark"><?=$m['warns']?> to check</span><?php else:?><span class="badge bg-success">ok</span><?php endif;?><?php endif;?></td>
-            <td><?php if(!$m):?><span class="text-muted">—</span><?php elseif($stt['live']):?><span class="badge bg-success">answering</span><?php else:?><span class="badge bg-secondary" title="<?=e($stt['why'])?>">not live</span><?php endif;?></td>
-            <td><?php if($rg):?><span class="badge status-<?=e(strtolower($rg['status']))?>"><?=e($rg['status'])?></span><?php else:?><span class="text-muted">—</span><?php endif;?></td>
-            <?php if($mobOk):?><td><?php if($ms['state']==='ours'):?><span class="badge bg-success" title="<?=e(($ms['menu']['name']??'').' · '.($ms['menu']['shortcodeType']??''))?>">in Mobius</span><?=!empty($ms['menu']['isExtendable'])?' <span class="badge bg-info text-dark">extendable</span>':''?>
-                <?php elseif($ms['state']==='elsewhere'):?><span class="badge bg-warning text-dark" title="A menu with this short code exists in Mobius (<?=e($ms['menu']['name']??'')?>) but it does not call this portal. The portal will not change it.">points elsewhere</span>
-                <?php else:?><span class="badge bg-danger">not in Mobius</span><?php if($canEdit):?> <form method="post" class="d-inline" data-confirm="Create <?=e($c)?> in Mobius now? This adds a live menu to Mobius that calls this portal."><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="mobius_create"><input type="hidden" name="short_code" value="<?=e($c)?>"><input type="hidden" name="name" value="<?=e($rg['service_name']??$c)?>"><button class="btn btn-sm btn-outline-primary py-0">Create</button></form><?php endif;?><?php endif;?></td><?php endif;?>
-            <td class="text-end text-nowrap"><a class="btn btn-sm btn-primary" href="?page=ussd_build&short_code=<?=urlencode($c)?>" title="Open in the Easy Builder"><i class="fa-solid fa-wand-magic-sparkles"></i> Build</a>
-                <?php if($canEdit):?><a class="btn btn-sm btn-outline-secondary" href="?page=ussd_menus&edit=<?=urlencode($c)?><?=$mobOk?'&mobius=1':''?>" title="Rename it or change its short code"><i class="fa-solid fa-pen"></i></a><?php endif;?>
-                <?php if($m):?><a class="btn btn-sm btn-outline-secondary" href="?page=ussd_sim&sc=<?=urlencode($c)?>" title="Try it like a phone"><i class="fa-solid fa-mobile-screen"></i></a><?php endif;?>
-                <a class="btn btn-sm btn-outline-secondary" href="?page=ussd_menus&setup=<?=urlencode($c)?>" title="Mobius values and setup checklist"><i class="fa-solid fa-list-check"></i></a>
-                <?php if($url):?><button class="btn btn-sm btn-outline-secondary" type="button" data-copy-url="<?=e($url)?>" title="Copy the URL Mobius calls"><i class="fa-regular fa-copy"></i></button><?php endif;?></td></tr>
-    <?php endforeach;?><?php if(!$codes):?><tr><td colspan="7" class="text-muted p-3">No menus yet. Press <b>Add new menu</b>.</td></tr><?php endif;?>
-    </tbody></table></div><div class="small text-muted px-3 py-2"><?=count($codes)?> menu<?=count($codes)===1?'':'s'?>.</div></div>
+    <div class="d-flex flex-wrap gap-2 align-items-center mt-3 mb-2" id="mnKinds" role="group" aria-label="Show">
+        <?php foreach($kinds as $k=>[$lb,$n]): if($k!=='all' && !$n) continue;?><button type="button" class="btn btn-sm <?=$k===$fk?'btn-dark':'btn-outline-secondary'?>" data-kind="<?=e($k)?>"><?=e($lb)?> <span class="badge rounded-pill <?=$k===$fk?'bg-light text-dark':'bg-secondary'?>"><?=$n?></span></button><?php endforeach;?>
+        <?php if($mobOk && $canMobPage):?><a class="small ms-auto" href="?page=mobius_menus"><i class="fa-solid fa-server me-1"></i>More Mobius tools (history, calls, export)</a><?php endif;?>
+    </div>
+    <div class="cardx table-card"><div class="table-scroll"><table class="table table-hover align-middle mb-0" id="mnTable"><thead><tr><th>Name</th><th>Short code</th><th>Built in</th><th>What is built</th><th>On phones</th><th class="text-end">Actions</th></tr></thead><tbody>
+    <?php foreach($rows as $r): $c=$r['code']; $m=$r['p']; $rg=$r['reg']; $ms=$r['ms']; $mm=$ms['menu']??null; $kind=$r['kind']; $mid=(string)($mm['menuID']??''); $mq=urlencode($mid);
+        $name=$rg['service_name']??($mm['name']??''); $stt=$kind==='portal'?shortcode_state($c,$cfg,$reg):null;
+        $host=$mm?(string)(parse_url((string)$mm['remoteURL'],PHP_URL_HOST)??''):''; $sch=$mid!==''?($openSched[$mid]??[]):[];?>
+        <tr id="row-<?=md5($c)?>" data-kind="<?=e($kind)?>" <?=$fk!=='all'&&$fk!==$kind?'hidden':''?>>
+            <td><?php if($name!==''):?><strong><?=e($name)?></strong><?php else:?><span class="text-muted">(no name yet)</span><?php endif;?>
+                <?php if($kind==='portal' && !$rg):?> <a class="small" href="?page=shortcodes&new=<?=urlencode($c)?>">name it</a><?php elseif($rg && strtolower((string)$rg['status'])!=='active'):?> <span class="badge status-<?=e(strtolower($rg['status']))?>"><?=e($rg['status'])?></span><?php endif;?></td>
+            <td><code><?=e($c)?></code></td>
+            <td><?php if($kind==='portal'):?><span class="badge mn-kind-portal"><i class="fa-solid fa-store me-1"></i>Portal</span>
+                <?php elseif($kind==='mobius'):?><span class="badge mn-kind-mobius"><i class="fa-solid fa-sitemap me-1"></i>Mobius</span>
+                <?php else:?><span class="badge bg-light text-dark border" title="A menu in Mobius that calls another system<?=$host!==''?' ('.e($host).')':''?>. Changed only on the Mobius page."><i class="fa-solid fa-plug me-1"></i>Other service</span><?php endif;?></td>
+            <td><?php if($kind==='portal'):?>
+                    <?php if(!$m):?><span class="badge bg-secondary">empty</span> <a class="small" href="?page=ussd_build&short_code=<?=urlencode($c)?>">build</a><?php else:?><?=$m['active']?> on<?=$m['draft']?' · '.$m['draft'].' draft':''?><?=$m['scheduled']?' · <span class="text-info" title="Go live by themselves"><i class="fa-regular fa-clock"></i> '.$m['scheduled'].' scheduled</span>':''?> <?php if($m['errors']):?><span class="badge bg-danger"><?=$m['errors']?> to fix</span><?php elseif($m['warns']):?><span class="badge bg-warning text-dark"><?=$m['warns']?> to check</span><?php else:?><span class="badge bg-success">ok</span><?php endif;?><?php endif;?>
+                <?php elseif($kind==='mobius'):?><span class="text-muted small">menu of screens</span><?=!empty($mm['isExtendable'])?' <span class="badge bg-info text-dark">extendable</span>':''?>
+                    <?php foreach($sch as $s):?><div class="small text-info"><i class="fa-regular fa-clock me-1"></i><?=$s['state']==='live'?'live on <code>'.e($s['live_code']).'</code>'.($s['end_at']?' until '.e(date('d M H:i',strtotime((string)$s['end_at']))):''):'goes live on <code>'.e($s['live_code']).'</code> '.e(date('d M H:i',strtotime((string)$s['start_at'])))?></div><?php endforeach;?>
+                <?php else:?><span class="text-muted small"><?=$host!==''?'calls '.e($host):'—'?></span><?php endif;?></td>
+            <td><?php if($kind==='portal'):?>
+                    <?php if($mobOk && $ms['state']==='missing'):?><span class="badge bg-danger" title="Phones get “connection problem” until the code is in Mobius">not in Mobius</span><?php if($canEdit && $canUrl):?> <form method="post" class="d-inline" data-confirm="Create <?=e($c)?> in Mobius now? This adds a live menu to Mobius that calls this portal."><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="mobius_create"><input type="hidden" name="short_code" value="<?=e($c)?>"><input type="hidden" name="name" value="<?=e($rg['service_name']??$c)?>"><button class="btn btn-sm btn-outline-primary py-0">Create</button></form><?php endif;?>
+                    <?php elseif($mobOk && $ms['state']==='elsewhere'):?><span class="badge bg-warning text-dark" title="Mobius has this code as “<?=e($mm['name']??'')?>”, which does not call this portal">code used by another menu</span>
+                    <?php elseif(!$m):?><span class="text-muted">— nothing to show yet</span>
+                    <?php elseif($stt['live']):?><span class="badge bg-success">answering</span><?=$mobOk?'':' <span class="small text-muted">(Mobius not checked)</span>'?>
+                    <?php else:?><span class="badge bg-secondary" title="<?=e($stt['why'])?>">not live</span><?php endif;?>
+                <?php elseif($kind==='mobius'):?><?php if(str_starts_with($c,'*0*')):?><span class="badge bg-secondary" title="Moved off its short code by a schedule">parked</span><?php else:?><span class="badge bg-success">in Mobius</span><?php endif;?>
+                <?php else:?><span class="badge bg-light text-dark border">in Mobius</span><?php endif;?></td>
+            <td class="text-end text-nowrap">
+                <?php if($kind==='portal'):?><a class="btn btn-sm btn-primary" href="?page=ussd_build&short_code=<?=urlencode($c)?>" title="Open in the Easy Builder"><i class="fa-solid fa-wand-magic-sparkles"></i> Build</a>
+                    <?php if($m):?><a class="btn btn-sm btn-outline-secondary" href="?page=ussd_sim&sc=<?=urlencode($c)?>" title="Try it like a phone"><i class="fa-solid fa-mobile-screen"></i></a><?php endif;?>
+                    <?php if($canEdit && ($m || $rg)):?><a class="btn btn-sm btn-outline-secondary" href="?page=ussd_menus&edit=<?=urlencode($c)?>" title="Rename it or change its short code"><i class="fa-solid fa-pen"></i></a><?php endif;?>
+                    <?php if($m || $rg):?><a class="btn btn-sm btn-outline-secondary" href="?page=ussd_menus&setup=<?=urlencode($c)?>" title="Setup checklist"><i class="fa-solid fa-list-check"></i></a><?php endif;?>
+                    <?php if($url):?><button class="btn btn-sm btn-outline-secondary" type="button" data-copy-url="<?=e($url)?>" title="Copy the URL Mobius calls"><i class="fa-regular fa-copy"></i></button><?php endif;?>
+                <?php elseif($canMobPage && $mid!==''):?>
+                    <?php if($kind==='mobius'):?><a class="btn btn-sm btn-primary" href="?page=mobius_menus&steps=<?=$mq?>" title="Open its screens in the Builder"><i class="fa-solid fa-wand-magic-sparkles"></i> Build</a>
+                        <a class="btn btn-sm btn-outline-secondary" href="?page=mobius_menus&try=<?=$mq?>" title="Try it like a phone"><i class="fa-solid fa-mobile-screen"></i></a>
+                        <a class="btn btn-sm btn-outline-secondary" href="?page=mobius_menus&schedule=<?=$mq?>" title="Choose when it goes live"><i class="fa-regular fa-clock"></i></a><?php endif;?>
+                    <a class="btn btn-sm btn-outline-secondary" href="?page=mobius_menus&view=<?=$mq?>" title="Open it on the Mobius page"><i class="fa-solid fa-up-right-from-square"></i></a>
+                <?php endif;?></td></tr>
+    <?php endforeach;?>
+    <tr id="mnNone" <?=$rows && ($fk==='all' || $kinds[$fk][1])?'hidden':''?>><td colspan="6" class="text-muted p-3">No menus here yet. Press <b>Create a menu</b>.</td></tr>
+    </tbody></table></div><div class="small text-muted px-3 py-2"><?=count($rows)?> short code<?=count($rows)===1?'':'s'?><?=$mobOk?' · Mobius read at '.date('H:i',(int)($mob['at']??time())):''?>.</div></div>
+    <style>.mn-kind-portal{background:#e0ecff;color:#1d4ed8}.mn-kind-mobius{background:#ebe7fe;color:#6d28d9}</style>
     <script nonce="<?=e(csp_nonce())?>">
-    document.getElementById('mnFilter')?.addEventListener('input',function(e){var q=e.target.value.toLowerCase();document.querySelectorAll('#mnTable tbody tr').forEach(function(r){r.hidden=q!==''&&r.textContent.toLowerCase().indexOf(q)<0;});});
+    (function(){ // search box + "Built in" buttons, together; the choice stays in the address so Refresh keeps it
+        var kind=<?=json_encode($fk)?>, box=document.getElementById('mnFilter');
+        function show(){ var q=(box&&box.value||'').toLowerCase().trim(), n=0;
+            document.querySelectorAll('#mnTable tbody tr[data-kind]').forEach(function(r){ var ok=(kind==='all'||r.dataset.kind===kind)&&(q===''||r.textContent.toLowerCase().indexOf(q)>=0); r.hidden=!ok; if(ok) n++; });
+            var none=document.getElementById('mnNone'); if(none) none.hidden=n>0; }
+        box&&box.addEventListener('input',show);
+        document.querySelectorAll('#mnKinds [data-kind]').forEach(function(b){ b.addEventListener('click',function(){ kind=b.dataset.kind;
+            document.querySelectorAll('#mnKinds [data-kind]').forEach(function(x){ var on=x===b; x.className='btn btn-sm '+(on?'btn-dark':'btn-outline-secondary'); var bd=x.querySelector('.badge'); if(bd) bd.className='badge rounded-pill '+(on?'bg-light text-dark':'bg-secondary'); });
+            var u=new window.URL(location.href); if(kind==='all') u.searchParams.delete('f'); else u.searchParams.set('f',kind); history.replaceState(null,'',u.href); show(); }); });
+    })();
     document.querySelectorAll('[data-copy-url]').forEach(function(b){b.addEventListener('click',function(){var u=new URL(b.dataset.copyUrl,location.href).href,done=function(){var t=b.innerHTML;b.innerHTML='<i class="fa-solid fa-check"></i> Copied';setTimeout(function(){b.innerHTML=t;},1500);};if(navigator.clipboard){navigator.clipboard.writeText(u).then(done);}else{var x=document.createElement('textarea');x.value=u;document.body.appendChild(x);x.select();document.execCommand('copy');x.remove();done();}});});
     </script>
     <?php layout_end(); exit;

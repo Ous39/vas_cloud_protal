@@ -101,6 +101,7 @@ function mobius_probe_ok(array $r): bool {
 // One REST call, trying the nodes in order and the ways of presenting the session. A node that answered (even with a refusal) is not followed
 // by the next one, so a refused write is never repeated.
 function mobius_rest(array $cfg, string $path, array $data = []): array {
+    if (preg_match('~^ussdmenues/(set|delete)~', $path)) { mobius_list_forget(); register_shutdown_function('mobius_list_forget'); } // a menu changed: the kept menu list is out of date
     $errors = []; $pref = max(0, min(1, (int)$cfg['mobius_variant'])); $order = array_values(array_unique([$pref, 0, 1]));
     foreach (mobius_bases($cfg) as $base) {
         $r = ['code' => 0, 'json' => null, 'raw' => '', 'error' => ''];
@@ -261,6 +262,21 @@ function mobius_list_menus(array $cfg): array {
     if ($best === null) return ['ok' => false, 'error' => (string)$firstError, 'diag' => $diag];
     return ['ok' => true, 'menus' => $best['menus'], 'count' => $count, 'shape' => $best['shape'], 'diag' => $diag];
 }
+// The menu list for pages that only show it (USSD Menus): kept for a minute, so opening the page does not ask Mobius every time.
+// A failed read is not kept, and any change the portal sends to Mobius forgets the list (mobius_rest). Pages that change menus read it fresh.
+const MOBIUS_LIST_TTL = 60;
+function mobius_list_key(array $cfg): string { return 'mobius_menu_list:'.substr(md5(implode(',', mobius_bases($cfg)).'|'.$cfg['mobius_user']), 0, 12); }
+function mobius_list_menus_cached(array $cfg, bool $fresh = false): array {
+    if ($fresh) mobius_list_forget();
+    $r = cached(mobius_list_key($cfg), MOBIUS_LIST_TTL, function () use ($cfg) {
+        $l = mobius_list_menus($cfg); if (!$l['ok']) return ['ok' => false, 'error' => (string)$l['error'], 'menus' => []];
+        return ['ok' => true, 'menus' => array_map(fn($m) => array_diff_key($m, ['_raw' => 1]), $l['menus']), 'count' => $l['count'], 'at' => time()];
+    });
+    if (!is_array($r) || empty($r['ok'])) { mobius_list_forget(); return is_array($r) ? $r + ['menus' => []] : ['ok' => false, 'error' => 'no answer', 'menus' => []]; }
+    return $r;
+}
+function mobius_list_forget(): void { try { portal_pdo()->exec("DELETE FROM metric_cache WHERE cache_key LIKE 'mobius_menu_list:%'"); } catch (Throwable $e) {} }
+
 function mobius_menu_is_ours(array $m, array $cfg): bool {
     $u = (string)($m['remoteURL'] ?? ''); return $cfg['token'] !== '' && str_contains($u, 'ussd.php') && str_contains($u, 't='.$cfg['token']);
 }

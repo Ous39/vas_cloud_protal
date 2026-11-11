@@ -35,7 +35,7 @@ function monitoring_subnav(string $current): void {
 // moves between them (Menus: in the portal / in Mobius; Special menus: Service Flows / Quiz). Set-once pages are under Settings.
 function ussd_subnav(string $current): void {
     $groups = [
-        ['fa-list', 'Menus', [['ussd_menus', 'In the portal'], ['mobius_menus', 'In Mobius']]],
+        ['fa-list', 'Menus', [['ussd_menus', 'All menus'], ['mobius_menus', 'Mobius tools']]],
         ['fa-wand-magic-sparkles', 'Builder', [['ussd_build', 'Easy Builder']]],
         ['fa-mobile-screen', 'Try it', [['ussd_sim', 'Simulator']]],
         ['fa-diagram-project', 'Special menus', [['ussd_flows', 'Service Flows'], ['ussd_quiz', 'Quiz']]],
