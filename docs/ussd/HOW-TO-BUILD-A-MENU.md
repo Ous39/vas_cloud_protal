@@ -196,3 +196,15 @@ Open the menu (USSD → Menus → In Mobius) and choose the **Schedule** tab. Mo
 Typical launch: create the new version on a test code (e.g. `*9606*0*1#`) with **Create a menu**, build it in the Builder, test it with **Try it**, then schedule it onto the real code for the launch time.
 
 A new empty Mobius menu starts with **Start: add the first screen**: Mobius refuses a Welcome step on its own, so the Welcome and the first screen are created together.
+
+## Trace a dial — find out why a code did not work, without the gateway logs
+
+USSD → **Try it → Trace a dial** (also a **USSD dials** tab on Complaint Investigation). Type the customer's number — and, for the best results, the short code they dialled — and pick *last hour / 24 hours / 7 days / 30 days*. The portal asks Mobius for that number's sessions and shows, newest first: when, the code the phone sent, the menu that answered, the screens shown and what the customer typed (open *The session, screen by screen*), and what happened in plain words with where to look:
+
+- **Mobius answered and the session ended normally** — if the customer still saw “Connection problem / invalid MMI code”, the reply was lost after Mobius, in the network (STP / HLR / MSC).
+- **No dial from this number reached Mobius** — wrong number or time, or the network (MSC / HLR) did not send the dial to Mobius: the menu is not the problem.
+- **No answer in time** (Mobius error -10012) — the next screen came after 60 seconds: the portal, the partner app or a “Call a service” step was slow; for a menu with none of those, the gateway itself did not process the dial (check the nodes).
+- **Mobius has no menu on the code the phone sent** (-10028) — the code is not in Mobius, or the network changed it on the way (missing *, extra #).
+- **The service behind the menu ended the session with an error text** — ask the owner of that service.
+
+Purchases made through portal menus for that number are listed under the sessions. Only the number you typed is ever shown, and every search is kept in the audit trail (with the number shortened). Without a short code, Mobius may not search by number alone — the page then asks for the code.

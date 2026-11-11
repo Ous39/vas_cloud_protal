@@ -467,6 +467,7 @@ function mobius_call_norm(array $c): array {
     $vars = []; foreach ((array)($c['variables'] ?? []) as $v) if (is_array($v)) $vars[(string)($v['propertyName'] ?? '')] = (string)($v['propertyValue'] ?? $v['defaultValue'] ?? '');
     $err = trim((string)($c['errorMessage'] ?? '')); $code = $c['errorCode'] ?? null;
     return ['id' => $id, 'time' => $t, 'msisdn' => (string)($c['msisdn'] ?? ''), 'request' => (string)($c['originalRequest'] ?? ''), 'completed' => !empty($c['isCompleted']),
+        'menu' => mobius_id_text($c['menuID'] ?? ''), 'code' => $code !== null && is_numeric($code) ? (int)$code : null,
         'error' => $err !== '' ? $err : (($code !== null && (int)$code !== 0) ? 'error '.$code : ''), 'steps' => $steps, 'vars' => $vars, 'language' => (string)($c['language'] ?? '')];
 }
 // The calls of one menu, newest first. ['ok', 'calls' => […], 'next' => key for the following page | null, 'total' => N|null].
@@ -501,6 +502,55 @@ function mobius_menu_call_count(array $cfg, string $menuId): ?int {
 function mobius_shared_codes(array $menus): array {
     $g = []; foreach ($menus as $m) { $b = rtrim(trim((string)$m['shortcode']), '#'); if ($b !== '') $g[$b][] = $m; }
     $g = array_filter($g, fn($x) => count($x) > 1); uksort($g, 'strnatcmp'); return $g;
+}
+// ---- Trace a dial: one phone number's USSD sessions in Mobius, explained in plain words ----
+// A number as Mobius keeps it: digits, with the 220 country code (7 or 9 local digits get it added).
+function mobius_norm_msisdn(string $n): string {
+    $d = preg_replace('/\D+/', '', $n); $d = preg_replace('/^00/', '', $d);
+    if ((strlen($d) === 7 || strlen($d) === 9) && !str_starts_with($d, '220')) $d = '220'.$d;
+    return $d;
+}
+// The calls of one number, newest first, from $since on. With a short code: the calls on the menus Mobius has for it (list_by_menu,
+// filtered by the number in Mobius). Without: ussdcalls/list with the number; rows of other numbers are always dropped, so nobody
+// else's calls are ever shown. ['ok', 'calls', 'how' => 'code'|'number', 'note'].
+function mobius_number_calls(array $cfg, string $msisdn, string $code = '', int $since = 0, int $max = 100): array {
+    $msisdn = mobius_norm_msisdn($msisdn); if (strlen($msisdn) < 8) return ['ok' => false, 'error' => 'Type the full phone number, for example 220 3xx xxxx.'];
+    $mine = fn(array $c) => preg_replace('/\D+/', '', $c['msisdn']) === $msisdn && (!$since || ($c['time'] ?? 0) >= $since);
+    $l = mobius_list_menus_cached($cfg); if (!$l['ok']) return ['ok' => false, 'error' => 'Could not read Mobius: '.$l['error']];
+    $names = []; foreach ($l['menus'] as $m) $names[$m['menuID']] = $m;
+    $calls = []; $how = 'number'; $note = '';
+    $code = trim($code);
+    if ($code !== '') {
+        $how = 'code'; $bare = rtrim(preg_replace('/\s+/', '', $code), '#'); $menus = array_filter($l['menus'], fn($m) => rtrim(trim((string)$m['shortcode']), '#') === $bare);
+        if (!$menus) return ['ok' => true, 'calls' => [], 'how' => $how, 'note' => 'Mobius has no menu on '.$code.' — a dial of that code gets “shortcode not configured”.', 'msisdn' => $msisdn];
+        foreach ($menus as $m) {
+            $r = mobius_menu_calls($cfg, (string)$m['menuID'], $msisdn, min(200, $max)); if (!$r['ok']) { $note = 'Mobius refused the search: '.$r['error']; continue; }
+            foreach ($r['calls'] as $c) if ($mine($c)) { if ($c['menu'] === '') $c['menu'] = (string)$m['menuID']; $calls[$c['id'] !== '' ? $c['id'] : count($calls)] = $c; }
+        }
+    } else {
+        $r = mobius_rest($cfg, 'ussdcalls/list', ['msisdn' => $msisdn, 'pageSize' => min(200, $max), 'includePreviousKey' => false, 'reverse' => true]);
+        if (!$r['ok']) return ['ok' => true, 'calls' => [], 'how' => $how, 'note' => 'Mobius does not search by number alone here — add the short code the customer dialled.', 'msisdn' => $msisdn];
+        $rows = mobius_find_rows($r['json']) ?? []; $other = 0;
+        foreach ($rows as $row) { $c = mobius_call_norm($row); if ($mine($c)) $calls[$c['id'] !== '' ? $c['id'] : count($calls)] = $c; elseif ($c['msisdn'] !== $msisdn) $other++; }
+        if (!$calls && $other) $note = 'Mobius did not filter by number, so only its latest calls could be checked — add the short code the customer dialled for a full search.';
+    }
+    $calls = array_values($calls); usort($calls, fn($a, $b) => ($b['time'] ?? 0) <=> ($a['time'] ?? 0));
+    foreach ($calls as &$c) { $m = $names[$c['menu']] ?? null; $c['menu_name'] = $m['name'] ?? ''; $c['menu_code'] = $m['shortcode'] ?? ''; $c['menu_kind'] = $m ? mobius_menu_kind($m, $cfg) : ''; $c['why'] = mobius_call_explain($c); } unset($c);
+    return ['ok' => true, 'calls' => array_slice($calls, 0, $max), 'how' => $how, 'note' => $note, 'msisdn' => $msisdn];
+}
+// What happened in one session, in plain words: [level (success|warning|danger|secondary), what, where to look].
+function mobius_call_explain(array $c): array {
+    $e = strtolower($c['error']); $code = $c['code'];
+    $portal = ($c['menu_kind'] ?? '') === 'portal'; $other = ($c['menu_kind'] ?? '') === 'other';
+    if ($code === -10012 || str_contains($e, 'timed out')) return ['danger', 'No answer in time — Mobius waited 60 seconds for the next screen.',
+        $portal ? 'The portal did not send the screen in time: look at USSD → Settings → Proxy (is the endpoint live and pushing?).' : ($other ? 'The service behind this menu did not answer in time: ask its owner (its address is on the Mobius page).' : 'A “Call a service” step was too slow — or, if the menu has none, the gateway itself did not process the dial (check that the Mobius nodes are running and on the same version).')];
+    if ($code === -10028 || str_contains($e, 'shortcode not configured')) return ['danger', 'Mobius has no menu on the code the phone sent (“'.$c['request'].'”).', 'Check the code. If it looks changed (missing * or extra #), the network sent it that way.'];
+    if ($code === -10020 || str_contains($e, 'can not be found')) return ['warning', 'Mobius lost the session (usually right after a timeout or a restart).', 'Look at the session just before this one.'];
+    if (str_contains($e, 'invalid string') || str_contains($e, 'unable to process')) return ['danger', 'The service behind the menu ended the session with an error text (“'.$c['error'].'”).', $portal ? 'Open the menu in the Simulator with the same answers.' : 'Ask the owner of the service behind this menu.'];
+    if ($c['error'] !== '') return ['danger', 'Mobius error: '.$c['error'].'.', 'Open the menu on the Mobius page → Calls for the details.'];
+    if ($c['completed']) return ['success', 'Mobius answered and the session ended normally.', 'If the customer still saw “Connection problem / invalid MMI code”, the reply was lost after Mobius — in the network (STP / HLR / MSC).'];
+    $mob = array_filter($c['steps'], fn($s) => $s['mobile']);
+    return ['secondary', $mob ? 'The customer stopped answering (or the session is still open).' : 'The session opened but did not finish.', 'Normal if the customer left; if they say the screen froze, look at the last screen shown.'];
 }
 // Numbers for one menu from its most recent calls (up to $max): per day, completed / errors, top numbers and top answers.
 function mobius_menu_stats(array $cfg, string $menuId, int $max = 1000): array {

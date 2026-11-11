@@ -10,6 +10,7 @@ function nav_can_see(string $page): bool {
     if ($page==='audit') return can('view_audit');
     if ($page==='ussd_sim' || $page==='ussd_quiz' || $page==='ussd_flows' || $page==='ussd_build' || $page==='ussd_new') return can('manage_ussd_menus');
     if ($page==='ussd_proxy' || $page==='mobius_menus') return can('manage_api_keys');
+    if ($page==='ussd_trace') return can('view_reports');
     if ($page==='api_keys') return can('manage_api_keys');
     if ($page==='promotions') return can('manage_promotions');
     if (in_array($page,['alert_settings','retention','status'],true)) return can('manage_api_keys');
@@ -37,7 +38,7 @@ function ussd_subnav(string $current): void {
     $groups = [
         ['fa-list', 'Menus', [['ussd_menus', 'All menus'], ['mobius_menus', 'Mobius tools']]],
         ['fa-wand-magic-sparkles', 'Builder', [['ussd_build', 'Easy Builder']]],
-        ['fa-mobile-screen', 'Try it', [['ussd_sim', 'Simulator']]],
+        ['fa-mobile-screen', 'Try it', [['ussd_sim', 'Simulator'], ['ussd_trace', 'Trace a dial']]],
         ['fa-diagram-project', 'Special menus', [['ussd_flows', 'Service Flows'], ['ussd_quiz', 'Quiz']]],
     ];
     $settings = [['ussd_proxy', 'fa-plug', 'Proxy (connection to Mobius)'], ['shortcodes', 'fa-hashtag', 'Short Codes'], ['ussd_ivr', 'fa-route', 'Routing & IVR'], ['ussd_menu', 'fa-sitemap', 'Advanced builder (old)']];
@@ -67,7 +68,7 @@ function layout_start(string $title): void {
     $u=user(); $schema=current_schema(); $current=$_GET['page']??'dashboard';
     // The main menu: few entries. USSD and Monitoring are one entry each; their pages have their own tab bar.
     // A top-level entry is [page, icon, label, pages it covers]; the first page of that list the user may open is the link.
-    $ussdPages = ['mobius_menus','ussd_menus','ussd_build','ussd_new','ussd_sim','ussd_flows','ussd_quiz','ussd_proxy','ussd_menu','ussd_ivr'];
+    $ussdPages = ['mobius_menus','ussd_menus','ussd_build','ussd_new','ussd_sim','ussd_trace','ussd_flows','ussd_quiz','ussd_proxy','ussd_menu','ussd_ivr'];
     $nav = [
         ['dashboard','fa-gauge','Dashboard',['dashboard']],
         ['ussd','fa-mobile-screen-button','USSD',$ussdPages],
