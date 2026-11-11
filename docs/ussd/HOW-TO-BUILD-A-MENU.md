@@ -207,4 +207,6 @@ USSD → **Try it → Trace a dial** (also a **USSD dials** tab on Complaint Inv
 - **Mobius has no menu on the code the phone sent** (-10028) — the code is not in Mobius, or the network changed it on the way (missing *, extra #).
 - **The service behind the menu ended the session with an error text** — ask the owner of that service.
 
+**Go to menu.** When a menu sends the customer on to another menu (a *Go to menu* step), the trace follows it (up to 3 jumps) and shows the whole dial as one **journey** — *Journey: Commercial Launch MAIN → Promotions PROD → DIYAA PROMO* — with every screen in order and a *went on to …* line at each jump. The result shown is the one where the customer ended, so a timeout in the last menu is not hidden behind the first one. A later dial of the second menu's own code stays a separate session.
+
 Purchases made through portal menus for that number are listed under the sessions. Only the number you typed is ever shown, and every search is kept in the audit trail (with the number shortened). Without a short code, Mobius may not search by number alone — the page then asks for the code.

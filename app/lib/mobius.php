@@ -523,9 +523,16 @@ function mobius_number_calls(array $cfg, string $msisdn, string $code = '', int 
     if ($code !== '') {
         $how = 'code'; $bare = rtrim(preg_replace('/\s+/', '', $code), '#'); $menus = array_filter($l['menus'], fn($m) => rtrim(trim((string)$m['shortcode']), '#') === $bare);
         if (!$menus) return ['ok' => true, 'calls' => [], 'how' => $how, 'note' => 'Mobius has no menu on '.$code.' — a dial of that code gets “shortcode not configured”.', 'msisdn' => $msisdn];
-        foreach ($menus as $m) {
-            $r = mobius_menu_calls($cfg, (string)$m['menuID'], $msisdn, min(200, $max)); if (!$r['ok']) { $note = 'Mobius refused the search: '.$r['error']; continue; }
-            foreach ($r['calls'] as $c) if ($mine($c)) { if ($c['menu'] === '') $c['menu'] = (string)$m['menuID']; $calls[$c['id'] !== '' ? $c['id'] : count($calls)] = $c; }
+        $reach = mobius_menu_reach($cfg, array_values(array_map(fn($m) => (string)$m['menuID'], $menus)));
+        foreach (array_keys($reach) as $mid) {
+            $r = mobius_menu_calls($cfg, (string)$mid, $msisdn, min(200, $max)); if (!$r['ok']) { $note = 'Mobius refused the search: '.$r['error']; continue; }
+            foreach ($r['calls'] as $c) if ($mine($c)) { if ($c['menu'] === '') $c['menu'] = (string)$mid; $k = $c['id'] !== '' ? $c['id'] : 'n'.count($calls);
+                if (isset($calls[$k])) { // the same call seen in two menus: one session that went on through "Go to menu"
+                    $a = $calls[$k]; $first = ($reach[$a['menu']] ?? '') === '' ? $a : $c; $other = $first === $a ? $c : $a;
+                    $first['steps'] = array_merge($first['steps'], array_values(array_filter($other['steps'], fn($x) => !in_array($x, $first['steps'], true))));
+                    $first['completed'] = $first['completed'] || $other['completed']; if ($first['error'] === '') { $first['error'] = $other['error']; $first['code'] = $other['code']; }
+                    $first['via'][] = $other['menu']; $calls[$k] = $first; }
+                else $calls[$k] = $c; }
         }
     } else {
         $r = mobius_rest($cfg, 'ussdcalls/list', ['msisdn' => $msisdn, 'pageSize' => min(200, $max), 'includePreviousKey' => false, 'reverse' => true]);
@@ -534,9 +541,41 @@ function mobius_number_calls(array $cfg, string $msisdn, string $code = '', int 
         foreach ($rows as $row) { $c = mobius_call_norm($row); if ($mine($c)) $calls[$c['id'] !== '' ? $c['id'] : count($calls)] = $c; elseif ($c['msisdn'] !== $msisdn) $other++; }
         if (!$calls && $other) $note = 'Mobius did not filter by number, so only its latest calls could be checked — add the short code the customer dialled for a full search.';
     }
-    $calls = array_values($calls); usort($calls, fn($a, $b) => ($b['time'] ?? 0) <=> ($a['time'] ?? 0));
-    foreach ($calls as &$c) { $m = $names[$c['menu']] ?? null; $c['menu_name'] = $m['name'] ?? ''; $c['menu_code'] = $m['shortcode'] ?? ''; $c['menu_kind'] = $m ? mobius_menu_kind($m, $cfg) : ''; $c['why'] = mobius_call_explain($c); } unset($c);
+    $calls = array_values($calls);
+    foreach ($calls as &$c) { $m = $names[$c['menu']] ?? null; $c['menu_name'] = $m['name'] ?? ''; $c['menu_code'] = $m['shortcode'] ?? ''; $c['menu_kind'] = $m ? mobius_menu_kind($m, $cfg) : '';
+        $c['via_names'] = array_values(array_map(fn($v) => $names[$v]['name'] ?? 'another menu', $c['via'] ?? [])); $c['why'] = mobius_call_explain($c); } unset($c);
+    if ($how === 'number') { $reach = []; foreach ($calls as $c) if ($c['menu'] !== '') foreach (mobius_goto_targets($cfg, $c['menu']) as $t) $reach[$t] ??= $c['menu']; }
+    $calls = mobius_calls_join($calls, $reach ?? []);
     return ['ok' => true, 'calls' => array_slice($calls, 0, $max), 'how' => $how, 'note' => $note, 'msisdn' => $msisdn];
+}
+// The menus a menu sends callers on to with "Go to menu" steps (their ids). Kept 10 minutes.
+function mobius_goto_targets(array $cfg, string $menuId): array {
+    return cached('mobius_goto:'.$menuId, 600, function () use ($cfg, $menuId) { $r = mobius_menu_steps($cfg, $menuId); if (!$r['ok']) return [];
+        return array_values(array_unique(array_filter(array_map(fn($st) => $st['type'] === 'GO_TO_MENU' ? $st['next'] : '', $r['steps'])))); });
+}
+// Every menu a dial can reach from these menus through "Go to menu" (up to $depth jumps): [menu id => the menu it came from ('' = dialled)].
+function mobius_menu_reach(array $cfg, array $start, int $depth = 3): array {
+    $seen = array_fill_keys($start, ''); $wave = $start;
+    for ($d = 0; $d < $depth && $wave; $d++) { $next = []; foreach ($wave as $id) foreach (mobius_goto_targets($cfg, $id) as $t) if (!isset($seen[$t])) { $seen[$t] = $id; $next[] = $t; } $wave = $next; }
+    return $seen;
+}
+// Joins the parts of one dial: Mobius may keep the part after a "Go to menu" as the same call in the other menu, or as a new call there.
+// A part in a menu reached by "Go to menu" that starts within 3 minutes after a session of a menu it can come from is shown under it ('then'),
+// and that session's result becomes the result where the customer ended.
+function mobius_calls_join(array $calls, array $reach): array {
+    usort($calls, fn($a, $b) => ($a['time'] ?? 0) <=> ($b['time'] ?? 0)); $top = []; $idx = [];
+    foreach ($calls as $c) {
+        $c['then'] = []; $from = $reach[$c['menu']] ?? '';
+        if ($from !== '') { // came by "Go to menu": find the session it continues
+            for ($i = count($top) - 1; $i >= 0; $i--) { $p = &$top[$i]; $lastT = $p['then'] ? end($p['then'])['time'] : $p['time']; $lastM = $p['then'] ? end($p['then'])['menu'] : $p['menu'];
+                if (!($c['request'] !== '' && $c['request'] === ($c['menu_code'] ?? '') && $c['request'] !== $p['request']) // not a new dial of that menu's own code
+                    && ($c['time'] ?? 0) - ($lastT ?? 0) <= 180 && ($c['time'] ?? 0) >= ($p['time'] ?? 0) - 5 && ($lastM === $from || $p['menu'] === $from || isset($reach[$lastM]))) { $p['then'][] = $c; unset($p); continue 2; }
+                unset($p); }
+        }
+        $top[] = $c;
+    }
+    foreach ($top as &$t) if ($t['then']) { $end = end($t['then']); $t['why_own'] = $t['why']; $t['why'] = [$end['why'][0], 'Went on to “'.($end['menu_name'] ?: 'another menu').'”: '.$end['why'][1], $end['why'][2]]; } unset($t);
+    usort($top, fn($a, $b) => ($b['time'] ?? 0) <=> ($a['time'] ?? 0)); return $top;
 }
 // What happened in one session, in plain words: [level (success|warning|danger|secondary), what, where to look].
 function mobius_call_explain(array $c): array {

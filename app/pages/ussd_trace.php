@@ -53,8 +53,12 @@ declare(strict_types=1);
             <span class="badge bg-<?=e($lv==='secondary'?'secondary':$lv)?><?=$lv==='warning'?' text-dark':''?> ms-auto"><?=$lv==='success'?'answered':($lv==='secondary'?'not finished':'problem')?></span>
         </div>
         <div class="mt-1"><?=e($what)?> <span class="text-muted small"><?=e($where)?></span></div>
-        <?php if($c['steps']):?><details class="mt-2"><summary class="small">The session, screen by screen (<?=count($c['steps'])?>)</summary>
-            <div class="tr-chat mt-2"><?php foreach($c['steps'] as $s): if($s['message']==='') continue;?><div class="tr-msg <?=$s['mobile']?'tr-in':'tr-out'?>"><span class="small text-muted d-block"><?=$s['mobile']?'Customer typed':'Screen shown'?></span><?=nl2br(e($s['message']))?></div><?php endforeach;?></div></details><?php endif;?>
+        <?php $legs=array_merge([['c'=>$c,'first'=>true]],array_map(fn($x)=>['c'=>$x,'first'=>false],$c['then']??[])); $nSteps=array_sum(array_map(fn($l)=>count($l['c']['steps']),$legs));
+        if(count($legs)>1 || !empty($c['via_names'])):?><div class="small mt-1 text-muted"><i class="fa-solid fa-share me-1"></i>Journey: <?=e($c['menu_name']?:'menu')?><?php foreach($c['via_names']??[] as $vn):?> → <?=e($vn)?><?php endforeach;?><?php foreach($c['then']??[] as $t):?> → <?=e($t['menu_name']?:'another menu')?><?php endforeach;?> <span title="through “Go to menu” steps">(Go to menu)</span></div><?php endif;?>
+        <?php if($nSteps):?><details class="mt-2"><summary class="small">The session, screen by screen (<?=$nSteps?>)</summary>
+            <div class="tr-chat mt-2"><?php foreach($legs as $li=>$l): if(!$l['first']):?><div class="tr-jump small text-muted"><i class="fa-solid fa-share me-1"></i>went on to <b><?=e($l['c']['menu_name']?:'another menu')?></b><?=$l['c']['time']?' at '.e(date('H:i:s',(int)$l['c']['time'])):''?><?=$li===count($legs)-1?' — '.e($l['c']['why'][1]):''?></div><?php endif;?>
+                <?php foreach($l['c']['steps'] as $s): if($s['message']==='') continue;?><div class="tr-msg <?=$s['mobile']?'tr-in':'tr-out'?>"><span class="small text-muted d-block"><?=$s['mobile']?'Customer typed':'Screen shown'?></span><?=nl2br(e($s['message']))?></div><?php endforeach;?>
+            <?php endforeach;?></div></details><?php endif;?>
         <?php if($c['menu']!=='' && nav_can_see('mobius_menus')):?><div class="small mt-2"><a href="?page=mobius_menus&view=<?=urlencode($c['menu'])?>">Open the menu</a><?php if($c['menu_kind']==='mobius'):?> · <a href="?page=mobius_menus&steps=<?=urlencode($c['menu'])?>">its screens</a><?php elseif($c['menu_kind']==='portal' && menu_valid_shortcode(menu_normalize_shortcode($c['menu_code']))):?> · <a href="?page=ussd_sim&sc=<?=urlencode(menu_normalize_shortcode($c['menu_code']))?>">try it in the Simulator</a><?php endif;?></div><?php endif;?>
     </div>
     <?php endforeach;?>
@@ -76,5 +80,5 @@ declare(strict_types=1);
         <li><b>No menu on the code</b> → the code is not in Mobius, or the network changed it on the way (missing *, extra #).</li></ul></div>
     <?php endif;?>
     <style>.tr-chat{display:flex;flex-direction:column;gap:.4rem;max-width:560px}.tr-msg{padding:.45rem .7rem;border-radius:12px;white-space:normal}
-    .tr-out{background:#f1f5f9;align-self:flex-start}.tr-in{background:#dcfce7;align-self:flex-end;text-align:right}</style>
+    .tr-out{background:#f1f5f9;align-self:flex-start}.tr-in{background:#dcfce7;align-self:flex-end;text-align:right}.tr-jump{align-self:center;border-top:1px dashed #cbd5e1;padding-top:.3rem;width:100%;text-align:center}</style>
     <?php layout_end(); exit;
