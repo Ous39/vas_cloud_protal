@@ -27,7 +27,7 @@ declare(strict_types=1);
         <h3><i class="fa-solid fa-timeline me-2"></i>Customer Timeline</h3>
         <p class="text-muted">Everything we have for one subscriber in one list, newest first — transactions from <b>audit_log</b> and subscription attempts from <b>subscription</b> side by side, so you can see what happened in order.</p>
         <form method="get" class="row g-2"><input type="hidden" name="page" value="timeline">
-            <div class="col-md-4"><label>MSISDN</label><input class="form-control" name="msisdn" value="<?=e($msisdn)?>" required placeholder="e.g. 6201234"></div>
+            <div class="col-md-4"><label>MSISDN</label><input class="form-control" name="msisdn" value="<?=e($msisdn)?>" required placeholder="e.g. 866123456"></div>
             <div class="col-md-2"><label>Date from</label><input type="date" class="form-control" name="date_from" value="<?=e($from)?>"></div>
             <div class="col-md-2"><label>Date to</label><input type="date" class="form-control" name="date_to" value="<?=e($to)?>"></div>
             <div class="col-md-4 d-flex align-items-end"><button class="btn btn-primary w-100"><i class="fa fa-search"></i> Show timeline</button></div>

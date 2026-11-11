@@ -463,7 +463,8 @@ function mobius_call_norm(array $c): array {
     $id = mobius_id_text($c['callID'] ?? ($c['_id'] ?? '')); $oid = mobius_id_text($c['_id'] ?? ($c['callID'] ?? ''));
     $t = null; foreach (['startTime', 'timestamp', 'created', 'createdAt', 'date', 'time'] as $k) if (!empty($c[$k])) { $t = is_numeric($c[$k]) ? (int)($c[$k] > 1e11 ? $c[$k] / 1000 : $c[$k]) : (strtotime((string)(is_array($c[$k]) ? ($c[$k]['$date'] ?? '') : $c[$k])) ?: null); if ($t) break; }
     $t ??= mobius_oid_time($oid) ?? mobius_oid_time($id);
-    $steps = array_map(fn($s) => ['mobile' => !empty($s['isMobile']), 'message' => (string)($s['message'] ?? ''), 'step' => mobius_id_text($s['stepID'] ?? '')], array_values((array)($c['passedSteps'] ?? [])));
+    $stime = function ($s) { foreach (['timestamp', 'time', 'date', 'created'] as $k) if (!empty($s[$k])) { $v = $s[$k]; $v = is_array($v) ? ($v['$date'] ?? '') : $v; return is_numeric($v) ? (int)($v > 1e11 ? $v / 1000 : $v) : (strtotime((string)$v) ?: null); } return null; };
+    $steps = array_map(fn($s) => ['mobile' => !empty($s['isMobile']), 'message' => (string)($s['message'] ?? ''), 'step' => mobius_id_text($s['stepID'] ?? ''), 'time' => is_array($s) ? $stime($s) : null], array_values((array)($c['passedSteps'] ?? [])));
     $vars = []; foreach ((array)($c['variables'] ?? []) as $v) if (is_array($v)) $vars[(string)($v['propertyName'] ?? '')] = (string)($v['propertyValue'] ?? $v['defaultValue'] ?? '');
     $err = trim((string)($c['errorMessage'] ?? '')); $code = $c['errorCode'] ?? null;
     return ['id' => $id, 'time' => $t, 'msisdn' => (string)($c['msisdn'] ?? ''), 'request' => (string)($c['originalRequest'] ?? ''), 'completed' => !empty($c['isCompleted']),
@@ -503,7 +504,7 @@ function mobius_shared_codes(array $menus): array {
     $g = []; foreach ($menus as $m) { $b = rtrim(trim((string)$m['shortcode']), '#'); if ($b !== '') $g[$b][] = $m; }
     $g = array_filter($g, fn($x) => count($x) > 1); uksort($g, 'strnatcmp'); return $g;
 }
-// ---- Trace a dial: one phone number's USSD sessions in Mobius, explained in plain words ----
+// ---- Trace a number: one phone number's USSD sessions in Mobius, explained in plain words ----
 // A number as Mobius keeps it: digits, with the 220 country code (7 or 9 local digits get it added).
 function mobius_norm_msisdn(string $n): string {
     $d = preg_replace('/\D+/', '', $n); $d = preg_replace('/^00/', '', $d);
@@ -514,7 +515,7 @@ function mobius_norm_msisdn(string $n): string {
 // filtered by the number in Mobius). Without: ussdcalls/list with the number; rows of other numbers are always dropped, so nobody
 // else's calls are ever shown. ['ok', 'calls', 'how' => 'code'|'number', 'note'].
 function mobius_number_calls(array $cfg, string $msisdn, string $code = '', int $since = 0, int $max = 100): array {
-    $msisdn = mobius_norm_msisdn($msisdn); if (strlen($msisdn) < 8) return ['ok' => false, 'error' => 'Type the full phone number, for example 220 3xx xxxx.'];
+    $msisdn = mobius_norm_msisdn($msisdn); if (strlen($msisdn) < 8) return ['ok' => false, 'error' => 'Type the full phone number, for example 866 123 456.'];
     $mine = fn(array $c) => preg_replace('/\D+/', '', $c['msisdn']) === $msisdn && (!$since || ($c['time'] ?? 0) >= $since);
     $l = mobius_list_menus_cached($cfg); if (!$l['ok']) return ['ok' => false, 'error' => 'Could not read Mobius: '.$l['error']];
     $names = []; foreach ($l['menus'] as $m) $names[$m['menuID']] = $m;

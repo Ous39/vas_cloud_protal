@@ -197,9 +197,9 @@ Typical launch: create the new version on a test code (e.g. `*9606*0*1#`) with *
 
 A new empty Mobius menu starts with **Start: add the first screen**: Mobius refuses a Welcome step on its own, so the Welcome and the first screen are created together.
 
-## Trace a dial — find out why a code did not work, without the gateway logs
+## Trace a number — find out why a code did not work, without the gateway logs
 
-USSD → **Try it → Trace a dial** (also a **USSD dials** tab on Complaint Investigation). Type the customer's number — and, for the best results, the short code they dialled — and pick *last hour / 24 hours / 7 days / 30 days*. The portal asks Mobius for that number's sessions and shows, newest first: when, the code the phone sent, the menu that answered, the screens shown and what the customer typed (open *The session, screen by screen*), and what happened in plain words with where to look:
+USSD → **Try it → Trace a number** (also a **USSD (Trace a number)** tab on Complaint Investigation). Type the customer's number (for example `866123456`; the 220 is added for you) — and, for the best results, the short code they dialled — and pick *last hour / 24 hours / 7 days / 30 days*. The portal asks Mobius for that number's sessions and shows, newest first: when, the code the phone sent, the menu that answered, the screens shown and what the customer typed (open *The session, screen by screen*), and what happened in plain words with where to look:
 
 - **Mobius answered and the session ended normally** — if the customer still saw “Connection problem / invalid MMI code”, the reply was lost after Mobius, in the network (STP / HLR / MSC).
 - **No dial from this number reached Mobius** — wrong number or time, or the network (MSC / HLR) did not send the dial to Mobius: the menu is not the problem.
@@ -209,5 +209,7 @@ USSD → **Try it → Trace a dial** (also a **USSD dials** tab on Complaint Inv
 - **The network (HLR) reported a system failure** / *could not reach the phone* / *does not know this number* (Mobius “MAPErrorMessage…” errors) — the mobile network ended the session, not the menu; the trace says how many screens had already been sent. If it happens for many numbers, give the core network team the times and numbers.
 
 **Go to menu.** When a menu sends the customer on to another menu (a *Go to menu* step), the trace follows it (up to 3 jumps) and shows the whole dial as one **journey** — *Journey: Commercial Launch MAIN → Promotions PROD → DIYAA PROMO* — with every screen in order and a *went on to …* line at each jump. The result shown is the one where the customer ended, so a timeout in the last menu is not hidden behind the first one. A later dial of the second menu's own code stays a separate session.
+
+**As in the logs.** Under the sessions, **Log view** shows the same sessions oldest first, one line per event (`DIAL *606# -> menu …`, `>> screen …`, `<< typed 1`, `GO TO MENU …`, `ERROR -10012 …` / `END`) — like reading `network.log` and `debug.log`, but only for this number — with a **Copy** button. **grep on the nodes** gives the commands to paste on a Mobius node when you still need the gateway's own lines (for the vendor or the core network team): `cd /opt/ussd/log/` and `grep` for the number in the files of the days you chose (today = `network.log`, older days = `network.log.YYYY-MM-DD`), plus one line per session that picks its minute. They only read.
 
 Purchases made through portal menus for that number are listed under the sessions. Only the number you typed is ever shown, and every search is kept in the audit trail (with the number shortened). Without a short code, Mobius may not search by number alone — the page then asks for the code.

@@ -140,7 +140,7 @@ function investigate_source_tabs(array $sources, string $current, array $get): s
         $html .= '<a class="source-tab'.($key === $current ? ' active' : '').'" href="?'.e(http_build_query($q)).'"><i class="fa-solid '.($icon[$key] ?? 'fa-database').'"></i><span><strong>'.e($name).'</strong><small>'.($desc[$key] ?? '').'</small></span></a>';
     }
     if (function_exists('nav_can_see') && nav_can_see('ussd_trace')) // the USSD side of a complaint: the dials Mobius recorded for the number
-        $html .= '<a class="source-tab" href="?'.e(http_build_query(['page' => 'ussd_trace'] + (isset($carry['msisdn']) ? ['msisdn' => $carry['msisdn']] : []))).'"><i class="fa-solid fa-mobile-screen-button"></i><span><strong>USSD dials</strong><small>What Mobius recorded &amp; why it failed</small></span></a>';
+        $html .= '<a class="source-tab" href="?'.e(http_build_query(['page' => 'ussd_trace'] + (isset($carry['msisdn']) ? ['msisdn' => $carry['msisdn']] : []))).'"><i class="fa-solid fa-mobile-screen-button"></i><span><strong>USSD (Trace a number)</strong><small>Every dial in Mobius &amp; why it failed</small></span></a>';
     return $html.'</div>';
 }
 

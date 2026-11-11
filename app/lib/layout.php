@@ -38,7 +38,7 @@ function ussd_subnav(string $current): void {
     $groups = [
         ['fa-list', 'Menus', [['ussd_menus', 'All menus'], ['mobius_menus', 'Mobius tools']]],
         ['fa-wand-magic-sparkles', 'Builder', [['ussd_build', 'Easy Builder']]],
-        ['fa-mobile-screen', 'Try it', [['ussd_sim', 'Simulator'], ['ussd_trace', 'Trace a dial']]],
+        ['fa-mobile-screen', 'Try it', [['ussd_sim', 'Simulator'], ['ussd_trace', 'Trace a number']]],
         ['fa-diagram-project', 'Special menus', [['ussd_flows', 'Service Flows'], ['ussd_quiz', 'Quiz']]],
     ];
     $settings = [['ussd_proxy', 'fa-plug', 'Proxy (connection to Mobius)'], ['shortcodes', 'fa-hashtag', 'Short Codes'], ['ussd_ivr', 'fa-route', 'Routing & IVR'], ['ussd_menu', 'fa-sitemap', 'Advanced builder (old)']];
@@ -132,6 +132,15 @@ document.querySelectorAll('[data-filter-select]').forEach(input => {
 document.querySelectorAll('[data-public-url]').forEach(el => { el.textContent = new URL(el.dataset.publicUrl, location.href).href; });
 // Close an open nav dropdown when clicking outside it.
 document.addEventListener('click', e => { document.querySelectorAll('.topnav-group[open]').forEach(d => { if (!d.contains(e.target)) d.removeAttribute('open'); }); });
+// Phones: every table with a header row turns into cards (style.css, max-width 640px). Each cell gets its column name as data-label;
+// a table not in a scroll box gets one, so it never pushes the page sideways. Tables marked .no-stack keep their rows.
+document.querySelectorAll('main table').forEach(t => {
+    if (!t.closest('.table-scroll,.table-responsive')) { const w = document.createElement('div'); w.className = 'table-scroll'; t.parentNode.insertBefore(w, t); w.appendChild(t); }
+    const heads = t.tHead ? Array.from(t.tHead.rows[0]?.cells || []) : []; if (heads.length < 3 || t.classList.contains('no-stack')) return;
+    const names = []; heads.forEach(h => { for (let i = 0; i < (h.colSpan || 1); i++) names.push(h.textContent.trim()); });
+    Array.from(t.tBodies).forEach(b => Array.from(b.rows).forEach(r => { let i = 0; Array.from(r.cells).forEach(c => { if (c.colSpan === 1 && !c.hasAttribute('data-label')) c.setAttribute('data-label', names[i] || ''); i += c.colSpan || 1; }); }));
+    t.classList.add('stack-ready');
+});
 // Mobile nav toggle.
 const topnavToggle = document.getElementById('topnav-toggle'), topnavCollapse = document.getElementById('topnav-collapse');
 topnavToggle?.addEventListener('click', () => { const open = topnavCollapse.classList.toggle('open'); topnavToggle.setAttribute('aria-expanded', open ? 'true' : 'false'); });

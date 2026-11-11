@@ -47,7 +47,7 @@ declare(strict_types=1);
         <?php endif;?></div>
     <div class="cardx"><h3 class="mb-2"><span class="badge bg-primary me-2">1</span>Investigate</h3>
         <form method="get" class="row g-2 align-items-end"><input type="hidden" name="page" value="refunds">
-            <div class="col-md-4"><label class="small text-muted mb-0">Customer's number</label><input class="form-control" name="msisdn" value="<?=e($lookupFull!==''?ussd_local_number($lookupFull):'')?>" placeholder="e.g. 6704843" inputmode="numeric"></div>
+            <div class="col-md-4"><label class="small text-muted mb-0">Customer's number</label><input class="form-control" name="msisdn" value="<?=e($lookupFull!==''?ussd_local_number($lookupFull):'')?>" placeholder="e.g. 866123456" inputmode="numeric"></div>
             <div class="col-md-2"><label class="small text-muted mb-0">From</label><input type="date" class="form-control" name="from" value="<?=e($dFrom)?>" max="<?=e(date('Y-m-d'))?>"></div>
             <div class="col-md-2"><label class="small text-muted mb-0">To</label><input type="date" class="form-control" name="to" value="<?=e($dTo)?>" max="<?=e(date('Y-m-d'))?>"></div>
             <div class="col-md-2"><button class="btn btn-primary w-100"><i class="fa-solid fa-magnifying-glass me-1"></i>Look</button></div>
@@ -83,7 +83,7 @@ declare(strict_types=1);
         <form method="post" id="rf" class="row g-2"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="preview"><input type="hidden" name="purchase_id" value="<?=e((string)($purchaseId??''))?>">
             <div class="col-md-2"><label class="small text-muted mb-0">Offer code</label><input class="form-control" name="offer_code" value="<?=e($F['offer_code'])?>" placeholder="40004" required></div>
             <div class="col-md-2"><label class="small text-muted mb-0">Vendor</label><input class="form-control" name="vendor" value="<?=e($F['vendor'])?>" placeholder="huawei" required></div>
-            <div class="col-md-2"><label class="small text-muted mb-0">Number (who got the bundle)</label><input class="form-control" name="msisdn" value="<?=e($F['msisdn'])?>" placeholder="6704843" inputmode="numeric" required></div>
+            <div class="col-md-2"><label class="small text-muted mb-0">Number (who got the bundle)</label><input class="form-control" name="msisdn" value="<?=e($F['msisdn'])?>" placeholder="866123456" inputmode="numeric" required></div>
             <div class="col-md-2"><label class="small text-muted mb-0">Channel</label><input class="form-control" name="channel" value="<?=e($F['channel']?:'REF')?>" required></div>
             <div class="col-md-3"><label class="small text-muted mb-0">Date it was bought</label><input class="form-control" name="date" value="<?=e($F['date'])?>" placeholder="2025-08-08 15:30:18" required></div>
             <div class="col-md-1 d-flex align-items-end"><button class="btn btn-outline-primary w-100">Preview</button></div></form>

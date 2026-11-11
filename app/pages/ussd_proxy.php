@@ -136,7 +136,7 @@ declare(strict_types=1);
         <form method="post" class="row g-2 mt-3 align-items-end"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="hera_ask">
             <div class="col-12"><b class="small">Ask Hera about an offer</b> <small class="text-muted">— the same questions the phone menu asks while browsing. Buys nothing, and shows Hera's raw reply.</small></div>
             <div class="col-md-3"><select class="form-select form-select-sm" name="ask_op"><option value="chooseOffer">Details of one offer (chooseOffer)</option><option value="listOffer">List a sub-category (listOffer)</option></select></div>
-            <div class="col-md-3"><input class="form-control form-control-sm" name="ask_msisdn" placeholder="Phone number, e.g. 220…" value="<?=e((string)($_POST['ask_msisdn']??($purchases[0]['msisdn']??'')))?>"></div>
+            <div class="col-md-3"><input class="form-control form-control-sm" name="ask_msisdn" placeholder="Phone number, e.g. 866123456" value="<?=e((string)($_POST['ask_msisdn']??($purchases[0]['msisdn']??'')))?>"></div>
             <div class="col-md-2"><input class="form-control form-control-sm" name="ask_offer" placeholder="Offer code" value="<?=e((string)($_POST['ask_offer']??($purchases[0]['offer_code']??'')))?>"></div>
             <div class="col-md-2"><input class="form-control form-control-sm" name="ask_sub" placeholder="or sub-category" value="<?=e((string)($_POST['ask_sub']??''))?>"></div>
             <div class="col-md-2"><button class="btn btn-sm btn-outline-secondary w-100">Ask Hera</button></div>
@@ -178,7 +178,7 @@ declare(strict_types=1);
         <form method="post" class="row g-2 mt-2 align-items-end"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="share_ask">
             <div class="col-12"><b class="small">Ask Hera about an account</b> <small class="text-muted">— read-only: shows Hera's raw reply for balance or numbers, so the screens can be matched to it.</small></div>
             <div class="col-md-3"><select class="form-select form-select-sm" name="sa_op"><option value="balance">Balance (DataUsage)</option><option value="numbers">My numbers (listNumber)</option></select></div>
-            <div class="col-md-5"><input class="form-control form-control-sm" name="sa_msisdn" placeholder="Phone number, e.g. 220…" value="<?=e((string)($_POST['sa_msisdn']??''))?>"></div>
+            <div class="col-md-5"><input class="form-control form-control-sm" name="sa_msisdn" placeholder="Phone number, e.g. 866123456" value="<?=e((string)($_POST['sa_msisdn']??''))?>"></div>
             <div class="col-md-2"><button class="btn btn-sm btn-outline-secondary w-100">Ask Hera</button></div></form>
         <?php if($shareAsk):?><div class="mt-2 small"><div><b>Hera answered</b> (HTTP <?=e($shareAsk['code'])?>)<?=$shareAsk['error']!==''?': '.e($shareAsk['error']):''?> — shown to a customer as:</div><pre class="mb-1"><?=e($shareAsk['text'])?></pre><div>Raw reply:</div><pre class="mb-0"><?=e($shareAsk['raw'])?></pre></div><?php endif;?>
     </div>
