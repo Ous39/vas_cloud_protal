@@ -206,6 +206,7 @@ USSD → **Try it → Trace a dial** (also a **USSD dials** tab on Complaint Inv
 - **No answer in time** (Mobius error -10012) — the next screen came after 60 seconds: the portal, the partner app or a “Call a service” step was slow; for a menu with none of those, the gateway itself did not process the dial (check the nodes).
 - **Mobius has no menu on the code the phone sent** (-10028) — the code is not in Mobius, or the network changed it on the way (missing *, extra #).
 - **The service behind the menu ended the session with an error text** — ask the owner of that service.
+- **The network (HLR) reported a system failure** / *could not reach the phone* / *does not know this number* (Mobius “MAPErrorMessage…” errors) — the mobile network ended the session, not the menu; the trace says how many screens had already been sent. If it happens for many numbers, give the core network team the times and numbers.
 
 **Go to menu.** When a menu sends the customer on to another menu (a *Go to menu* step), the trace follows it (up to 3 jumps) and shows the whole dial as one **journey** — *Journey: Commercial Launch MAIN → Promotions PROD → DIYAA PROMO* — with every screen in order and a *went on to …* line at each jump. The result shown is the one where the customer ended, so a timeout in the last menu is not hidden behind the first one. A later dial of the second menu's own code stays a separate session.
 

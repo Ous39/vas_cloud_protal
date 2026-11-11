@@ -586,6 +586,14 @@ function mobius_call_explain(array $c): array {
     if ($code === -10028 || str_contains($e, 'shortcode not configured')) return ['danger', 'Mobius has no menu on the code the phone sent (“'.$c['request'].'”).', 'Check the code. If it looks changed (missing * or extra #), the network sent it that way.'];
     if ($code === -10020 || str_contains($e, 'can not be found')) return ['warning', 'Mobius lost the session (usually right after a timeout or a restart).', 'Look at the session just before this one.'];
     if (str_contains($e, 'invalid string') || str_contains($e, 'unable to process')) return ['danger', 'The service behind the menu ended the session with an error text (“'.$c['error'].'”).', $portal ? 'Open the menu in the Simulator with the same answers.' : 'Ask the owner of the service behind this menu.'];
+    if (str_contains($e, 'maperrormessage')) { // an error from the mobile network (MAP), not from the menu
+        $res = preg_match('/networkresource=([a-z]+)/', $e, $m) ? strtoupper($m[1]) : ''; $net = $res !== '' ? 'The network ('.$res.')' : 'The network'; $shown = count(array_filter($c['steps'], fn($x) => !$x['mobile'] && $x['message'] !== ''));
+        $after = $shown ? ' after the menu had sent '.$shown.' screen'.($shown === 1 ? '' : 's').' (see below) — the menu worked' : ' before any screen reached the phone';
+        if (str_contains($e, 'absentsubscriber')) return ['warning', 'The phone could not be reached (switched off or out of coverage)'.$after.'.', 'Nothing to fix in the menu.'];
+        if (str_contains($e, 'unknownsubscriber')) return ['warning', 'The network does not know this number ('.($res !== '' ? 'the '.$res : 'it').' said “unknown subscriber”).', 'Check the number; if it is right, it is a network / HLR matter.'];
+        if (str_contains($e, 'systemfailure')) return ['danger', $net.' reported a system failure'.$after.'. The customer most likely saw “Connection problem” at that point.', 'Not the menu. If it happens for many numbers, give the core network team the time and the number; once alone, it can also be the customer closing the screen.'];
+        return ['danger', $net.' ended the session with an error ('.$c['error'].')'.$after.'.', 'Not the menu — give the core network team the time and the number.'];
+    }
     if ($c['error'] !== '') return ['danger', 'Mobius error: '.$c['error'].'.', 'Open the menu on the Mobius page → Calls for the details.'];
     if ($c['completed']) return ['success', 'Mobius answered and the session ended normally.', 'If the customer still saw “Connection problem / invalid MMI code”, the reply was lost after Mobius — in the network (STP / HLR / MSC).'];
     $mob = array_filter($c['steps'], fn($s) => $s['mobile']);
