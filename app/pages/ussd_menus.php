@@ -44,11 +44,12 @@ declare(strict_types=1);
     $rows=[]; $byBare=[];
     foreach($codes as $c){ $rows[]=['code'=>$c,'kind'=>'portal','p'=>$ov[$c]??null,'reg'=>$reg[$c]??null,'ms'=>$mobOk?mobius_menu_state($c,$mob['menus'],$cfg):null]; $byBare[rtrim($c,'#')]=true; }
     $openSched=[]; if($mobOk){ try{ foreach(mobius_sched_list(null,true) as $s) $openSched[$s['menu_id']][]=$s; }catch(Throwable $e){} }
-    if($mobOk) foreach($mob['menus'] as $m){ $bare=rtrim((string)$m['shortcode'],'#'); if(isset($byBare[$bare])) continue;
-        $kind=$m['shortcodeType']==='MS_INITIATED'?'mobius':(mobius_menu_is_ours($m,$cfg)?'portal':'other');
-        $rows[]=['code'=>(string)$m['shortcode'],'kind'=>$kind,'p'=>null,'reg'=>null,'ms'=>['state'=>$kind==='other'?'elsewhere':'ours','menu'=>$m]]; }
-    usort($rows,fn($a,$b)=>strnatcmp($a['code'],$b['code']));
-    $kinds=['all'=>['All',count($rows)],'portal'=>['Built in the portal',0],'mobius'=>['Built in Mobius',0],'other'=>['Other services',0]]; foreach($rows as $r0) $kinds[$r0['kind']][1]++;
+    $twice=[]; if($mobOk) foreach($mob['menus'] as $m){ $b0=rtrim(trim((string)$m['shortcode']),'#'); if($b0!=='') $twice[$b0]=($twice[$b0]??0)+1; } // codes Mobius has on more than one menu
+    if($mobOk) foreach($mob['menus'] as $m){ $bare=rtrim((string)$m['shortcode'],'#'); if($bare!=='' && isset($byBare[$bare])) continue;
+        $kind=mobius_menu_kind($m,$cfg); if($kind==='portal' && $m['shortcodeType']==='MS_INITIATED') $kind='mobius';
+        $rows[]=['code'=>(string)$m['shortcode'],'kind'=>$kind,'p'=>null,'reg'=>null,'ms'=>['state'=>in_array($kind,['other','push'],true)?'elsewhere':'ours','menu'=>$m]]; }
+    usort($rows,fn($a,$b)=>[$a['code']==='',$a['code']]<=>[$b['code']==='',$b['code']] ?: strnatcmp($a['code'],$b['code'])); // by code; menus without a code (push) last
+    $kinds=['all'=>['All',count($rows)],'portal'=>['Built in the portal',0],'mobius'=>['Built in Mobius',0],'push'=>['Push messages',0],'other'=>['Other services',0]]; foreach($rows as $r0) $kinds[$r0['kind']][1]++;
     $fk=(string)($_GET['f']??'all'); if(!isset($kinds[$fk])) $fk='all';
     layout_start('USSD Menus'); ussd_subnav('ussd_menus');
     ?>
@@ -133,22 +134,26 @@ declare(strict_types=1);
         <tr id="row-<?=md5($c)?>" data-kind="<?=e($kind)?>" <?=$fk!=='all'&&$fk!==$kind?'hidden':''?>>
             <td><?php if($name!==''):?><strong><?=e($name)?></strong><?php else:?><span class="text-muted">(no name yet)</span><?php endif;?>
                 <?php if($kind==='portal' && !$rg):?> <a class="small" href="?page=shortcodes&new=<?=urlencode($c)?>">name it</a><?php elseif($rg && strtolower((string)$rg['status'])!=='active'):?> <span class="badge status-<?=e(strtolower($rg['status']))?>"><?=e($rg['status'])?></span><?php endif;?></td>
-            <td><code><?=e($c)?></code></td>
+            <td><?php if($c===''):?><span class="text-muted small">no code</span><?php else:?><code><?=e($c)?></code><?php endif;?><?php if($c!=='' && ($twice[rtrim($c,'#')]??0)>1):?> <span class="badge bg-warning text-dark" title="Mobius has <?=(int)$twice[rtrim($c,'#')]?> menus on this code — only one of them answers. Check them on the Mobius page.">same code ×<?=(int)$twice[rtrim($c,'#')]?></span><?php endif;?></td>
             <td><?php if($kind==='portal'):?><span class="badge mn-kind-portal"><i class="fa-solid fa-store me-1"></i>Portal</span>
                 <?php elseif($kind==='mobius'):?><span class="badge mn-kind-mobius"><i class="fa-solid fa-sitemap me-1"></i>Mobius</span>
+                <?php elseif($kind==='push'):?><span class="badge bg-warning-subtle text-warning-emphasis"><i class="fa-solid fa-bullhorn me-1"></i>Push message</span>
                 <?php else:?><span class="badge bg-light text-dark border" title="A menu in Mobius that calls another system<?=$host!==''?' ('.e($host).')':''?>. Changed only on the Mobius page."><i class="fa-solid fa-plug me-1"></i>Other service</span><?php endif;?></td>
             <td><?php if($kind==='portal'):?>
                     <?php if(!$m):?><span class="badge bg-secondary">empty</span> <a class="small" href="?page=ussd_build&short_code=<?=urlencode($c)?>">build</a><?php else:?><?=$m['active']?> on<?=$m['draft']?' · '.$m['draft'].' draft':''?><?=$m['scheduled']?' · <span class="text-info" title="Go live by themselves"><i class="fa-regular fa-clock"></i> '.$m['scheduled'].' scheduled</span>':''?> <?php if($m['errors']):?><span class="badge bg-danger"><?=$m['errors']?> to fix</span><?php elseif($m['warns']):?><span class="badge bg-warning text-dark"><?=$m['warns']?> to check</span><?php else:?><span class="badge bg-success">ok</span><?php endif;?><?php endif;?>
                 <?php elseif($kind==='mobius'):?><span class="text-muted small">menu of screens</span><?=!empty($mm['isExtendable'])?' <span class="badge bg-info text-dark">extendable</span>':''?>
                     <?php foreach($sch as $s):?><div class="small text-info"><i class="fa-regular fa-clock me-1"></i><?=$s['state']==='live'?'live on <code>'.e($s['live_code']).'</code>'.($s['end_at']?' until '.e(date('d M H:i',strtotime((string)$s['end_at']))):''):'goes live on <code>'.e($s['live_code']).'</code> '.e(date('d M H:i',strtotime((string)$s['start_at'])))?></div><?php endforeach;?>
+                <?php elseif($kind==='push'):?><span class="text-muted small">sent to phones by the network<?=$host!==''?' · calls '.e($host):''?></span>
                 <?php else:?><span class="text-muted small"><?=$host!==''?'calls '.e($host):'—'?></span><?php endif;?></td>
             <td><?php if($kind==='portal'):?>
-                    <?php if($mobOk && $ms['state']==='missing'):?><span class="badge bg-danger" title="Phones get “connection problem” until the code is in Mobius">not in Mobius</span><?php if($canEdit && $canUrl):?> <form method="post" class="d-inline" data-confirm="Create <?=e($c)?> in Mobius now? This adds a live menu to Mobius that calls this portal."><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="mobius_create"><input type="hidden" name="short_code" value="<?=e($c)?>"><input type="hidden" name="name" value="<?=e($rg['service_name']??$c)?>"><button class="btn btn-sm btn-outline-primary py-0">Create</button></form><?php endif;?>
+                    <?php if(!$m && !($mobOk && $ms['state']==='ours')):?><span class="text-muted">— nothing built yet</span>
+                    <?php elseif($mobOk && $ms['state']==='missing'):?><span class="badge bg-danger" title="Phones get “connection problem” until the code is in Mobius">not in Mobius</span><?php if($canEdit && $canUrl):?> <form method="post" class="d-inline" data-confirm="Create <?=e($c)?> in Mobius now? This adds a live menu to Mobius that calls this portal."><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="mobius_create"><input type="hidden" name="short_code" value="<?=e($c)?>"><input type="hidden" name="name" value="<?=e($rg['service_name']??$c)?>"><button class="btn btn-sm btn-outline-primary py-0">Create</button></form><?php endif;?>
                     <?php elseif($mobOk && $ms['state']==='elsewhere'):?><span class="badge bg-warning text-dark" title="Mobius has this code as “<?=e($mm['name']??'')?>”, which does not call this portal">code used by another menu</span>
                     <?php elseif(!$m):?><span class="text-muted">— nothing to show yet</span>
                     <?php elseif($stt['live']):?><span class="badge bg-success">answering</span><?=$mobOk?'':' <span class="small text-muted">(Mobius not checked)</span>'?>
                     <?php else:?><span class="badge bg-secondary" title="<?=e($stt['why'])?>">not live</span><?php endif;?>
                 <?php elseif($kind==='mobius'):?><?php if(str_starts_with($c,'*0*')):?><span class="badge bg-secondary" title="Moved off its short code by a schedule">parked</span><?php else:?><span class="badge bg-success">in Mobius</span><?php endif;?>
+                <?php elseif($kind==='push'):?><span class="badge bg-light text-dark border">push</span>
                 <?php else:?><span class="badge bg-light text-dark border">in Mobius</span><?php endif;?></td>
             <td class="text-end text-nowrap">
                 <?php if($kind==='portal'):?><a class="btn btn-sm btn-primary" href="?page=ussd_build&short_code=<?=urlencode($c)?>" title="Open in the Easy Builder"><i class="fa-solid fa-wand-magic-sparkles"></i> Build</a>
