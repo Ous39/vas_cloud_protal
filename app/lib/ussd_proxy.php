@@ -40,6 +40,7 @@ const USSD_PROXY_DEFAULTS = [
     // the testbed Mobius (Production / Testbed switch on the USSD pages; per user session, never for customer traffic or the 5-minute job)
     'tb_mobius_base' => 'http://192.168.163.221:28080/rest/,http://192.168.163.222:28080/rest/', 'tb_mobius_user' => '', 'tb_mobius_pass' => '', 'mobius_step_shape' => '',
     // buying an offer from the menu (see ussd_execute_purchase): off | test | live
+    'confirm_text' => '', // empty = USSD_CONFIRM_TEXT (the wording customers know from Mobius)
     'purchase_mode' => 'off', 'purchase_url' => '', 'purchase_body' => USSD_PURCHASE_BODY,
     'purchase_auth' => '', 'purchase_ok_match' => '', 'purchase_timeout' => '8', 'purchase_lowbal' => 'insufficient,low balance,not enough', 'purchase_reply_field' => '', 'purchase_body_other' => '', 'purchase_other_seeded' => '0',
     // Shared Bundle (Seddo)

@@ -8,6 +8,7 @@ declare(strict_types=1);
         if ($do==='save') { save_ussd_proxy_config($_POST); flash('success','USSD proxy settings saved.'); redirect('?page=ussd_proxy'); }
         if ($do==='save_share') { save_share_config($_POST); flash('success','Shared Bundle settings saved.'); redirect('?page=ussd_proxy'); }
         if ($do==='save_refund') { try { save_refund_config($_POST); flash('success','Refund settings saved.'); } catch (RuntimeException $e) { flash('danger',$e->getMessage()); } redirect('?page=ussd_proxy'); }
+        if ($do==='save_confirm_text') { $tx=trim(preg_replace('/\s+/',' ',(string)($_POST['confirm_text']??''))); if(mb_strlen($tx)>160){ flash('danger','The confirmation is at most 160 characters (a USSD screen holds about 182).'); } else { ussd_proxy_set(['confirm_text'=>$tx===USSD_CONFIRM_TEXT?'':$tx]); audit('ussd_confirm_text',null,'ussd_proxy_config',null,$tx); flash('success','Confirmation wording saved.'); } redirect('?page=ussd_proxy#tab-buy'); }
         if ($do==='save_purchase') { save_purchase_config($_POST); flash('success','Purchase settings saved.'); redirect('?page=ussd_proxy'); }
         if ($do==='save_mobius_tb') { try { save_mobius_testbed_config($_POST); flash('success','Testbed Mobius saved. Use "Test testbed connection", then the Production / Testbed switch on the USSD pages.'); } catch (RuntimeException $e) { flash('danger',$e->getMessage()); } redirect('?page=ussd_proxy'); }
         if ($do==='save_mobius') { save_mobius_config($_POST); flash('success','Mobius connection saved. Use "Test connection" to check the login.'); redirect('?page=ussd_proxy'); }
@@ -128,6 +129,11 @@ declare(strict_types=1);
     </div>
     <div class="tab-pane fade" id="tab-buy">
     <div class="cardx"><h3>Buying from the menu <small class="text-muted">(offer items in the Easy Builder)</small></h3>
+        <form method="post" class="border rounded p-2 mb-3 bg-light"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="save_confirm_text">
+            <label class="small fw-semibold mb-1">The screen before buying</label>
+            <textarea class="form-control font-monospace" name="confirm_text" rows="2" maxlength="160"><?=e($cfg['confirm_text']!==''?$cfg['confirm_text']:USSD_CONFIRM_TEXT)?></textarea>
+            <div class="small text-muted mt-1">Placeholders: <code>{recipient}</code> (the number it is for — the caller's own, or the other number), <code>{offerDescription}</code>, <code>{validity}</code> (e.g. 30days), <code>{price}</code> (e.g. D1500). Press <b>1</b> buys, <b>0</b> goes back. Example now: <i><?=e(ussd_confirm_text(null,['recipient'=>'866123456','offerDescription'=>'KAA 1.5GB + Free TikTok','validity'=>'3days','price'=>'D110']))?></i></div>
+            <button class="btn btn-sm btn-primary mt-2">Save wording</button></form>
         <p class="text-muted">When a customer picks an <b>offer</b> item, the menu shows its name and price (read from <b><?=e(USSD_OFFER_SCHEMA)?></b> only) and asks <i>1. Confirm / 2. Cancel</i>. What happens on Confirm depends on the mode. Each call can buy each offer only once, even if Mobius repeats a request.</p>
         <form method="post" class="row g-3"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="save_purchase">
             <div class="col-md-4"><label class="small text-muted mb-0">Mode</label><select class="form-select" name="purchase_mode">

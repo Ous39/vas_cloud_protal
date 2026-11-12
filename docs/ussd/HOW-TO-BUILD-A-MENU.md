@@ -221,3 +221,14 @@ Set it up once: USSD → **Settings → Proxy → Mobius connection → Testbed*
 From then on every USSD page has a **Mobius: Production | Testbed** switch above the tabs. On **Testbed**, Menus, the Mobius Builder, Try it, Same code twice and **Trace a number** all talk to the testbed Mobius, and a yellow **Testbed** banner shows on every page with a **Back to Production** button. Use it to build a new menu and dial-test it without touching production.
 
 What never changes with the switch: it is **per person** (others stay on production); **customers** always use production; the **5-minute job** and **schedules** always run on production (the Schedule tab refuses to schedule on the testbed); the **Proxy settings page** always shows and saves the production connection. Portal menus (Easy Builder) are shared — creating one on the testbed puts its Mobius side on the testbed only. When a testbed node calls the portal for a PROXY menu, the screens go back through the testbed.
+
+
+## The screen before buying
+
+When a customer picks an offer, the portal asks before anything is bought — in the wording customers know from Mobius:
+
+> Press 1 to subscribe for {recipient} {offerDescription} valid for {validity} - {price} or 0 to return to menu.
+
+`{recipient}` is the number it is for (the caller's own, or the other number for *Buy for another number*), `{offerDescription}` the offer's name, `{validity}` e.g. `3days`, `{price}` e.g. `D110`. **1** buys, **0** goes back. Change the wording in USSD → Settings → Proxy → **Buying from the menu → The screen before buying** (at most 160 characters).
+
+**One offer, for me or for another number** (e.g. `*96060*6*8#`): a menu whose items are the offer (*For me*) and *Buy for another number* (*For another number*). After the other number is typed the customer goes straight to *Press 1 to subscribe for 866… *; **0** there goes back to typing the number.

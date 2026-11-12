@@ -85,6 +85,15 @@ function ussd_normalize_msisdn(string $s): ?string {
     return null;
 }
 // $hooks (for tests): 'offer' => fn(code): ?row, 'catalog' => fn(node): list of offer rows.
+// The screen that asks for a yes before an offer is bought. Placeholders: {recipient} (the number it is for — the caller's own, or the
+// other number), {offerDescription}, {validity} (e.g. 30days), {price} (e.g. D1500). Set in USSD → Settings → Proxy → Buying from the menu.
+const USSD_CONFIRM_TEXT = 'Press 1 to subscribe for {recipient} {offerDescription} valid for {validity} - {price} or 0 to return to menu.';
+function ussd_confirm_text(?string $tpl, array $v): string {
+    if ($tpl === null) { static $saved = null; if ($saved === null) { try { $saved = (string)(ussd_proxy_config_raw()['confirm_text'] ?? ''); } catch (Throwable $e) { $saved = ''; } } $tpl = $saved; }
+    if (trim($tpl) === '') $tpl = USSD_CONFIRM_TEXT;
+    $out = strtr($tpl, ['{recipient}' => $v['recipient'], '{offerDescription}' => $v['offerDescription'], '{validity}' => $v['validity'], '{price}' => $v['price']]);
+    return trim(preg_replace('/ {2,}/', ' ', str_replace([' valid for  -', ' -  or'], [' -', ' or'], $out)));
+}
 function ussd_screen(string $shortCode, array $replies, array $statuses = ['active'], ?array $nodes = null, array $hooks = []): array {
     $nodes = $nodes ?? menu_nodes_flat($shortCode);
     $offerLookup = $hooks['offer'] ?? 'ussd_offer_lookup'; $catalogLookup = $hooks['catalog'] ?? 'ussd_catalog_offers';
@@ -120,6 +129,7 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
         $qz['qs'] = $qs; $qz['i'] = 0; $qz['score'] = 0; $qz['fb'] = null; $qz['phase'] = 'q';
     };
     $confirm = null;   // [node, offer row, name] while the customer is being asked to confirm a purchase
+    $autoConfirm = false; // the confirmation was opened straight after the other number was typed (one offer): 0 goes back to typing the number
     $hasRecipientNode = fn() => (bool)array_filter($trail, fn($t) => $t && $t['node_type'] === 'recipient');
     // The options on the current screen. A catalogue list builds them from the offer catalogue, a page at a time;
     // under "Buy for another number" they are the main menu again (without that item), once the number is known.
@@ -157,7 +167,7 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
                 + ['purchase' => ['offer_code' => trim((string)$pick['offer_code']), 'name' => $name, 'price' => ($o['one_time_price'] !== null && $o['one_time_price'] !== '') ? (string)$o['one_time_price'] : '',
                     'vendor' => (string)($o['vendor'] ?? ''), 'other_offer_code' => (string)($o['offer_code_for_other'] ?? ''), 'recipient' => $recipient ?? '', 'recipient_raw' => $recipient !== null ? $recipientRaw : '']];
             if ($r === '2') return ussd_result('Cancelled. You were not charged.', true, $path, 'cancel', $pick);
-            if ($r === '0') { $confirm = null; array_pop($path); $note = null; continue; }
+            if ($r === '0') { $confirm = null; array_pop($path); $note = null; if ($autoConfirm) { $recipient = null; $recipientRaw = ''; $autoConfirm = false; } continue; } // came straight from typing the number: back to "Enter the other phone number"
             $note = 'Invalid choice.'; continue;
         }
         if ($r === '0' && $sb !== null && $cur && $cur['node_type'] === 'sharedbundle' && $sb['phase'] !== 'main') { // "0" inside the service goes back one step, not out of it
@@ -227,7 +237,11 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
         if ($cur && $cur['node_type'] === 'recipient' && $recipient === null) { // this reply is the other number
             $num = ussd_normalize_msisdn($r);
             if ($num === null) { $note = 'Invalid number.'; continue; }
-            $recipient = $num; $recipientRaw = preg_replace('/\D+/', '', $r); $note = null; continue;
+            $recipient = $num; $recipientRaw = preg_replace('/\D+/', '', $r); $note = null;
+            [$only] = $current(); // a "Buy for another number" with one offer: straight to "Press 1 to subscribe…" (no list of one line)
+            if (count($only) === 1 && $only[0]['node_type'] === 'offer') { $o1 = $offerLookup(trim((string)$only[0]['offer_code']));
+                if ($o1 && trim((string)($o1['offer_code_for_other'] ?? '')) !== '') { $path[] = 1; $autoConfirm = true; $confirm = [$only[0], $o1, trim((string)($only[0]['full_label'] ?? '')) ?: (trim((string)($o1['name'] ?? '')) ?: trim((string)$only[0]['prompt_text']))]; } }
+            continue;
         }
         [$options, $more] = $current();
         if ($more && $r === (string)(USSD_PAGE_SIZE + 1)) { $page++; $note = null; continue; }
@@ -267,8 +281,10 @@ function ussd_screen(string $shortCode, array $replies, array $statuses = ['acti
     }
     if ($confirm !== null) {
         [$pick, $o, $name] = $confirm;
-        $line = 'Buy '.$name.(($o['one_time_price'] ?? '') !== '' ? ' - D'.$o['one_time_price'] : '').(!empty($o['validity_amount']) ? ' / '.$o['validity_amount'].' days' : '').($recipient ? ' for '.ussd_local_number($recipient) : '').'?';
-        return ussd_result(($note ? $note."\n" : '').$line."\n1. Confirm\n2. Cancel\n0. Back", false, $path, 'confirm', $pick);
+        $who = $recipient ?? (string)($hooks['msisdn'] ?? '');
+        $text = ussd_confirm_text($hooks['confirm_text'] ?? null, ['recipient' => $who !== '' ? ussd_local_number($who) : 'you', 'offerDescription' => $name,
+            'validity' => !empty($o['validity_amount']) ? $o['validity_amount'].'days' : '', 'price' => ($o['one_time_price'] ?? '') !== '' ? 'D'.$o['one_time_price'] : '']);
+        return ussd_result(($note ? $note."\n" : '').$text, false, $path, 'confirm', $pick);
     }
     if ($cur && $cur['node_type'] === 'recipient' && $recipient === null) return ussd_result(($note ? $note."\n" : '')."Enter the other phone number:\n0. Back", false, $path, 'recipient', $cur);
     if ($sb !== null && $cur && $cur['node_type'] === 'sharedbundle') {

@@ -108,7 +108,7 @@ t('catalogue lists: live, paged, cheapest first', function () use ($eng) {
     $same = $eng(['1', '3'])['text']; has($same, 'ZT Same ZT Cat C', 'same-name offers are told apart'); has($same, 'ZT Same ZT Cat D', 'by sub-category');
 });
 t('offers: confirm before buying, cancel, unavailable', function () use ($eng) {
-    $c = $eng(['1', '2']); eq($c['kind'], 'confirm', 'asks to confirm'); has($c['text'], 'Buy ZT Alpha - D10 / 7 days?', 'shows name, price and validity');
+    $c = $eng(['1', '2']); eq($c['kind'], 'confirm', 'asks to confirm'); eq($c['text'], 'Press 1 to subscribe for 866000001 ZT Alpha valid for 7days - D10 or 0 to return to menu.', 'the wording customers know from Mobius: their own number, name, validity and price');
     $p = $eng(['1', '2', '1']); eq($p['kind'], 'purchase', 'confirm leads to a purchase'); eq($p['purchase']['offer_code'], 'ZT001', 'for that offer'); eq($p['purchase']['other_offer_code'], 'ZTO01', 'with its other-number code'); eq($p['purchase']['vendor'], 'huawei', 'and vendor');
     eq($eng(['1', '2', '2'])['kind'], 'cancel', 'cancel buys nothing'); has($eng(['1', '2', '0'])['text'], 'Bundles', 'back from confirm returns to the list');
     eq($eng(['1', '4'])['kind'], 'offer_unavailable', 'an inactive offer is not for sale');
@@ -124,12 +124,20 @@ t('buy for another number', function () use ($eng, $nodes) {
     lacks($l, 'Cat B', 'a list whose offers have no "other" code is not shown'); lacks($l, 'Same name', '(nor this one)'); lacks($l, 'Gone', 'an offer that is switched off is not shown'); lacks($l, 'Beta', 'an offer with no "other" code is not shown');
     $a = $eng(['3', '866520934', '1', '2'])['text']; has($a, 'ZT Alpha', 'inside a list: offers with an "other" code'); lacks($a, 'ZT Beta', 'and not the ones without');
     $p = $eng(['3', '866520934', '1', '1', '1']); eq($p['kind'], 'purchase', 'buying works'); eq($p['purchase']['recipient'], '220866520934', 'the purchase carries the other number'); eq($p['purchase']['recipient_raw'], '866520934', 'and the digits exactly as typed (Hera wants them that way)');
-    has($eng(['3', '866520934', '1', '1'])['text'], 'for 866520934?', 'the confirm screen says who it is for, without the 220'); has($eng(['3', '866520934', '0'])['text'], '1. Bundles', 'back leaves it again');
+    has($eng(['3', '866520934', '1', '1'])['text'], 'Press 1 to subscribe for 866520934 ZT Alpha', 'the confirm screen says who it is for, without the 220'); has($eng(['3', '866520934', '0'])['text'], '1. Bundles', 'back leaves it again');
     // for yourself nothing is hidden
     $self = $eng(['1'])['text']; foreach (['Cat B', 'Alpha', 'Same name', 'Cat A', 'Beta'] as $x) has($self, $x, 'for yourself "'.$x.'" is listed'); eq($eng(['1', '6'])['kind'], 'confirm', 'and the offer without an "other" code can be bought for yourself');
     // nothing sellable for others: say so instead of an empty screen
     $only = [$GLOBALS['mk'](1, null, 'menu', 'Main'), $GLOBALS['mk'](2, 1, 'recipient', 'Buy for other'), $GLOBALS['mk'](3, 1, 'offer', 'Beta', ['offer_code' => 'ZT002'])];
     $e = ussd_screen('*ZTX#', ['1', '866520934'], ['active'], $only, ['seed' => 's', 'msisdn' => '220866000001']); has($e['text'], 'Nothing here can be bought for another number.', 'an empty result is explained');
+    // one offer that can be bought for someone else: after the number, straight to "Press 1 to subscribe…"; 0 goes back to typing the number
+    $one = [$GLOBALS['mk'](1, null, 'menu', 'KAA'), $GLOBALS['mk'](2, 1, 'offer', 'For me', ['offer_code' => 'ZT001']), $GLOBALS['mk'](3, 1, 'recipient', 'For another number')];
+    $o1 = fn(array $r) => ussd_screen('*ZTY#', $r, ['active'], $one, ['seed' => 's', 'msisdn' => '220866000001']);
+    eq($o1(['1'])['text'], 'Press 1 to subscribe for 866000001 ZT Alpha valid for 7days - D10 or 0 to return to menu.', 'for me: my own number');
+    eq($o1(['2', '866520934'])['kind'], 'confirm', 'for another number: straight to the confirmation'); has($o1(['2', '866520934'])['text'], 'Press 1 to subscribe for 866520934 ZT Alpha', 'with the number typed');
+    eq($o1(['2', '866520934', '1'])['purchase']['recipient'], '220866520934', 'and 1 buys it for that number');
+    eq($o1(['2', '866520934', '0'])['kind'], 'recipient', '0 goes back to typing the number'); has($o1(['2', '866520934', '0', '866111222'])['text'], 'for 866111222', 'and a corrected number is used');
+    eq(ussd_confirm_text('Buy {offerDescription} for {recipient} ({price}, {validity})? 1 yes 0 back', ['recipient' => '866', 'offerDescription' => 'X', 'validity' => '3days', 'price' => 'D5']), 'Buy X for 866 (D5, 3days)? 1 yes 0 back', 'the wording can be changed');
 });
 
 // ------------------------------------------------------------------ menu building tools (database)
