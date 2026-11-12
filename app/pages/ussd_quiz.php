@@ -26,7 +26,7 @@ declare(strict_types=1);
     ?>
     <div class="cardx">
         <h3><i class="fa-solid fa-circle-question me-2"></i>USSD Quiz</h3>
-        <p class="text-muted">A quiz is a set of questions that customers play on a phone: each game picks a few at random, scores one point per right answer, and offers <i>Play again</i>. Put one into any menu with the <b>Quiz game</b> item type in the <a href="?page=ussd_menu">Menu Builder</a>. Try it in the <a href="?page=ussd_sim">Simulator</a> first.</p>
+        <p class="text-muted">A quiz is a set of questions that customers play on a phone: each game picks a few at random, scores one point per right answer, and offers <i>Play again</i>. Put one into any menu with the <b>Quiz game</b> item type in the <a href="?page=ussd_build">Easy Builder</a>. Try it in the <a href="?page=ussd_sim">Simulator</a> first.</p>
         <div class="d-flex flex-wrap gap-2 mb-2"><?php foreach($quizzes as $q0):?><a class="btn btn-sm <?=$q0['quiz_key']===$key?'btn-primary':'btn-outline-primary'?>" href="?page=ussd_quiz&quiz=<?=urlencode($q0['quiz_key'])?>"><?=e($q0['title'])?><?=$q0['status']==='inactive'?' (off)':''?></a><?php endforeach;?><?php if(!$quizzes):?><span class="text-muted">No quiz yet — create the first one below.</span><?php endif;?></div>
     </div>
     <div class="row g-3 mt-1">

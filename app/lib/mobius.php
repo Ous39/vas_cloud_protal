@@ -100,6 +100,24 @@ function mobius_probe_ok(array $r): bool {
 // this portal's own endpoint (it carries our token). Everything else is shown read-only. Nothing is ever deleted from here.
 // One REST call, trying the nodes in order and the ways of presenting the session. A node that answered (even with a refusal) is not followed
 // by the next one, so a refused write is never repeated.
+// ---- Production / Testbed ----
+// A user can switch the USSD pages to the testbed Mobius (index.php ?page=mobius_env). Only that user's own pages change: customer
+// traffic (ussd.php, no session), the 5-minute job and the schedules always use production.
+function mobius_testbed_ready(array $raw): bool { return trim($raw['tb_mobius_base'] ?? '') !== '' && trim($raw['tb_mobius_user'] ?? '') !== '' && ($raw['tb_mobius_pass'] ?? '') !== ''; }
+function mobius_env_wanted(): bool { return session_status() === PHP_SESSION_ACTIVE && ($_SESSION['mobius_env'] ?? '') === 'test'; }
+function mobius_env_apply(array $cfg): array {
+    $cfg['env'] = 'prod';
+    if (mobius_env_wanted() && mobius_testbed_ready($cfg)) { $cfg['mobius_base'] = $cfg['tb_mobius_base']; $cfg['mobius_user'] = $cfg['tb_mobius_user']; $cfg['mobius_pass'] = $cfg['tb_mobius_pass']; $cfg['env'] = 'test'; }
+    return $cfg;
+}
+function mobius_prod_cfg(array $cfg): array { if (($cfg['env'] ?? 'prod') !== 'test') return $cfg; $c = ussd_proxy_config_raw(); $c['env'] = 'prod'; return $c; }
+// ussd.php: a reply from a testbed node goes back through the testbed (its screens must be pushed to the node that asked).
+function mobius_cfg_for_caller(array $cfg, string $ip): array {
+    if ($ip === '' || !mobius_testbed_ready($cfg)) return $cfg;
+    foreach (preg_split('/[\s,;]+/', trim($cfg['tb_mobius_base']), -1, PREG_SPLIT_NO_EMPTY) as $b) if (strcasecmp((string)parse_url($b, PHP_URL_HOST), $ip) === 0) {
+        $cfg['mobius_base'] = $cfg['tb_mobius_base']; $cfg['mobius_user'] = $cfg['tb_mobius_user']; $cfg['mobius_pass'] = $cfg['tb_mobius_pass']; $cfg['env'] = 'test'; break; }
+    return $cfg;
+}
 function mobius_rest(array $cfg, string $path, array $data = []): array {
     if (preg_match('~^ussdmenues/(set|delete)~', $path)) { mobius_list_forget(); register_shutdown_function('mobius_list_forget'); } // a menu changed: the kept menu list is out of date
     $errors = []; $pref = max(0, min(1, (int)$cfg['mobius_variant'])); $order = array_values(array_unique([$pref, 0, 1]));
@@ -1089,7 +1107,7 @@ function mobius_test(array $cfg): array {
     return $out ?: [['base' => '', 'ok' => false, 'msg' => 'No valid Mobius address saved.']];
 }
 function save_mobius_config(array $d): void {
-    $cfg = ussd_proxy_config();
+    $cfg = ussd_proxy_config_raw();
     $bases = []; foreach (preg_split('/[\s,;]+/', trim((string)($d['mobius_base'] ?? '')), -1, PREG_SPLIT_NO_EMPTY) as $x) $bases[] = mobius_norm_base($x);
     if (!$bases) throw new RuntimeException('Enter at least one Mobius address.');
     if (count($bases) > 4) throw new RuntimeException('At most 4 Mobius addresses.');
@@ -1103,10 +1121,23 @@ function save_mobius_config(array $d): void {
     ussd_proxy_set($vals);
     audit('ussd_proxy_mobius_save', null, 'ussd_proxy_config', null, 'push='.$vals['push_enabled'].' user='.$user.' password_changed='.($pass !== '' ? 'yes' : 'no'));
 }
+// The testbed Mobius connection (Proxy → Mobius connection → Testbed). Same rules as production: the MD5 of the password, encrypted.
+function save_mobius_testbed_config(array $d): void {
+    $cfg = ussd_proxy_config_raw(); $bases = [];
+    foreach (preg_split('/[\s,;]+/', trim((string)($d['tb_mobius_base'] ?? '')), -1, PREG_SPLIT_NO_EMPTY) as $x) $bases[] = mobius_norm_base($x);
+    if (!$bases) throw new RuntimeException('Enter at least one testbed Mobius address.'); if (count($bases) > 4) throw new RuntimeException('At most 4 testbed addresses.');
+    $prod = array_map('mobius_norm_base', preg_split('/[\s,;]+/', trim($cfg['mobius_base']), -1, PREG_SPLIT_NO_EMPTY));
+    if (array_intersect($bases, $prod)) throw new RuntimeException('That address is the production Mobius. The testbed must be other servers.');
+    $user = trim((string)($d['tb_mobius_user'] ?? '')); if ($user !== '' && !preg_match('/^[A-Za-z0-9._@-]{1,80}$/', $user)) throw new RuntimeException('The API user name may only contain letters, digits and . _ @ -');
+    $vals = ['tb_mobius_base' => implode(',', array_unique($bases)), 'tb_mobius_user' => $user]; $pass = (string)($d['tb_mobius_pass'] ?? '');
+    if ($pass !== '') $vals['tb_mobius_pass'] = encrypt_secret(md5($pass));
+    ussd_proxy_set($vals); audit('ussd_proxy_mobius_testbed_save', null, 'ussd_proxy_config', null, 'user='.$user.' password_changed='.($pass !== '' ? 'yes' : 'no'));
+}
 // PROXY menus: Mobius posts each reply here; the screen goes back through Mobius's REST API, so we acknowledge first
 // (keeping the HTTP exchange short) and push afterwards. Session state is the replies so far, keyed by callID.
 function ussd_proxy_push_endpoint(array $cfg, array $flat, string $raw, array $get, string $ip, float $t0): never {
     ignore_user_abort(true); @set_time_limit(40);
+    $cfg = mobius_cfg_for_caller($cfg, $ip); // a testbed node: its screens go back through the testbed
     $callId = trim((string)($flat['callID'] ?? '')); $msisdn = (string)($flat['msisdn'] ?? '');
     $initial = ($flat['isInitial'] ?? '') === 'true'; $ended = ($flat['isComplete'] ?? '') === 'true'; $typed = trim((string)($flat['request'] ?? ''));
     $note = ''; $text = null; $complete = false; $sc = $cfg['shortcode_proxy'];
@@ -1198,6 +1229,7 @@ function mobius_sched_spare_code(array $menus, string $live): string {
     throw new RuntimeException('No spare short code found to park the other menu.');
 }
 function mobius_sched_add(array $cfg, string $menuId, string $liveCode, string $start, string $end = ''): int {
+    if (($cfg['env'] ?? 'prod') === 'test') throw new RuntimeException('Schedules run on production only. Switch to Production to schedule a menu.');
     mobius_sched_ready();
     $l = mobius_list_menus($cfg); if (!$l['ok']) throw new RuntimeException('Could not read Mobius: '.$l['error']);
     $m = mobius_find_menu($l['menus'], $menuId) ?? throw new RuntimeException('That menu is no longer in Mobius.');
@@ -1256,6 +1288,7 @@ function mobius_sched_end(array $cfg, array $s): void {
 }
 // Start and end whatever is due. Returns ['started' => n, 'ended' => n, 'failed' => n].
 function mobius_sched_apply(array $cfg, ?string $now = null): array {
+    $cfg = mobius_prod_cfg($cfg); // schedules are production menus
     mobius_sched_ready(); $now = $now ?? date('Y-m-d H:i:s'); $r = ['started' => 0, 'ended' => 0, 'failed' => 0];
     $due = portal_pdo()->prepare("SELECT * FROM mobius_schedules WHERE (state='waiting' AND start_at<=?) OR (state='live' AND end_at IS NOT NULL AND end_at<=?) ORDER BY start_at, id"); $due->execute([$now, $now]);
     foreach ($due->fetchAll() as $s) {
@@ -1269,11 +1302,13 @@ function mobius_sched_apply(array $cfg, ?string $now = null): array {
     return $r;
 }
 function mobius_sched_tick(array $cfg): void {
+    $cfg = mobius_prod_cfg($cfg);
     if ($cfg['mobius_user'] === '') return;
     try { cached('mobius_schedule_tick', 30, fn() => mobius_sched_apply($cfg)); } catch (Throwable $e) { error_log('mobius schedule: '.$e->getMessage()); }
 }
 // Cancel a waiting schedule, or end a live one now.
 function mobius_sched_stop(array $cfg, int $id): string {
+    $cfg = mobius_prod_cfg($cfg);
     mobius_sched_ready(); $st = portal_pdo()->prepare('SELECT * FROM mobius_schedules WHERE id=?'); $st->execute([$id]); $s = $st->fetch() ?: throw new RuntimeException('That schedule no longer exists.');
     if ($s['state'] === 'waiting') { mobius_sched_set($id, ['state' => 'cancelled', 'note' => 'Cancelled '.date('Y-m-d H:i')]); audit('mobius_schedule_cancel', null, 'mobius', $s['live_code'], (string)$id); return 'cancelled'; }
     if ($s['state'] === 'live') { mobius_sched_end($cfg, $s); audit('mobius_schedule_end_now', null, 'mobius', $s['live_code'], (string)$id); return 'ended'; }

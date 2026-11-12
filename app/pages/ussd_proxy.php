@@ -9,15 +9,17 @@ declare(strict_types=1);
         if ($do==='save_share') { save_share_config($_POST); flash('success','Shared Bundle settings saved.'); redirect('?page=ussd_proxy'); }
         if ($do==='save_refund') { try { save_refund_config($_POST); flash('success','Refund settings saved.'); } catch (RuntimeException $e) { flash('danger',$e->getMessage()); } redirect('?page=ussd_proxy'); }
         if ($do==='save_purchase') { save_purchase_config($_POST); flash('success','Purchase settings saved.'); redirect('?page=ussd_proxy'); }
+        if ($do==='save_mobius_tb') { try { save_mobius_testbed_config($_POST); flash('success','Testbed Mobius saved. Use "Test testbed connection", then the Production / Testbed switch on the USSD pages.'); } catch (RuntimeException $e) { flash('danger',$e->getMessage()); } redirect('?page=ussd_proxy'); }
         if ($do==='save_mobius') { save_mobius_config($_POST); flash('success','Mobius connection saved. Use "Test connection" to check the login.'); redirect('?page=ussd_proxy'); }
         if ($do==='rotate') { ussd_proxy_rotate_token(); flash('warning','New token created. Update the URL in the Mobius menu(s) — the old URL no longer works.'); redirect('?page=ussd_proxy'); }
         if ($do==='clear') { portal_pdo()->exec('DELETE FROM ussd_proxy_log'); audit('ussd_proxy_log_clear',null,'ussd_proxy_log',null,null); flash('success','Captured requests cleared.'); redirect('?page=ussd_proxy'); }
     }
-    $cfg=ussd_proxy_config(); $token=ussd_proxy_token(); $mobiusTest=null;
+    $cfg=ussd_proxy_config_raw(); $token=ussd_proxy_token(); $mobiusTest=null; $mobiusTestTb=null; // this page always shows and saves production
     $mobiusProbe=null; $heraAsk=null; $shareAsk=null;
     if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['do']??'')==='share_ask') { $shareAsk=share_ask($cfg,(string)($_POST['sa_op']??''),(string)($_POST['sa_msisdn']??'')); }
     if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['do']??'')==='hera_ask') { $heraAsk=hera_ask($cfg,(string)($_POST['ask_op']??''),(string)($_POST['ask_msisdn']??''),trim((string)($_POST['ask_offer']??'')),trim((string)($_POST['ask_sub']??''))); }
     if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['do']??'')==='mobius_probe') { $mobiusProbe=mobius_probe($cfg); audit('ussd_proxy_mobius_probe',null,'ussd_proxy_config',null,json_encode(array_map(fn($r)=>['l'=>$r['label'],'ok'=>$r['ok']],$mobiusProbe))); }
+    if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['do']??'')==='mobius_test_tb' && mobius_testbed_ready($cfg)) { $tbc=$cfg; $tbc['mobius_base']=$cfg['tb_mobius_base']; $tbc['mobius_user']=$cfg['tb_mobius_user']; $tbc['mobius_pass']=$cfg['tb_mobius_pass']; $mobiusTestTb=mobius_test($tbc); audit('ussd_proxy_mobius_test_testbed',null,'ussd_proxy_config',null,null); }
     if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['do']??'')==='mobius_test') { $mobiusTest=mobius_test($cfg); audit('ussd_proxy_mobius_test',null,'ussd_proxy_config',null,json_encode(array_map(fn($r)=>['base'=>$r['base'],'ok'=>$r['ok']],$mobiusTest))); }
     $logs=portal_pdo()->query('SELECT * FROM ussd_proxy_log ORDER BY id DESC LIMIT 25')->fetchAll();
     ussd_purchase_table(); $purchases=portal_pdo()->query('SELECT * FROM ussd_purchases ORDER BY id DESC LIMIT 15')->fetchAll();
@@ -54,13 +56,13 @@ declare(strict_types=1);
     <div class="cardx"><h3 class="mb-2"><i class="fa-solid fa-list-check me-2"></i>Is it ready for customers?</h3>
         <p class="text-muted small">Everything that has to be right for a customer to dial a code and be served. Press a line to go to its settings.</p>
         <ul class="list-unstyled mb-0"><?php foreach($checklist as $c):?><li class="py-1 d-flex gap-2 align-items-start"><span class="badge <?=['ok'=>'bg-success','warn'=>'bg-warning text-dark','off'=>'bg-secondary'][$c['state']]?> mt-1" style="min-width:3.2rem"><?=['ok'=>'ok','warn'=>'check','off'=>'off'][$c['state']]?></span><span><a href="#" data-goto="<?=e($c['tab'])?>"><b><?=e($c['title'])?></b></a> <span class="text-muted"><?=e($c['detail'])?></span></span></li><?php endforeach;?></ul>
-        <div class="small text-muted mt-3">Menus: <a href="?page=ussd_menu">Menu Builder</a> · <a href="?page=shortcodes">Short Codes</a> · <a href="?page=status">System Status</a> · the address to give Mobius is under <a href="#" data-goto="connect">Connection</a>.</div>
+        <div class="small text-muted mt-3">Menus: <a href="?page=ussd_build">Easy Builder</a> · <a href="?page=shortcodes">Short Codes</a> · <a href="?page=status">System Status</a> · the address to give Mobius is under <a href="#" data-goto="connect">Connection</a>.</div>
     </div>
     </div>
     <div class="tab-pane fade" id="tab-connect">
     <div class="cardx">
         <h3><i class="fa-solid fa-plug me-2"></i>USSD proxy endpoint <span class="badge <?=$cfg['enabled']==='1'?($cfg['mode']==='live'?'bg-success':'bg-warning text-dark'):'bg-secondary'?> ms-2"><?=$cfg['enabled']==='1'?($cfg['mode']==='live'?'ON — serving menus':'ON — capture only'):'OFF'?></span></h3>
-        <p class="text-muted mb-2">The address a Mobius <b>PROXY</b> (or <b>MS_INITIATED</b>) menu calls. While the endpoint is <b>off</b> Mobius gets "Not found" and nothing changes for customers. <b>Capture</b> mode only records what Mobius sends (useful when connecting a new menu); <b>Live</b> serves the menus built in the <a href="?page=ussd_menu">Menu Builder</a>. Only the Mobius menu you point at this address is affected — no other short code is touched.</p>
+        <p class="text-muted mb-2">The address a Mobius <b>PROXY</b> (or <b>MS_INITIATED</b>) menu calls. While the endpoint is <b>off</b> Mobius gets "Not found" and nothing changes for customers. <b>Capture</b> mode only records what Mobius sends (useful when connecting a new menu); <b>Live</b> serves the menus built in the <a href="?page=ussd_build">Easy Builder</a>. Only the Mobius menu you point at this address is affected — no other short code is touched.</p>
         <p class="mb-1 small text-muted">Put one of these in the Mobius menu's <b>URL</b> field (use the address Mobius can actually reach — the in-cluster one only works from inside the cluster):</p>
         <?php foreach(['proxy'=>'PROXY menu','ms_initiated'=>'MS_INITIATED menu'] as $m=>$lbl):?>
         <div class="small fw-semibold mt-2"><?=e($lbl)?> — public address</div><pre class="mb-1 txid" title="Click to select, then copy" data-public-url="ussd.php?t=<?=e($token)?>&amp;m=<?=e($m)?>"><?=e($urlFor($m))?></pre>
@@ -112,10 +114,20 @@ declare(strict_types=1);
         <form method="post" class="mt-2"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="mobius_probe"><button class="btn btn-sm btn-outline-secondary">Run diagnostics</button> <small class="text-muted">For when screens aren't getting through: logs in, then makes a harmless read-only call (<code>ussdcalls/count</code>) in each way Mobius might want the login presented, and shows what Mobius says to each. Sends no screen and changes nothing.</small></form>
         <?php if($mobiusProbe):?><div class="mt-2"><?php foreach($mobiusProbe as $mp):?><div class="small"><span class="badge <?=$mp['ok']?'bg-success':'bg-danger'?> me-1"><?=$mp['ok']?'OK':'Refused'?></span><b><?=e($mp['label'])?></b> — <?=e($mp['msg'])?></div><?php endforeach;?></div><?php endif;?>
         <?php if($mobiusTest):?><div class="mt-2"><?php foreach($mobiusTest as $mt):?><div class="small"><span class="badge <?=$mt['ok']?'bg-success':'bg-danger'?> me-1"><?=$mt['ok']?'OK':'Failed'?></span><code><?=e($mt['base'])?></code> <?=e($mt['msg'])?></div><?php endforeach;?></div><?php endif;?>
+        <div class="border rounded p-3 mt-3 bg-light"><h5 class="mb-1"><i class="fa-solid fa-flask me-1 text-warning"></i>Testbed</h5>
+            <p class="small text-muted mb-2">The testbed Mobius (ussdtestbed01 / 02). Once saved, the USSD pages get a <b>Production / Testbed</b> switch: you build and dial-test menus on the testbed, and production is not touched. The switch is per person; customers, schedules and the 5-minute job always use production.</p>
+            <form method="post" class="row g-2"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="save_mobius_tb">
+                <div class="col-md-6"><label class="small text-muted mb-0">Testbed REST address(es)</label><input class="form-control" name="tb_mobius_base" value="<?=e($cfg['tb_mobius_base'])?>" placeholder="http://192.168.163.221:28080/rest/"></div>
+                <div class="col-md-3"><label class="small text-muted mb-0">API user name</label><input class="form-control" name="tb_mobius_user" value="<?=e($cfg['tb_mobius_user'])?>" autocomplete="off"></div>
+                <div class="col-md-3"><label class="small text-muted mb-0">Password</label><input class="form-control" type="password" name="tb_mobius_pass" autocomplete="new-password" placeholder="<?=$cfg['tb_mobius_pass']!==''?'saved — leave blank to keep':'password'?>"></div>
+                <div class="col-12"><button class="btn btn-warning btn-sm">Save testbed</button></div></form>
+            <?php if(mobius_testbed_ready($cfg)):?><form method="post" class="mt-2"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="mobius_test_tb"><button class="btn btn-sm btn-outline-warning">Test testbed connection</button></form><?php endif;?>
+            <?php if($mobiusTestTb):?><div class="mt-2"><?php foreach($mobiusTestTb as $mt):?><div class="small"><span class="badge <?=$mt['ok']?'bg-success':'bg-danger'?> me-1"><?=$mt['ok']?'OK':'Failed'?></span><code><?=e($mt['base'])?></code> <?=e($mt['msg'])?></div><?php endforeach;?></div><?php endif;?>
+        </div>
     </div>
     </div>
     <div class="tab-pane fade" id="tab-buy">
-    <div class="cardx"><h3>Buying from the menu <small class="text-muted">(offer items in the Menu Builder)</small></h3>
+    <div class="cardx"><h3>Buying from the menu <small class="text-muted">(offer items in the Easy Builder)</small></h3>
         <p class="text-muted">When a customer picks an <b>offer</b> item, the menu shows its name and price (read from <b><?=e(USSD_OFFER_SCHEMA)?></b> only) and asks <i>1. Confirm / 2. Cancel</i>. What happens on Confirm depends on the mode. Each call can buy each offer only once, even if Mobius repeats a request.</p>
         <form method="post" class="row g-3"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="save_purchase">
             <div class="col-md-4"><label class="small text-muted mb-0">Mode</label><select class="form-select" name="purchase_mode">

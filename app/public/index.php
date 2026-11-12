@@ -26,6 +26,13 @@ if ($page==='switch_schema' && isset($_GET['schema'])) { // back to where the us
     redirect($rh!=='' && strcasecmp($rh,$mine)===0 ? $ref : '?');
 }
 
+if ($page==='mobius_env') { // Production / Testbed for this user's USSD pages (POST, with the CSRF token checked above)
+    require_perm('manage_api_keys'); $want=($_POST['env']??'')==='test'?'test':'prod';
+    if ($want==='test' && !mobius_testbed_ready(ussd_proxy_config_raw())) { flash('warning','The testbed Mobius is not set up yet: USSD → Settings → Proxy → Mobius connection → Testbed.'); $want='prod'; }
+    $_SESSION['mobius_env']=$want; audit('mobius_env',null,'mobius',null,'Switched the USSD pages to '.($want==='test'?'the testbed':'production'));
+    $back=(string)($_POST['back']??''); redirect(preg_match('/^\?page=[a-z_]+[^\s]*$/',$back)?$back:'?page=ussd_menus');
+}
+
 try {
     // each page is its own file in app/pages/ (the name is checked, so only a file in that folder can be included)
     $pageFile = __DIR__.'/../pages/'.(is_string($page) ? $page : '').'.php';

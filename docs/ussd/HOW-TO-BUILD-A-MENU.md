@@ -213,3 +213,11 @@ USSD → **Try it → Trace a number** (also a **USSD (Trace a number)** tab on 
 **As in the logs.** Under the sessions, **Log view** shows the same sessions oldest first, one line per event (`DIAL *606# -> menu …`, `>> screen …`, `<< typed 1`, `GO TO MENU …`, `ERROR -10012 …` / `END`) — like reading `network.log` and `debug.log`, but only for this number — with a **Copy** button. **grep on the nodes** gives the commands to paste on a Mobius node when you still need the gateway's own lines (for the vendor or the core network team): `cd /opt/ussd/log/` and `grep` for the number in the files of the days you chose (today = `network.log`, older days = `network.log.YYYY-MM-DD`), plus one line per session that picks its minute. They only read.
 
 Purchases made through portal menus for that number are listed under the sessions. Only the number you typed is ever shown, and every search is kept in the audit trail (with the number shortened). Without a short code, Mobius may not search by number alone — the page then asks for the code.
+
+## Production / Testbed — build and test on the testbed Mobius
+
+Set it up once: USSD → **Settings → Proxy → Mobius connection → Testbed**: the testbed addresses (ussdtestbed01 / 02, `http://192.168.163.221:28080/rest/,http://192.168.163.222:28080/rest/`), an API user and its password (kept encrypted, like production), then **Test testbed connection**.
+
+From then on every USSD page has a **Mobius: Production | Testbed** switch above the tabs. On **Testbed**, Menus, the Mobius Builder, Try it, Same code twice and **Trace a number** all talk to the testbed Mobius, and a yellow **Testbed** banner shows on every page with a **Back to Production** button. Use it to build a new menu and dial-test it without touching production.
+
+What never changes with the switch: it is **per person** (others stay on production); **customers** always use production; the **5-minute job** and **schedules** always run on production (the Schedule tab refuses to schedule on the testbed); the **Proxy settings page** always shows and saves the production connection. Portal menus (Easy Builder) are shared — creating one on the testbed puts its Mobius side on the testbed only. When a testbed node calls the portal for a PROXY menu, the screens go back through the testbed.

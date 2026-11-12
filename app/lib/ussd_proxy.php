@@ -36,7 +36,9 @@ const USSD_PROXY_DEFAULTS = [
     'resp_type' => 'text/plain; charset=UTF-8', 'resp_body' => '{text}', 'end_true' => 'true', 'end_false' => 'false',
     'capture_body' => 'VAS Cloud test endpoint: request received.',
     // PROXY menus: Mobius sends each reply here and expects the screen to come back through ITS REST API
-    'push_enabled' => '0', 'mobius_base' => 'http://192.168.162.20:28080/rest/', 'mobius_user' => '', 'mobius_pass' => '', 'mobius_session' => '', 'mobius_variant' => '0', 'mobius_step_shape' => '',
+    'push_enabled' => '0', 'mobius_base' => 'http://192.168.162.20:28080/rest/', 'mobius_user' => '', 'mobius_pass' => '', 'mobius_session' => '', 'mobius_variant' => '0',
+    // the testbed Mobius (Production / Testbed switch on the USSD pages; per user session, never for customer traffic or the 5-minute job)
+    'tb_mobius_base' => 'http://192.168.163.221:28080/rest/,http://192.168.163.222:28080/rest/', 'tb_mobius_user' => '', 'tb_mobius_pass' => '', 'mobius_step_shape' => '',
     // buying an offer from the menu (see ussd_execute_purchase): off | test | live
     'purchase_mode' => 'off', 'purchase_url' => '', 'purchase_body' => USSD_PURCHASE_BODY,
     'purchase_auth' => '', 'purchase_ok_match' => '', 'purchase_timeout' => '8', 'purchase_lowbal' => 'insufficient,low balance,not enough', 'purchase_reply_field' => '', 'purchase_body_other' => '', 'purchase_other_seeded' => '0',
@@ -44,7 +46,10 @@ const USSD_PROXY_DEFAULTS = [
     'share_mode' => 'test', 'share_base' => 'https://vas-testing.comium.gm/hera/prepaid/ShareBundle/', 'share_ok_code' => '0',
     'share_body_subscribe' => SHARE_BODY_SUBSCRIBE, 'share_body_validate' => '', 'share_body_add' => SHARE_BODY_ADD, 'share_body_balance' => SHARE_BODY_READ, 'share_body_numbers' => SHARE_BODY_NUMBERS,
 ];
-function ussd_proxy_config(): array {
+// The settings, with the Mobius connection of the testbed instead of production when this user has switched to Testbed.
+function ussd_proxy_config(): array { return mobius_env_apply(ussd_proxy_config_raw()); }
+// The settings as saved (always the production Mobius): for the Proxy settings page, saving, and everything customers use.
+function ussd_proxy_config_raw(): array {
     $cfg = USSD_PROXY_DEFAULTS;
     try { foreach (portal_pdo()->query('SELECT name,value FROM ussd_proxy_config')->fetchAll() as $r) if (array_key_exists($r['name'], $cfg)) $cfg[$r['name']] = (string)$r['value']; }
     catch (Throwable $e) {}

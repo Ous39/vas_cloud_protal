@@ -57,6 +57,13 @@ function ussd_subnav(string $current): void {
         echo '</ul></li>';
     }
     echo '</ul>';
+    // Production / Testbed: which Mobius these pages talk to (only for this user; customers always use production)
+    if (nav_can_see('mobius_menus') && function_exists('mobius_testbed_ready') && mobius_testbed_ready(ussd_proxy_config_raw())) {
+        $tb = ($_SESSION['mobius_env'] ?? '') === 'test'; $back = '?'.http_build_query(array_intersect_key($_GET, array_flip(['page','sc','short_code','f','msisdn','code','period'])));
+        echo '<form method="post" action="?page=mobius_env" class="mobius-env mb-2"><input type="hidden" name="csrf" value="'.e(csrf_token()).'"><input type="hidden" name="back" value="'.e($back).'"><span class="small text-muted me-1">Mobius:</span>'
+            .'<span class="btn-group btn-group-sm" role="group"><button class="btn '.($tb ? 'btn-outline-secondary' : 'btn-success').'" name="env" value="prod"'.($tb ? '' : ' disabled').'><i class="fa-solid fa-tower-broadcast me-1"></i>Production</button>'
+            .'<button class="btn '.($tb ? 'btn-warning' : 'btn-outline-secondary').'" name="env" value="test"'.($tb ? ' disabled' : '').'><i class="fa-solid fa-flask me-1"></i>Testbed</button></span></form>';
+    }
     if ($switch) {
         echo '<div class="btn-group btn-group-sm ussd-switch mb-3" role="group">';
         foreach ($switch as [$p, $lb]) echo '<a class="btn '.($p===$current?'btn-dark':'btn-outline-secondary').'" href="?page='.$p.'">'.e($lb).'</a>';
@@ -109,7 +116,7 @@ function layout_start(string $title): void {
     </div>
     </div>
 </div></nav>
-<main><div class="topbar"><div><h1><?=e($title)?></h1><p><?=e($schema)?> • Request <?=e(request_id())?></p></div><span class="pill <?=schema_kind($schema)?>"><?=e($schema)?></span></div><?php foreach(flashes() as $f):?><div class="alert alert-<?=e($f['type'])?> shadow-sm"><?=e($f['msg'])?></div><?php endforeach; ?>
+<main><div class="topbar"><div><h1><?=e($title)?></h1><p><?=e($schema)?> • Request <?=e(request_id())?></p></div><span class="pill <?=schema_kind($schema)?>"><?=e($schema)?></span></div><?php if(($_SESSION['mobius_env']??'')==='test' && function_exists('mobius_testbed_ready') && mobius_testbed_ready(ussd_proxy_config_raw())):?><div class="alert alert-warning py-2 d-flex flex-wrap gap-2 align-items-center testbed-banner"><i class="fa-solid fa-flask"></i><span><b>Testbed</b> — the USSD pages are working on the testbed Mobius (<?=e(implode(', ',array_map(fn($b)=>(string)parse_url($b,PHP_URL_HOST),preg_split('/[\s,;]+/',trim(ussd_proxy_config_raw()['tb_mobius_base']),-1,PREG_SPLIT_NO_EMPTY))))?>). Production is not touched. Customers, schedules and the 5-minute job always use production.</span><form method="post" action="?page=mobius_env" class="ms-auto"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="back" value="<?=e('?'.http_build_query(array_intersect_key($_GET,array_flip(['page','sc','short_code','f','msisdn','code','period']))))?>"><button class="btn btn-sm btn-success" name="env" value="prod"><i class="fa-solid fa-tower-broadcast me-1"></i>Back to Production</button></form></div><?php endif;?><?php foreach(flashes() as $f):?><div class="alert alert-<?=e($f['type'])?> shadow-sm"><?=e($f['msg'])?></div><?php endforeach; ?>
 <?php }
 
 function layout_end(): void { ?></main><footer>&copy; <?=date('Y')?> Comium VAS Cloud. All rights reserved.</footer><script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script><script nonce="<?=e(csp_nonce())?>">

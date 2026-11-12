@@ -322,3 +322,6 @@ tr.pg-hide{display:none!important}
 .pg-bar .pg-page{min-width:3.5rem;text-align:center}
 .pg-bar .btn{min-width:2.2rem}
 @media(max-width:640px){ .pg-bar{justify-content:center} .pg-bar .pg-size{margin-left:0} .pg-bar .pg-size select{font-size:16px} }
+.mobius-env{display:flex;align-items:center;justify-content:flex-end}
+.mobius-env .btn[disabled]{opacity:1}
+.testbed-banner{border-left:5px solid #f59e0b}

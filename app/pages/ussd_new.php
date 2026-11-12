@@ -25,7 +25,7 @@ declare(strict_types=1);
                 $msg='Created '.$r['code'].' — “'.$name.'” in the portal'.($items?' with '.$items.' draft items copied':'').'.';
                 if ($canMobius) { try { $mr=mobius_create_menu($cfg,$name,$r['code']); $msg.=' Mobius is ready too: '.$r['code'].' calls the portal.'; }
                     catch (RuntimeException $e) { flash('warning','The menu is in the portal, but Mobius was not set up: '.$e->getMessage().' You can do it later from USSD Menus → Check Mobius → Create.'); } }
-                flash('success',$msg.' Now add what customers will see, then press Publish.');
+                flash('success',$msg.(($cfg['env']??'prod')==='test'?' (Testbed: the Mobius side is on the testbed; the portal menu itself is shared with production — it is not live there until its code is in production Mobius.)':'').' Now add what customers will see, then press Publish.');
                 redirect('?page=ussd_build&short_code='.urlencode($r['code']));
             }
             if ($f['where']==='mobius') {
