@@ -143,9 +143,11 @@ document.querySelectorAll('main table').forEach(t => {
 });
 // Long lists: a table with more than 25 rows shows them a page at a time (10 / 25 / 50 / 100 / All, remembered per page) with
 // ‹ › to move. Rows a search box or filter button hides ([hidden]) are left out of the count, and changing the search starts again
-// at page 1. A table marked .no-pager shows every row.
+// at page 1. A table marked .no-pager shows every row, and so does a list the server already pages ("Page 2 of 9").
 document.querySelectorAll('main table').forEach(t => {
     const body = t.tBodies[0]; if (!body || t.classList.contains('no-pager') || t.closest('.modal')) return;
+    const box = t.closest('.cardx') || t.parentElement; // already paged by the server ("Page 2 of 9", Prev / Next links with p=): leave it
+    if (box && (/\bPage \d+ of \d+/.test(box.textContent) || box.querySelector('a[href*="&p="],a[href*="?p="]'))) return;
     const real = () => Array.from(body.rows).filter(r => !(r.cells.length === 1 && r.cells[0].colSpan > 1));
     if (real().length <= 25) return;
     const key = 'pg:' + (new URLSearchParams(location.search).get('page') || '') + ':' + (t.id || Array.from(document.querySelectorAll('main table')).indexOf(t));
