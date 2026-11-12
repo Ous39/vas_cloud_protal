@@ -38,6 +38,29 @@ function check_all_integrations(int $budgetSeconds = 35): array {
     audit('integrations_check_all', null, 'integrations', null, "up=$up down=$down skipped=$skipped");
     return ['up' => $up, 'down' => $down, 'skipped' => $skipped];
 }
+// The 5-minute job (alert_cron) checks every active integration, so Monitoring shows current health and a DOWN one raises an
+// alert (compute_alerts). Skips one checked in the last 4 minutes (by a person, or a slow previous run); no audit entry each time.
+function background_integration_checks(int $budgetSeconds = 25): array {
+    $start = microtime(true); $n = 0;
+    foreach (list_integrations() as $i) {
+        if ($i['status'] !== 'active') continue;
+        if (!empty($i['last_check_at']) && time() - (int)strtotime($i['last_check_at']) < 240) continue;
+        if (microtime(true) - $start > $budgetSeconds) break;
+        try { test_integration((int)$i['id']); $n++; } catch (Throwable $e) { error_log('integration check: '.$e->getMessage()); }
+    }
+    if (random_int(1, 50) === 1) { try { portal_pdo()->exec('DELETE FROM integration_checks WHERE checked_at < NOW() - INTERVAL 30 DAY'); } catch (Throwable $e) {} }
+    return ['checked' => $n];
+}
+// Integrations that failed their last two checks, both recent (one failed check can be a blip).
+function integrations_down(): array {
+    $out = [];
+    foreach (list_integrations() as $i) {
+        if ($i['status'] !== 'active' || empty($i['last_check_at']) || $i['last_check_ok'] || time() - (int)strtotime($i['last_check_at']) > 15 * 60) continue;
+        $h = integration_check_history((int)$i['id'], 2); if (count($h) < 2 || $h[0]['ok'] || $h[1]['ok']) continue;
+        $out[] = $i;
+    }
+    return $out;
+}
 // Today's traffic per channel (whatever channels actually appear, not a fixed list) with success rate and
 // the same window yesterday, so a channel that has quietly dropped off stands out. Bounded to two days of
 // audit_log like the other dashboard queries.

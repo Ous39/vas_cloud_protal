@@ -8,15 +8,18 @@ declare(strict_types=1);
 
 function dashboard_kpis(...$a) { return cached('dashboard_kpis:'.md5(serialize($a)), LIVE_TTL, fn() => dashboard_kpis_uncached(...$a)); }
 function dashboard_kpis_uncached(string $schema): array {
-    $out = ['tx_today'=>0, 'tx_today_success'=>0, 'tx_today_failed'=>0, 'lookups_today'=>0, 'lookups_failed'=>0, 'offers_active'=>0, 'offers_inactive'=>0, 'subscription_rows_est'=>0];
+    $out = ['tx_today'=>0, 'tx_today_success'=>0, 'tx_today_failed'=>0, 'tx_today_real_failed'=>0, 'tx_today_customer_side'=>0, 'lookups_today'=>0, 'lookups_failed'=>0, 'offers_active'=>0, 'offers_inactive'=>0, 'subscription_rows_est'=>0];
     if (table_exists($schema, AUDIT_LOG_TABLE)) {
         $db = pdo($schema);
-        $st = $db->query("SELECT COUNT(*) total, SUM(CASE WHEN ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) ok, SUM(CASE WHEN ".LOOKUPS_SQL." THEN 1 ELSE 0 END) lk, SUM(CASE WHEN ".LOOKUPS_SQL." AND ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) lk_ok FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= CURDATE()");
+        [$cf, $cfParams] = alert_counted_failure_sql(); // failures that are not on the customer's side (the reasons ignored in Alert Settings, e.g. low balance)
+        $st = $db->prepare("SELECT COUNT(*) total, SUM(CASE WHEN ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) ok, SUM(CASE WHEN ".LOOKUPS_SQL." THEN 1 ELSE 0 END) lk, SUM(CASE WHEN ".LOOKUPS_SQL." AND ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) lk_ok, SUM(CASE WHEN NOT ".LOOKUPS_SQL." AND $cf THEN 1 ELSE 0 END) real_failed FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= CURDATE()");
+        $st->execute($cfParams);
         $r = $st->fetch();
         $out['lookups_today'] = (int)($r['lk'] ?? 0); $out['lookups_failed'] = (int)($r['lk'] ?? 0) - (int)($r['lk_ok'] ?? 0);
         $out['tx_today'] = (int)($r['total'] ?? 0) - $out['lookups_today'];
         $out['tx_today_success'] = (int)($r['ok'] ?? 0) - (int)($r['lk_ok'] ?? 0);
         $out['tx_today_failed'] = $out['tx_today'] - $out['tx_today_success'];
+        $out['tx_today_real_failed'] = min($out['tx_today_failed'], (int)($r['real_failed'] ?? 0)); $out['tx_today_customer_side'] = $out['tx_today_failed'] - $out['tx_today_real_failed'];
     }
     if (table_exists($schema, 'vas_offers')) {
         $st = pdo($schema)->query("SELECT SUM(".OFFER_ACTIVE_SQL.") active, SUM(NOT COALESCE(".OFFER_ACTIVE_SQL.",0)) inactive FROM ".ident('vas_offers'));
@@ -208,6 +211,10 @@ function compute_alerts_uncached(string $schema): array {
             $alerts[] = ['key'=>'vendor_slow:'.$schema.':'.$r['v'], 'type'=>'vendor_slow', 'level'=>'warning', 'message'=>sprintf('%s is slow: averaged %s ms over the last hour (%d transactions) — your limit is %s ms.', $r['v'], number_format((float)$r['a']), $r['c'], number_format($cfg['vendor_slow_ms']))];
         }
     }
+    // integrations (SMSC, Hera, …) checked every 5 minutes by the job: DOWN twice in a row. Once, for the main database's page only.
+    if ($schema === app_config('default_schema')) { try { foreach (integrations_down() as $i) {
+        $alerts[] = ['key'=>'integration_down:'.$i['id'], 'type'=>'vendor_silent', 'level'=>'danger', 'message'=>sprintf('%s (%s) is DOWN: the last two checks failed — %s', $i['name'], strtoupper((string)($i['service_type'] ?? $i['type'] ?? '')), mb_strimwidth((string)$i['last_check_message'], 0, 140, '…'))];
+    } } catch (Throwable $e) {} }
     return $alerts;
 }
 

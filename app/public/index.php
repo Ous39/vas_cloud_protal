@@ -7,11 +7,14 @@ try { verify_csrf(); } catch(Throwable $e){ flash('danger',$e->getMessage()); re
 $page=$_GET['page'] ?? 'dashboard';
 if ($page==='alert_cron') {
     if (!hash_equals(alert_cron_token(), (string)($_GET['token']??''))) { http_response_code(403); header('Content-Type: text/plain'); exit('forbidden'); }
+    try { background_integration_checks(); portal_pdo()->exec("DELETE FROM metric_cache WHERE cache_key LIKE 'compute_alerts:%'"); } catch (Throwable $e) { error_log('integration checks: '.$e->getMessage()); } // before the alerts, so a DOWN one is sent now
     foreach (['HeraProduction','HeraTesting'] as $s) dispatch_pending_alert_notifications($s);
     portal_housekeeping();
     foreach (['HeraProduction'] as $s) if (in_array($s, allowed_schemas(), true)) warm_live_figures($s);
     try { $mc = ussd_proxy_config(); if ($mc['mobius_user'] !== '') mobius_sched_apply($mc); } catch (Throwable $e) { error_log('mobius schedule: '.$e->getMessage()); }
     try { menu_apply_schedules(); } catch (Throwable $e) { error_log('menu schedule: '.$e->getMessage()); }
+    // Offer Health's slow part (last purchase of every offer, kept 30 min): refreshed here every 25 minutes so nobody waits for it
+    if (in_array('HeraProduction', allowed_schemas(), true) && intdiv(time(), 300) % 5 === 0) { try { $GLOBALS['CACHE_REFRESH'] = true; offer_health('HeraProduction', 30); } catch (Throwable $e) { error_log('offer health warm: '.$e->getMessage()); } finally { $GLOBALS['CACHE_REFRESH'] = false; } }
     if (in_array('HeraProduction', allowed_schemas(), true)) { try { maybe_send_daily_summary('HeraProduction'); } catch (Throwable $e) { error_log('daily summary: '.$e->getMessage()); } }
     header('Content-Type: text/plain'); exit('OK');
 }

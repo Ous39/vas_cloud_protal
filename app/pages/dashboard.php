@@ -15,7 +15,7 @@ declare(strict_types=1);
     <div class="metric-grid">
         <div class="metric"><span>Customer Transactions Today</span><strong><?=number_format($kpis['tx_today'])?></strong><?php if(($kpis['lookups_today']??0)>0):?><small class="text-muted">+ <?=number_format($kpis['lookups_today']??0)?> system lookups</small><?php endif;?></div>
         <div class="metric"><span>Success Today</span><strong><?=number_format($kpis['tx_today_success'])?></strong></div>
-        <div class="metric"><span>Failed Today</span><strong><?=number_format($kpis['tx_today_failed'])?></strong></div>
+        <a class="metric" href="?page=alerts" title="Customer side = the reasons ignored in Alert Settings (for example not enough balance). Real failures are the rest."><span>Failed Today</span><strong><?=number_format($kpis['tx_today_failed'])?></strong><?php if(($kpis['tx_today_failed']??0)>0):?><small class="text-muted"><?=number_format($kpis['tx_today_customer_side']??0)?> customer side (e.g. no balance) · <b class="<?=($kpis['tx_today_real_failed']??0)>0?'text-danger':''?>"><?=number_format($kpis['tx_today_real_failed']??0)?> real</b></small><?php endif;?></a>
         <div class="metric"><span>Active Offers</span><strong><?=number_format($kpis['offers_active'])?></strong></div>
         <div class="metric"><span>Environment</span><strong><?=e(schema_short($schema))?></strong></div>
         <div class="metric"><span>Subscription Rows (est.)</span><strong><?=number_format($kpis['subscription_rows_est'])?></strong></div>

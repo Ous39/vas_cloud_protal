@@ -52,7 +52,7 @@ declare(strict_types=1);
     <div class="cardx mt-3">
         <div class="d-flex justify-content-between align-items-center flex-wrap gap-2"><h3 class="mb-0">Integrations</h3>
             <div class="d-flex gap-2"><?php if(can('edit_records') && $activeInts):?><form method="post" class="d-inline"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="check_all"><button class="btn btn-sm btn-primary"><i class="fa-solid fa-rotate me-1"></i>Check all now</button></form><?php endif;?><a class="btn btn-sm btn-outline-primary" href="?page=integrations">Manage</a></div></div>
-        <p class="text-muted small mt-2 mb-2">Checks run only when you click <b>Check all now</b> (or Test on an integration) — nothing checks them in the background, so results older than <?=INTEGRATION_STALE_MINUTES?> minutes are shown as <i>Was UP / Was DOWN</i>, not as current.</p>
+        <p class="text-muted small mt-2 mb-2">Every active integration is checked automatically every 5 minutes; <b>Check all now</b> checks them again at once. One that fails two checks in a row raises an alert (Slack / email, like the other alerts). A result older than <?=INTEGRATION_STALE_MINUTES?> minutes (the background job stopped) is shown as <i>Was UP / Was DOWN</i>.</p>
         <?php if(!$ints):?><p class="text-muted mb-0">No integrations registered yet. <a href="?page=integrations">Add one</a> (SMSC, USSD gateway, IVR…).</p><?php else:?>
         <div class="table-scroll"><table class="table table-sm align-middle mb-0"><thead><tr><th>Type</th><th>Name</th><th>Health</th><th>Last check</th><th>Latency</th><th>Result</th></tr></thead><tbody>
         <?php foreach($ints as $i): $h=integration_health($i);?>
