@@ -614,6 +614,15 @@ function mobius_call_explain(array $c): array {
         return ['danger', $net.' ended the session with an error ('.$c['error'].')'.$after.'.', 'Not the menu — give the core network team the time and the number.'];
     }
     if ($c['error'] !== '') return ['danger', 'Mobius error: '.$c['error'].'.', 'Open the menu on the Mobius page → Calls for the details.'];
+    // the last screen shown is often the answer of the service behind the menu (Hera): read it, so a refused purchase is not called "normal"
+    $shown = array_values(array_filter($c['steps'], fn($x) => !$x['mobile'] && trim($x['message']) !== '')); $last = $shown ? trim((string)end($shown)['message']) : ''; $l = strtolower($last);
+    $typed = array_values(array_filter($c['steps'], fn($x) => $x['mobile'])); $pressed1 = $typed && trim((string)end($typed)['message']) === '1';
+    if ($last !== '' && preg_match('/low balance|insufficient|not enough (balance|credit|money)|deduction .*fail|balance is too low/', $l))
+        return ['warning', 'Purchase refused — not enough balance (“'.mb_strimwidth($last, 0, 80, '…').'”).', 'Customer side: the menu and Hera worked; the customer needs to top up. Not a system problem.'];
+    if ($last !== '' && $pressed1 && preg_match('/fail|error|not allowed|not eligible|unable|could not|cannot|try again later|pool state|already/', $l))
+        return ['danger', 'Purchase refused by the service: “'.mb_strimwidth($last, 0, 100, '…').'”.', 'The service (Hera) said no. Check the attempt in Complaint Investigation (same time and number) for its reason.'];
+    if ($last !== '' && $pressed1 && preg_match('/success|accepted|subscribed|activated|you have received/', $l))
+        return ['success', 'Bought — the service confirmed: “'.mb_strimwidth($last, 0, 80, '…').'”.', 'If the customer says nothing arrived, look at the subscription in Complaint Investigation.'];
     if ($c['completed']) return ['success', 'Mobius answered and the session ended normally.', 'If the customer still saw “Connection problem / invalid MMI code”, the reply was lost after Mobius — in the network (STP / HLR / MSC).'];
     $mob = array_filter($c['steps'], fn($s) => $s['mobile']);
     return ['secondary', $mob ? 'The customer stopped answering (or the session is still open).' : 'The session opened but did not finish.', 'Normal if the customer left; if they say the screen froze, look at the last screen shown.'];
