@@ -5,14 +5,27 @@ require __DIR__ . '/../lib/layout.php'; // page frame and menu helpers (web only
 
 try { verify_csrf(); } catch(Throwable $e){ flash('danger',$e->getMessage()); redirect('?'); }
 $page=$_GET['page'] ?? 'dashboard';
+// Scheduled menus that are due go live / switch off (Mobius menus and portal items). Run first by alert_cron (every 5 minutes)
+// and by schedule_cron (every minute, deploy/k8s/06-schedule-cronjob.yaml), so a launch at 00:00 happens within a minute.
+function run_due_schedules(): string {
+    $out = [];
+    try { $mc = ussd_proxy_config(); if ($mc['mobius_user'] !== '') { $r = mobius_sched_apply($mc); $out[] = 'mobius started='.$r['started'].' ended='.$r['ended'].' failed='.$r['failed']; } } catch (Throwable $e) { error_log('mobius schedule: '.$e->getMessage()); $out[] = 'mobius error'; }
+    try { $r = menu_apply_schedules(); $out[] = 'portal on='.$r['on'].' off='.$r['off']; } catch (Throwable $e) { error_log('menu schedule: '.$e->getMessage()); $out[] = 'portal error'; }
+    return implode('; ', $out);
+}
+if ($page==='schedule_cron') {
+    if (!hash_equals(alert_cron_token(), (string)($_GET['token']??''))) { http_response_code(403); header('Content-Type: text/plain'); exit('forbidden'); }
+    $res = run_due_schedules();
+    try { portal_pdo()->prepare("INSERT INTO metric_cache(cache_key,value,expires_at) VALUES('schedule_cron_last',?,?) ON DUPLICATE KEY UPDATE value=VALUES(value), expires_at=VALUES(expires_at)")->execute([(string)time(), time() + 30 * 86400]); } catch (Throwable $e) {}
+    header('Content-Type: text/plain'); exit('OK '.$res);
+}
 if ($page==='alert_cron') {
     if (!hash_equals(alert_cron_token(), (string)($_GET['token']??''))) { http_response_code(403); header('Content-Type: text/plain'); exit('forbidden'); }
+    run_due_schedules(); // first: a launch at 00:00 must not wait behind the checks below (the job is stopped after 30 s)
     try { background_integration_checks(); portal_pdo()->exec("DELETE FROM metric_cache WHERE cache_key LIKE 'compute_alerts:%'"); } catch (Throwable $e) { error_log('integration checks: '.$e->getMessage()); } // before the alerts, so a DOWN one is sent now
     foreach (['HeraProduction','HeraTesting'] as $s) dispatch_pending_alert_notifications($s);
     portal_housekeeping();
     foreach (['HeraProduction'] as $s) if (in_array($s, allowed_schemas(), true)) warm_live_figures($s);
-    try { $mc = ussd_proxy_config(); if ($mc['mobius_user'] !== '') mobius_sched_apply($mc); } catch (Throwable $e) { error_log('mobius schedule: '.$e->getMessage()); }
-    try { menu_apply_schedules(); } catch (Throwable $e) { error_log('menu schedule: '.$e->getMessage()); }
     // Offer Health's slow part (last purchase of every offer, kept 30 min): refreshed here every 25 minutes so nobody waits for it
     if (in_array('HeraProduction', allowed_schemas(), true) && intdiv(time(), 300) % 5 === 0) { try { $GLOBALS['CACHE_REFRESH'] = true; offer_health('HeraProduction', 30); } catch (Throwable $e) { error_log('offer health warm: '.$e->getMessage()); } finally { $GLOBALS['CACHE_REFRESH'] = false; } }
     if (in_array('HeraProduction', allowed_schemas(), true)) { try { maybe_send_daily_summary('HeraProduction'); } catch (Throwable $e) { error_log('daily summary: '.$e->getMessage()); } }

@@ -141,7 +141,9 @@ Build the items as **Drafts**, then tell the portal when they should appear — 
 - A **Failed** schedule (for example, Mobius could not be reached at that time) is shown in red at the top, with **Try again**: one that could not go live waits again (it starts now if its time has passed), and one that could not end ends now.
 - **History** lists the finished ones, with what happened.
 
-**Alerts:** when a schedule goes live, ends or fails, the portal sends a message: by **email** to the recipients with **USSD schedules** ticked in **Alert Settings**, and to **Slack** through an active integration of type *Monitoring* whose URL is a Slack incoming webhook.
+**A promotion that starts at midnight.** Build the menu today on a test code (for example `*9606*0*1#`) and try it. Then, in **Schedule a Mobius menu**, pick it, type the live code (for example `*606*7#`), press **Tonight 00:00** under *Start* and **+7 days** (or **End of month**) under *End*, and save. About an hour before the start, the portal checks that the menu is still in Mobius and sends a reminder (email / Slack) saying what will happen. At 00:00 the menu takes the code (a menu already on it is parked on a spare code), and a message confirms it. At the end, both go back as they were. With the every-minute job running (the page says *Every-minute check is running*; it needs `deploy/k8s/06-schedule-cronjob.yaml` applied once), 00:00 happens by 00:01; without it, by 00:05. Every date-and-time box in the portal has these quick buttons (**Tonight 00:00**, **Tomorrow 08:00**, and for an end **+1 day / +7 days / +30 days / End of month**).
+
+**Alerts:** an hour before a schedule starts (with a check that the menu is still in Mobius), and when it goes live, ends or fails, the portal sends a message: by **email** to the recipients with **USSD schedules** ticked in **Alert Settings**, and to **Slack** through an active integration of type *Monitoring* whose URL is a Slack incoming webhook.
 - Schedules work for menu items. Service flows, offers in the catalogue and refunds are not scheduled by this (ask if you need that).
 
 ## Direct codes

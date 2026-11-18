@@ -1221,6 +1221,7 @@ function mobius_sched_ready(): void {
         live_code VARCHAR(60) NOT NULL, own_code VARCHAR(60) NOT NULL DEFAULT '', start_at DATETIME NOT NULL, end_at DATETIME NULL, state VARCHAR(12) NOT NULL DEFAULT 'waiting',
         prev_menu_id VARCHAR(40) NULL, prev_name VARCHAR(190) NULL, parked_code VARCHAR(60) NULL, note VARCHAR(500) NULL, created_by VARCHAR(80) NULL,
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, KEY st (state, start_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+    try { portal_pdo()->query('SELECT reminded_at FROM mobius_schedules LIMIT 0'); } catch (Throwable $e) { portal_pdo()->exec('ALTER TABLE mobius_schedules ADD COLUMN reminded_at DATETIME NULL'); }
     $done = true;
 }
 const MOBIUS_SCHED_STATES = ['waiting' => ['Waiting', 'secondary'], 'live' => ['Live', 'success'], 'ended' => ['Ended', 'dark'], 'cancelled' => ['Cancelled', 'light'], 'failed' => ['Failed', 'danger']];
@@ -1312,6 +1313,11 @@ function mobius_sched_end(array $cfg, array $s): void {
 function mobius_sched_apply(array $cfg, ?string $now = null): array {
     $cfg = mobius_prod_cfg($cfg); // schedules are production menus
     mobius_sched_ready(); $now = $now ?? date('Y-m-d H:i:s'); $r = ['started' => 0, 'ended' => 0, 'failed' => 0];
+    // one run at a time (the every-minute job, the 5-minute job and an open page can all arrive at 00:00 together)
+    $db = portal_pdo(); try { if (!(int)$db->query("SELECT GET_LOCK('vas_mobius_sched_apply', 0)")->fetchColumn()) return $r; } catch (Throwable $e) {}
+    try { return mobius_sched_apply_locked($cfg, $now, $r); } finally { try { $db->query("SELECT RELEASE_LOCK('vas_mobius_sched_apply')"); } catch (Throwable $e) {} }
+}
+function mobius_sched_apply_locked(array $cfg, string $now, array $r): array {
     $due = portal_pdo()->prepare("SELECT * FROM mobius_schedules WHERE (state='waiting' AND start_at<=?) OR (state='live' AND end_at IS NOT NULL AND end_at<=?) ORDER BY start_at, id"); $due->execute([$now, $now]);
     foreach ($due->fetchAll() as $s) {
         try {
@@ -1321,7 +1327,28 @@ function mobius_sched_apply(array $cfg, ?string $now = null): array {
         } catch (Throwable $e) { $r['failed']++; mobius_sched_set((int)$s['id'], ['state' => 'failed', 'note' => mb_substr(($s['state'] === 'waiting' ? 'Could not go live: ' : 'Could not end: ').$e->getMessage(), 0, 500)]); error_log('mobius schedule '.$s['id'].': '.$e->getMessage()); mobius_sched_notify((int)$s['id'], 'failed'); }
     }
     if ($r['started'] + $r['ended'] + $r['failed']) audit('mobius_schedule_applied', null, 'mobius', null, json_encode($r));
+    try { mobius_sched_remind($cfg, $now); } catch (Throwable $e) { error_log('mobius schedule reminder: '.$e->getMessage()); }
     return $r;
+}
+// About an hour before a schedule starts (often at midnight, with nobody there): a message saying what will happen, after
+// checking that the menu is still in Mobius — so a problem is seen while someone can still fix it. Sent once per schedule.
+function mobius_sched_remind(array $cfg, string $now): void {
+    if (!function_exists('ussd_schedule_notify')) return;
+    $st = portal_pdo()->prepare("SELECT * FROM mobius_schedules WHERE state='waiting' AND reminded_at IS NULL AND start_at>? AND start_at<=? ORDER BY start_at");
+    $st->execute([$now, date('Y-m-d H:i:s', strtotime($now) + 65 * 60)]); $due = $st->fetchAll(); if (!$due) return;
+    $l = mobius_list_menus($cfg);
+    foreach ($due as $s) {
+        $check = '';
+        if (!$l['ok']) $check = ' ⚠ Mobius could not be read just now ('.$l['error'].') — check the connection before the start.';
+        else {
+            $m = mobius_find_menu($l['menus'], (string)$s['menu_id']);
+            if (!$m) $check = ' ⚠ This menu is NO LONGER in Mobius — the schedule will fail. Fix it now.';
+            else { $holder = null; foreach ($l['menus'] as $o) { $o = mobius_menu_norm($o); if ((string)$o['menuID'] !== $s['menu_id'] && mobius_bare_code((string)$o['shortcode']) === mobius_bare_code($s['live_code'])) $holder = $o; }
+                $check = ' Menu found in Mobius ('.$m['shortcode'].').'.($holder ? ' “'.$holder['name'].'” is on '.$s['live_code'].' now and will be parked.' : ''); }
+        }
+        mobius_sched_set((int)$s['id'], ['reminded_at' => date('Y-m-d H:i:s')]);
+        ussd_schedule_notify('⏰ In about '.max(1, (int)round((strtotime($s['start_at']) - strtotime($now)) / 60)).' min ('.substr($s['start_at'], 0, 16).'): “'.$s['menu_name'].'” goes live on '.$s['live_code'].($s['end_at'] ? ' until '.substr($s['end_at'], 0, 16) : '').'.'.$check);
+    }
 }
 function mobius_sched_tick(array $cfg): void {
     $cfg = mobius_prod_cfg($cfg);

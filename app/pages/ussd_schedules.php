@@ -66,6 +66,9 @@ foreach ($items as $i) {
 usort($events, fn($a, $b) => strcmp($a[0], $b[0]));
 $byDay = []; foreach ($events as $ev) $byDay[substr($ev[0], 0, 10)][] = $ev;
 
+// Is the every-minute job (deploy/k8s/06-schedule-cronjob.yaml) running? Without it, times can be up to 5 minutes late.
+$cronLast = 0; try { $st = portal_pdo()->query("SELECT value FROM metric_cache WHERE cache_key='schedule_cron_last'"); $cronLast = (int)($st->fetchColumn() ?: 0); } catch (Throwable $e) {}
+$cronOk = $cronLast > time() - 180;
 $menus = []; $menusErr = '';
 if ($mobiusOn) { $l = mobius_list_menus_cached($cfg); if ($l['ok']) { $menus = $l['menus']; usort($menus, fn($a, $b) => strcasecmp((string)($a['name'] ?? ''), (string)($b['name'] ?? ''))); } else $menusErr = (string)$l['error']; }
 $preMenu = (string)($_GET['menu'] ?? '');
@@ -77,7 +80,8 @@ $post = function (string $do, int $id, string $label, string $cls, string $confi
 };
 ?>
 <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-2">
- <div><h2 class="h4 mb-1">Schedules</h2><p class="text-muted small mb-0">Every USSD schedule in one place: Mobius menus put live on a short code at a time, and portal menu items that go live or switch off at a time. Due changes run by themselves within about 5 minutes.</p></div>
+ <div><h2 class="h4 mb-1">Schedules</h2><p class="text-muted small mb-0">Every USSD schedule in one place: Mobius menus put live on a short code at a time, and portal menu items that go live or switch off at a time. Due changes run by themselves<?= $cronOk ? ' within a minute' : ' within about 5 minutes' ?>.</p>
+ <div class="small mt-1"><?php if ($cronOk): ?><span class="text-success"><i class="fa-solid fa-circle-check me-1"></i>Every-minute check is running</span> <span class="text-muted">(last <?=max(0, time() - $cronLast)?> s ago) — a launch at 00:00 happens by 00:01.</span><?php else: ?><span class="text-warning"><i class="fa-solid fa-triangle-exclamation me-1"></i>The every-minute check is not running<?= $cronLast ? ' (last ran '.e(date('j M H:i', $cronLast)).')' : '' ?></span> <span class="text-muted">— schedules still run every 5 minutes, so 00:00 can become 00:05. Ask for <code>deploy/k8s/06-schedule-cronjob.yaml</code> to be applied.</span><?php endif; ?></div></div>
  <a class="btn btn-sm btn-outline-secondary" href="?page=alert_settings"><i class="fa-solid fa-bell me-1"></i>Who gets the alerts</a>
 </div>
 
@@ -142,7 +146,7 @@ $post = function (string $do, int $id, string $label, string $cls, string $confi
  </form>
  <div class="small text-muted mt-2">Example: build the new version on a test code, then schedule it onto <code>*606#</code> for the launch time. To only take a menu off, choose it, type its own code and fill <b>End</b>.</div>
  <?php endif; ?></div><?php endif; ?>
- <div class="cardx"><h3>Alerts</h3><p class="small mb-2">When a schedule <b>goes live</b>, <b>ends</b> or <b>fails</b>, the portal sends a message:</p>
+ <div class="cardx"><h3>Alerts</h3><p class="small mb-2">About <b>an hour before</b> a schedule starts (after checking the menu is still in Mobius), and when it <b>goes live</b>, <b>ends</b> or <b>fails</b>, the portal sends a message:</p>
  <ul class="small mb-2"><li><b>Email</b> to the recipients with <b>USSD schedules</b> ticked in Alert Settings.</li><li><b>Slack</b> through an active <b>Monitoring</b> integration whose URL is a Slack webhook.</li></ul>
  <a class="small" href="?page=alert_settings">Alert Settings →</a></div>
 </div>

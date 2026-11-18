@@ -1,0 +1,41 @@
+# Every minute: starts / ends the USSD schedules that are due (USSD → Schedules), so a promotion set for 00:00 goes
+# live by 00:01 — the 5-minute alert job alone can make it 00:05. Light: it only runs the schedules, nothing else.
+# Uses the same token secret as 05-alert-cronjob.yaml (vas-cloud-alert-cron-secret); apply it after that one:
+#
+#   kubectl apply -f deploy/k8s/06-schedule-cronjob.yaml
+#   kubectl get cronjob -n vas-cloud          # vas-cloud-schedule-cron, schedule */1
+#
+# The Schedules page shows "Every-minute check is running" once it works.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vas-cloud-schedule-cron
+  namespace: vas-cloud
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 55
+      ttlSecondsAfterFinished: 300
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: schedule-cron
+              image: curlimages/curl:8.10.1
+              env:
+                - name: TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: vas-cloud-alert-cron-secret
+                      key: TOKEN
+              command:
+                - sh
+                - -c
+                - 'curl -fsS --max-time 50 "http://vas-cloud-app.vas-cloud.svc.cluster.local/?page=schedule_cron&token=$TOKEN"'
+              resources:
+                requests: { cpu: 10m, memory: 16Mi }
+                limits: { cpu: 100m, memory: 32Mi }

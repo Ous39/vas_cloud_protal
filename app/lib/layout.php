@@ -129,6 +129,25 @@ function confirmAction(msg){return confirm(msg||'Please confirm before saving th
 document.getElementById('add-filter-btn')?.addEventListener('click', addFilter);
 document.querySelectorAll('form[data-confirm]').forEach(f => f.addEventListener('submit', e => { if (!confirmAction(f.dataset.confirm)) e.preventDefault(); }));
 document.querySelectorAll('[data-autosubmit]').forEach(el => el.addEventListener('change', () => el.form.submit()));
+// Quick times under every date-and-time box: a launch is usually "tonight at 00:00", an end "a week later".
+(() => {
+    const pad = n => String(n).padStart(2, '0');
+    const fmt = d => d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+'T'+pad(d.getHours())+':'+pad(d.getMinutes());
+    const midnight = (days) => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + days); return d; };
+    document.querySelectorAll('input[type=datetime-local]').forEach(inp => {
+        if (inp.dataset.noQuick !== undefined || inp.disabled || inp.readOnly) return;
+        const isEnd = /end|until|off/i.test(inp.name);
+        const start = () => { const s = Array.from((inp.form || document).querySelectorAll('input[type=datetime-local]')).find(x => x !== inp && !/end|until|off/i.test(x.name)); return s && s.value ? new Date(s.value) : midnight(1); };
+        const picks = isEnd
+            ? [['+1 day', () => { const d = start(); d.setDate(d.getDate() + 1); d.setMinutes(d.getMinutes() - 1); return d; }], ['+7 days', () => { const d = start(); d.setDate(d.getDate() + 7); d.setMinutes(d.getMinutes() - 1); return d; }], ['+30 days', () => { const d = start(); d.setDate(d.getDate() + 30); d.setMinutes(d.getMinutes() - 1); return d; }], ['End of month', () => { const d = start(); return new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59); }]]
+            : [['Tonight 00:00', () => midnight(1)], ['Tomorrow 08:00', () => { const d = midnight(1); d.setHours(8); return d; }]];
+        const box = document.createElement('div'); box.className = 'quick-times d-flex flex-wrap gap-1 mt-1 mb-1';
+        picks.forEach(([label, fn]) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'btn btn-outline-secondary btn-sm py-0 px-2'; b.style.fontSize = '.75rem'; b.textContent = label;
+            b.addEventListener('click', () => { inp.value = fmt(fn()); inp.dispatchEvent(new Event('input', {bubbles: true})); inp.dispatchEvent(new Event('change', {bubbles: true})); }); box.appendChild(b); });
+        if (inp.value === '' || isEnd) { const c = document.createElement('button'); c.type = 'button'; c.className = 'btn btn-link btn-sm py-0 px-1 text-muted'; c.style.fontSize = '.75rem'; c.textContent = 'clear'; c.addEventListener('click', () => { inp.value = ''; }); box.appendChild(c); }
+        (inp.closest('.input-group') || inp).insertAdjacentElement('afterend', box);
+    });
+})();
 document.querySelectorAll('[data-filter-select]').forEach(input => {
     const sel = document.getElementById(input.dataset.filterSelect);
     if (!sel) return;
