@@ -55,7 +55,7 @@ function hourly_transaction_trend_uncached(string $schema, int $hours = 24): arr
 // first visitor of the day/hour does not wait for the big audit_log queries. Called by the 5-minute job.
 function warm_live_figures(string $schema): void {
     $GLOBALS['CACHE_REFRESH'] = true;
-    try { dashboard_kpis($schema); top_vendors_today($schema); hourly_transaction_trend($schema, 24); channel_activity_by_channel($schema, 30); vendor_activity_today($schema); }
+    try { dashboard_kpis($schema); top_vendors_today($schema); hourly_transaction_trend($schema, 24); channel_activity_by_channel($schema, 30); vendor_activity_today($schema); hourly_today($schema); }
     catch (Throwable $e) { error_log('warm_live_figures: '.$e->getMessage()); }
     finally { $GLOBALS['CACHE_REFRESH'] = false; }
 }
@@ -90,7 +90,8 @@ function recent_alert_history(string $schema, int $limit = 15): array {
 }
 
 const ALERT_CONFIG_DEFAULTS = ['failure_rate_enabled' => 1, 'failure_rate_pct' => 20, 'failure_min_sample' => 20, 'vendor_silent_enabled' => 1, 'vendor_silent_min_baseline' => 5,
-    'vendor_slow_enabled' => 0, 'vendor_slow_ms' => 3000, 'vendor_slow_min_sample' => 20, 'summary_enabled' => 0, 'summary_hour' => 7, 'retention_months' => 3];
+    'vendor_slow_enabled' => 0, 'vendor_slow_ms' => 3000, 'vendor_slow_min_sample' => 20, 'summary_enabled' => 0, 'summary_hour' => 7, 'retention_months' => 3,
+    'traffic_drop_enabled' => 1, 'traffic_drop_pct' => 50, 'traffic_drop_min_usual' => 200, 'failure_report_enabled' => 0, 'failure_report_hour' => 8];
 function alert_config(): array {
     $cfg = ALERT_CONFIG_DEFAULTS;
     try { foreach (portal_pdo()->query('SELECT name,value FROM alert_config')->fetchAll() as $r) if (isset($cfg[$r['name']])) $cfg[$r['name']] = (int)$r['value']; }
@@ -112,6 +113,9 @@ function save_alert_config(array $d): void {
         'vendor_slow_enabled' => empty($d['vendor_slow_enabled']) ? 0 : 1,
         'vendor_slow_ms' => $int('vendor_slow_ms', 50, 600000, 'Slow limit (ms)'),
         'vendor_slow_min_sample' => $int('vendor_slow_min_sample', 1, 1000000, 'Slow-vendor minimum transactions'),
+        'traffic_drop_enabled' => empty($d['traffic_drop_enabled']) ? 0 : 1,
+        'traffic_drop_pct' => $int('traffic_drop_pct', 10, 100, 'Traffic drop %'),
+        'traffic_drop_min_usual' => $int('traffic_drop_min_usual', 1, 10000000, 'Traffic drop: usual traffic'),
     ];
     $st = portal_pdo()->prepare('INSERT INTO alert_config(name,value) VALUES(?,?) ON DUPLICATE KEY UPDATE value=VALUES(value)');
     foreach ($vals as $k => $v) $st->execute([$k, (string)$v]);
@@ -207,6 +211,15 @@ function compute_alerts_uncached(string $schema): array {
             }
         }
     }
+    if ($cfg['traffic_drop_enabled']) {
+        // A channel (USSD, IVR…) much quieter than usual for this hour: the sign of an outage before the network (Mobius,
+        // SS7 links / STP, IVR platform) — customers who cannot reach the service never show up as failures.
+        foreach (traffic_vs_usual($schema) as $ch => $t) {
+            if ($t['usual'] < $cfg['traffic_drop_min_usual'] || $t['now'] >= $t['usual'] * (100 - $cfg['traffic_drop_pct']) / 100) continue;
+            $drop = (int)round(100 * ($t['usual'] - $t['now']) / max(1, $t['usual']));
+            $alerts[] = ['key'=>'traffic_drop:'.$schema.':'.$ch, 'type'=>'traffic_drop', 'level'=>'danger', 'message'=>sprintf('%s traffic dropped: %s transactions in the last hour, usually about %s at this hour (−%d%%). Customers may not reach the service — check Mobius, the SS7 links (STP) and the network.', $ch, number_format($t['now']), number_format($t['usual']), $drop)];
+        }
+    }
     if ($cfg['vendor_slow_enabled']) {
         // response_time is milliseconds. Judged on the last hour, per vendor, with a minimum sample so
         // one slow call on a quiet vendor can't trigger it.
@@ -220,6 +233,10 @@ function compute_alerts_uncached(string $schema): array {
     if ($schema === app_config('default_schema')) { try { foreach (integrations_down() as $i) {
         $alerts[] = ['key'=>'integration_down:'.$i['id'], 'type'=>'vendor_silent', 'level'=>'danger', 'message'=>sprintf('%s (%s) is DOWN: the last two checks failed — %s', $i['name'], strtoupper((string)($i['service_type'] ?? $i['type'] ?? '')), mb_strimwidth((string)$i['last_check_message'], 0, 140, '…'))];
     } } catch (Throwable $e) {} }
+    // built-in checks (Mobius nodes, Hera, database, USSD endpoint): DOWN twice in a row
+    if ($schema === app_config('default_schema')) { try { foreach (health_overview() as $h) if ($h['down']) {
+        $alerts[] = ['key'=>'health_down:'.$h['key'], 'type'=>'health_down', 'level'=>'danger', 'message'=>sprintf('%s is DOWN: the last two checks failed — %s', $h['label'], mb_strimwidth((string)$h['last']['message'], 0, 160, '…'))];
+    } } catch (Throwable $e) {} }
     return $alerts;
 }
 
@@ -227,21 +244,32 @@ const ALERT_RENOTIFY_MINUTES = 30;
 // How often an alert that is still going on is sent again: an outage (failure rate) every 30 minutes, a vendor every
 // 2 hours, an integration that is down every 6 hours (it usually needs another team, and repeating it is only noise).
 function alert_renotify_minutes(string $key): int {
-    if (str_starts_with($key, 'integration_down:')) return 360;
+    if (str_starts_with($key, 'integration_down:') || str_starts_with($key, 'health_down:')) return 360;
     if (str_starts_with($key, 'vendor_silent:') || str_starts_with($key, 'vendor_slow:')) return 120;
     return ALERT_RENOTIFY_MINUTES;
 }
 // Does an alert key belong to this database's alerts (integration alerts are computed for the main database only)?
-// Only real alert keys: the same table also holds "sent today" markers (daily summary) that must stay, or the
-// summary would be sent again at every run.
-const ALERT_KEY_PREFIXES = ['high_failure_rate:', 'vendor_silent:', 'vendor_slow:', 'integration_down:'];
+// Only real alert keys: the same table also holds "sent today" markers (daily summary, failure report) that must stay,
+// or they would be sent again at every run.
+const ALERT_KEY_PREFIXES = ['high_failure_rate:', 'vendor_silent:', 'vendor_slow:', 'traffic_drop:', 'integration_down:', 'health_down:'];
 function alert_key_in_schema(string $key, string $schema): bool {
     $isAlert = false; foreach (ALERT_KEY_PREFIXES as $p) if (str_starts_with($key, $p)) $isAlert = true;
     if (!$isAlert) return false;
-    if (str_starts_with($key, 'integration_down:')) return $schema === app_config('default_schema');
+    if (str_starts_with($key, 'integration_down:') || str_starts_with($key, 'health_down:')) return $schema === app_config('default_schema');
     return str_ends_with($key, ':'.$schema) || str_contains($key, ':'.$schema.':');
 }
 
+// Customer traffic per channel in the last hour, and the usual for this hour: the average of the same hour on the last 7 days.
+function traffic_vs_usual(string $schema): array {
+    if (!table_exists($schema, AUDIT_LOG_TABLE)) return [];
+    $db = pdo($schema); $t = ident(AUDIT_LOG_TABLE); $ch = "SUBSTRING_INDEX(channel,'-',1)";
+    $now = array_column($db->query("SELECT $ch c, COUNT(*) n FROM $t WHERE create_date >= NOW() - INTERVAL 1 HOUR AND NOT ".LOOKUPS_SQL." GROUP BY 1")->fetchAll(), 'n', 'c');
+    $ranges = []; for ($d = 1; $d <= 7; $d++) $ranges[] = "(create_date >= NOW() - INTERVAL 1 HOUR - INTERVAL $d DAY AND create_date < NOW() - INTERVAL $d DAY)";
+    $usual = array_column($db->query("SELECT $ch c, COUNT(*) n FROM $t WHERE (".implode(' OR ', $ranges).") AND NOT ".LOOKUPS_SQL." GROUP BY 1")->fetchAll(), 'n', 'c');
+    $out = [];
+    foreach ($usual as $c => $n) { if ((string)$c === '') continue; $out[(string)$c] = ['now' => (int)($now[$c] ?? 0), 'usual' => (int)round((int)$n / 7)]; }
+    return $out;
+}
 function alert_cron_token(): string {
     static $token = null;
     if ($token !== null) return $token;
@@ -348,7 +376,7 @@ function smtp_settings(?string $type = null): ?array {
     $c = smtp_server_settings();
     if (!$c) return null;
     $env = array_map('trim', explode(',', (string)getenv('ALERT_EMAIL_TO')));
-    $want = ['failure_rate' => 'notify_failure', 'vendor_silent' => 'notify_vendor', 'vendor_slow' => 'notify_slow', 'daily_summary' => 'notify_summary', 'ussd_schedule' => 'notify_schedule'][$type ?? ''] ?? null;
+    $want = ['failure_rate' => 'notify_failure', 'vendor_silent' => 'notify_vendor', 'vendor_slow' => 'notify_slow', 'daily_summary' => 'notify_summary', 'ussd_schedule' => 'notify_schedule', 'traffic_drop' => 'notify_failure', 'health_down' => 'notify_vendor'][$type ?? ''] ?? null;
     $db = array_column(array_filter(alert_recipients(), fn($r) => (int)$r['active'] === 1 && ($want === null || (int)$r[$want] === 1)), 'email');
     $to = array_values(array_unique(array_filter(array_map('strtolower', array_merge($db, $env)), fn($a) => filter_var($a, FILTER_VALIDATE_EMAIL))));
     if (!$to) return null;

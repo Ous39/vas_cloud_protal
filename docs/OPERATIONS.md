@@ -7,6 +7,14 @@ For whoever looks after the portal. Menu building has its own guide: [docs/ussd/
 Open **Admin → System Status**. Green means fine. It checks the databases, Hera, Mobius, the USSD service (requests in the last hour, screens that failed to reach Mobius), purchases in the last 24 h, every menu's health, and how old each secret is.
 For an uptime monitor use `https://<portal>/portal/health.php` (200 = database reachable, 503 = down). Kubernetes uses it too.
 
+## Monitoring and alerts
+
+**Monitoring** (main menu) shows today's customer traffic per channel and vendor against yesterday, a **Today hour by hour** chart per channel (succeeded / customer's side / real failures, with the same hour last week as a grey line — a bar far under the line means customers are not getting through), why transactions failed, the **Service checks** and the registered integrations.
+
+- **Service checks** (built in, every 5 minutes, nothing to set up): each production Mobius node (a login), Hera (a connection), the main database and the portal's USSD endpoint (answers that could not be pushed back to Mobius). Two failures in a row = DOWN alert.
+- **Real failures** (Monitoring tab): failed customer transactions that are not the customer's side (the reasons ignored in Alert Settings, e.g. no balance), by reason, offer, vendor, channel and over time — counts only. **Alert Settings → Daily real-failure report** emails yesterday's to chosen addresses (e.g. the Hera and OCS teams) each morning.
+- **Alerts** (Alert Settings): failure rate; vendor gone silent (compared with the same hour on the last 7 days); vendor slow; **traffic dropped** (a channel far under its usual for the hour — an outage before the portal: Mobius, SS7 links/STP, network); integration or service check DOWN. Each alert is sent when it starts (🔴), repeated while it lasts (🔁 every 30 min for the failure rate and traffic drop, 2 h for a vendor, 6 h for something DOWN) and once when it is over (✅ Resolved).
+
 ## Releasing a change
 
 Changes go live in three steps, and a bad one cannot slip through:
@@ -69,6 +77,7 @@ Also: change the `admin` password after setting up (signing in with the install 
 ## When something is wrong
 
 **Customers get no menu / "connection problem"** — in this order:
+0. Monitoring: is there a **traffic dropped** alert, or a Mobius node DOWN in Service checks? A drop with nothing DOWN points at the network (SS7 links / STP / HLR).
 1. System Status: is the USSD endpoint "on, Live, answering through Mobius"? Is Mobius "Logged in"?
 2. USSD Proxy → Captured requests: do dials arrive? If not, the problem is in Mobius (the PROXY menu's address, or the short code). If they arrive but the last column says `PUSH FAILED`, use **Run diagnostics** on the Mobius connection card.
 3. Menu Builder → Menu check for that short code.

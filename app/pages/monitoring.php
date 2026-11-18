@@ -13,15 +13,31 @@ declare(strict_types=1);
     $prio=['down'=>0,'never'=>1,'stale'=>2,'up'=>3,'off'=>4];
     $ints=$snap['integrations']; usort($ints, fn($x,$y)=>($prio[integration_health($x)['state']]<=>$prio[integration_health($y)['state']]) ?: strcmp($x['name'],$y['name']));
     $activeInts=count(array_filter($ints, fn($i)=>$i['status']==='active'));
+    $health=health_overview(); $hDown=count(array_filter($health, fn($h)=>$h['state']==='down')); $hUp=count(array_filter($health, fn($h)=>$h['state']==='up'));
     layout_start('Monitoring'); monitoring_subnav('monitoring');
     ?>
     <?php foreach($snap['alerts'] as $a):?><div class="alert alert-<?=e($a['level'])?> shadow-sm">⚠ <?=e($a['message'])?> <a class="alert-link" href="?page=alerts">View alerts</a></div><?php endforeach;?>
     <div class="metric-grid">
         <div class="metric"><span>Customer transactions today</span><strong><?=number_format($snap['tx_total'])?></strong><small class="text-muted"><?=$snap['tx_success_pct']===null?'no traffic yet':$snap['tx_success_pct'].'% succeeded'?> · customer traffic<?=$snap['lookups']['total']>0?', plus '.number_format($snap['lookups']['total']).' system lookups':''?></small></div>
         <div class="metric"><span>Failed today</span><strong><?=number_format($snap['tx_failed'])?></strong><small class="text-muted"><a href="?page=investigate&date_from=<?=$today?>&date_to=<?=$today?>">Investigate →</a></small></div>
+        <div class="metric"><span>Service checks</span><strong style="font-size:1.35rem;text-transform:none;white-space:nowrap"><?php if(!$health):?><span class="text-muted">—</span><?php else:?><span class="text-success"><?=$hUp?> up</span><?php if($hDown):?> <span class="text-danger">· <?=$hDown?> down</span><?php endif; endif;?></strong><small class="text-muted">Mobius, Hera, database, USSD endpoint · <a href="#health">details</a></small></div>
         <div class="metric"><span>Integrations</span><strong style="font-size:1.35rem;text-transform:none;white-space:nowrap"><span class="text-success"><?=$snap['int_up']?> up</span><?php if($snap['int_down']):?> <span class="text-danger">· <?=$snap['int_down']?> down</span><?php endif;?></strong><small class="text-muted"><?=$snap['int_stale']?> not recently checked</small></div>
         <div class="metric"><span>Active alerts</span><strong class="<?=$snap['alerts']?'text-danger':'text-success'?>"><?=count($snap['alerts'])?></strong><small class="text-muted"><a href="?page=alerts">Open Alerts →</a></small></div>
     </div>
+    <?php $hourly=hourly_today($schema); if(!empty($hourly['channels'])&&array_sum($hourly['channels']['All']['ok'])+array_sum($hourly['channels']['All']['lastweek'])>0):?>
+    <div class="cardx mt-3">
+        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2"><h3 class="mb-0">Today hour by hour</h3>
+            <div class="btn-group btn-group-sm" role="group" id="hourly-pick"><?php foreach(array_keys($hourly['channels']) as $i=>$c):?><button type="button" class="btn <?=$i===0?'btn-dark':'btn-outline-secondary'?>" data-ch="<?=e($c)?>"><?=e($c==='All'?'All channels':$c)?></button><?php endforeach;?></div></div>
+        <p class="text-muted small mt-2 mb-2">Customer transactions per hour: <span class="text-success fw-semibold">succeeded</span>, <span class="text-warning fw-semibold">failed on the customer's side</span> (the reasons ignored in Alert Settings, such as no balance) and <span class="text-danger fw-semibold">real failures</span>. The grey line is the same hour last <?=e($hourly['lastweek_date'])?>. A bar far below the grey line means customers are not getting through.</p>
+        <div style="height:260px"><canvas id="hourlyChart"></canvas></div>
+        <div class="small mt-2"><a href="?page=failures">Real failures: by reason, offer, vendor and hour →</a></div>
+    </div>
+    <script nonce="<?=e(csp_nonce())?>">(()=>{const data=<?=json_encode($hourly['channels'],JSON_HEX_TAG)?>, now=<?=(int)$hourly['hour']?>; const labels=[...Array(24).keys()].map(h=>String(h).padStart(2,'0')+':00');
+        const cut=a=>a.map((v,i)=>i<=now?v:null);
+        const sets=c=>[{type:'bar',label:'Succeeded',data:cut(data[c].ok),backgroundColor:'rgba(25,135,84,.75)',stack:'s',order:2},{type:'bar',label:"Customer's side",data:cut(data[c].cust),backgroundColor:'rgba(255,193,7,.8)',stack:'s',order:2},{type:'bar',label:'Real failures',data:cut(data[c].real),backgroundColor:'rgba(220,53,69,.85)',stack:'s',order:2},{type:'line',label:'Same hour last week',data:data[c].lastweek,borderColor:'#6c757d',borderDash:[5,4],pointRadius:0,tension:.3,order:1}];
+        const chart=new Chart(document.getElementById('hourlyChart'),{data:{labels,datasets:sets('All')},options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},scales:{x:{stacked:true},y:{stacked:true,beginAtZero:true}}}});
+        document.querySelectorAll('#hourly-pick button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('#hourly-pick button').forEach(x=>x.className='btn btn-outline-secondary');b.className='btn btn-dark';chart.data.datasets=sets(b.dataset.ch);chart.update();}));})();</script>
+    <?php endif;?>
     <?php $slowLimit=(int)alert_config()['vendor_slow_ms']; $reasonsToday=failure_reasons_day($schema,$today,8); $reasonTotal=array_sum(array_column($reasonsToday,'c'));?>
     <?php foreach([['Channels','channels','channel'],['Vendors','vendors','vendor']] as [$cardTitle,$cardKey,$qParam]):?>
     <div class="cardx mt-3">
@@ -47,6 +63,18 @@ declare(strict_types=1);
         <?php foreach($reasonsToday as $rs): $share=$reasonTotal>0?round(100*$rs['c']/$reasonTotal):0;?>
         <tr><td class="cell-full"><?=e($rs['reason'])?></td><td><div class="progress" style="height:8px"><div class="progress-bar bg-danger" style="width:<?=$share?>%"></div></div></td><td class="text-end"><?=number_format((int)$rs['c'])?> <small class="text-muted">(<?=$share?>%)</small></td>
         <td class="text-nowrap"><?php if($rs['reason']!=='(no reason given)'):?><a href="?page=investigate&date_from=<?=$today?>&date_to=<?=$today?>&result_desc=<?=urlencode($rs['reason'])?>">Investigate →</a><?php endif;?></td></tr>
+        <?php endforeach;?></tbody></table></div><?php endif;?>
+    </div>
+    <div class="cardx mt-3" id="health">
+        <h3>Service checks <small class="text-muted">(built in, every 5 minutes)</small></h3>
+        <p class="text-muted small mb-2">What the USSD service depends on, checked by the scheduled job with nothing to set up: each Mobius node (a login — nothing is sent), Hera, the main database and the portal's USSD endpoint. Two failed checks in a row raise a <b>DOWN</b> alert, and a <b>Resolved</b> message when it is back. The dots are the last 12 checks (newest on the left).</p>
+        <?php if(!$health):?><p class="text-muted mb-0">No checks recorded yet — they start with the next run of the 5-minute job.</p><?php else:?>
+        <div class="table-scroll"><table class="table table-sm align-middle mb-0 no-pager"><thead><tr><th>Service</th><th>Health</th><th>Last check</th><th>Time</th><th>Last 12</th><th>24 h</th><th>Result</th></tr></thead><tbody>
+        <?php foreach($health as $h): [$lb,$cl]=['up'=>['UP','bg-success'],'down'=>['DOWN','bg-danger'],'blip'=>['Failed once','bg-warning text-dark'],'stale'=>['Not checked lately','bg-secondary']][$h['state']];?>
+        <tr><td><?=e($h['label'])?></td><td><span class="badge <?=$cl?>"><?=$lb?></span></td><td class="text-nowrap" title="<?=e($h['last']['checked_at'])?>"><?=e(time_ago($h['last']['checked_at']))?></td><td class="text-nowrap"><?=$h['last']['latency_ms']!==null?number_format((int)$h['last']['latency_ms']).' ms':'—'?></td>
+            <td class="text-nowrap" style="letter-spacing:1px"><?php foreach($h['recent'] as $ok):?><span class="<?=$ok?'text-success':'text-danger'?>" title="<?=$ok?'up':'failed'?>">●</span><?php endforeach;?></td>
+            <td class="<?=$h['uptime']!==null&&$h['uptime']<99?'text-danger fw-semibold':''?>"><?=$h['uptime']!==null?$h['uptime'].'%':'—'?></td>
+            <td style="white-space:normal;max-width:none"><small class="text-muted"><?=e($h['last']['message'])?></small></td></tr>
         <?php endforeach;?></tbody></table></div><?php endif;?>
     </div>
     <div class="cardx mt-3">

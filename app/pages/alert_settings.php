@@ -3,13 +3,14 @@ declare(strict_types=1);
 // Page: ?page=alert_settings — included by index.php inside its try/catch, after the sign-in, CSRF and $page checks.
 
     require_perm('manage_api_keys'); $schema=current_schema();
-    if ($_SERVER['REQUEST_METHOD']==='POST' && in_array($_POST['do']??'',['add_recipient','toggle_recipient','save_smtp','save_rules','save_ignored','update_prefs','save_summary','rotate_token'],true)) {
+    if ($_SERVER['REQUEST_METHOD']==='POST' && in_array($_POST['do']??'',['add_recipient','toggle_recipient','save_smtp','save_rules','save_ignored','update_prefs','save_summary','save_failure_report','rotate_token'],true)) {
         require_perm('manage_api_keys');
         if ($_POST['do']==='save_smtp') { save_smtp_settings($_POST); flash('success','Mail server saved. Use "Send test email" to check it.'); }
         elseif ($_POST['do']==='add_recipient') { save_alert_recipient((string)($_POST['email']??'')); flash('success','Recipient saved.'); }
         elseif ($_POST['do']==='save_rules') { save_alert_config($_POST); flash('success','Alert rules saved.'); }
         elseif ($_POST['do']==='rotate_token') { rotate_alert_cron_token(); flash('warning','Cron token rotated. The scheduled alert job is now rejected until you update its secret — run the kubectl command shown under "Scheduled alerts".'); }
         elseif ($_POST['do']==='save_summary') { save_summary_config($_POST); flash('success','Daily summary settings saved.'); }
+        elseif ($_POST['do']==='save_failure_report') { save_failure_report_settings($_POST); flash('success','Real-failure report settings saved.'); }
         elseif ($_POST['do']==='save_ignored') { save_alert_ignored_reasons((array)($_POST['ignored']??[])); flash('success','Ignored failure reasons saved.'); }
         elseif ($_POST['do']==='update_prefs') { update_alert_recipient_prefs((int)($_POST['id']??0), !empty($_POST['notify_failure']), !empty($_POST['notify_vendor']), !empty($_POST['notify_slow']), !empty($_POST['notify_summary']), !empty($_POST['notify_schedule'])); flash('success','Recipient preferences saved.'); }
         else { toggle_alert_recipient((int)($_POST['id']??0)); flash('success','Recipient updated.'); }
@@ -49,6 +50,12 @@ declare(strict_types=1);
                 <label class="small text-muted mb-0">Vendor must average at least this many in this hour (last 7 days)</label><input class="form-control" type="number" min="1" name="vendor_silent_min_baseline" value="<?=e($cfg['vendor_silent_min_baseline'])?>">
             </div></div>
             <div class="col-12"><div class="border rounded p-3">
+                <div class="form-check form-switch mb-2"><input class="form-check-input" type="checkbox" name="traffic_drop_enabled" value="1" id="tde" <?=$cfg['traffic_drop_enabled']?'checked':''?>><label class="form-check-label fw-semibold" for="tde">Traffic dropped (USSD, IVR…)</label></div>
+                <p class="text-muted small">Alert when a channel had much less traffic in the last hour than usual at this hour (the average of the same hour on the last 7 days). This catches outages before the portal — Mobius, the SS7 links / STP, the network — where customers cannot reach the service and so never appear as failures. Sent to the recipients who get <b>Failure rate</b>.</p>
+                <div class="row g-2"><div class="col-md-4"><label class="small text-muted mb-0">Dropped by more than (%)</label><input class="form-control" type="number" min="10" max="100" name="traffic_drop_pct" value="<?=e($cfg['traffic_drop_pct'])?>"></div>
+                <div class="col-md-4"><label class="small text-muted mb-0">Only for a channel that usually has at least (per hour)</label><input class="form-control" type="number" min="1" name="traffic_drop_min_usual" value="<?=e($cfg['traffic_drop_min_usual'])?>"></div></div>
+            </div></div>
+            <div class="col-12"><div class="border rounded p-3">
                 <div class="form-check form-switch mb-2"><input class="form-check-input" type="checkbox" name="vendor_slow_enabled" value="1" id="vsl" <?=$cfg['vendor_slow_enabled']?'checked':''?>><label class="form-check-label fw-semibold" for="vsl">Vendor responding slowly</label></div>
                 <p class="text-muted small">Alert when a vendor's average response time over the last hour is above the limit (a vendor can be "up" and still hurting customers). Response times are in milliseconds.</p>
                 <div class="row g-2"><div class="col-md-4"><label class="small text-muted mb-0">Average slower than (ms)</label><input class="form-control" type="number" min="50" name="vendor_slow_ms" value="<?=e($cfg['vendor_slow_ms'])?>"></div>
@@ -66,6 +73,16 @@ declare(strict_types=1);
             <div class="col-auto"><button class="btn btn-primary">Save</button></div>
         </form>
         <form method="post" class="mt-2"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="send_summary"><button class="btn btn-sm btn-outline-primary">Send yesterday's summary now</button> <small class="text-muted">Goes to every enabled recipient who has "Daily summary" ticked — use it to check the layout.</small></form>
+    </div>
+    <div class="cardx mt-3" id="failure-report">
+        <h3>Daily real-failure report</h3>
+        <p class="text-muted">One email each morning with yesterday's <b>real</b> failures (the ignored reasons below are left out) by reason, offer, vendor and hour — for the people who fix them, such as the Hera and OCS teams. It has counts only, no customer numbers. The same view is on <a href="?page=failures">Monitoring → Real failures</a>.</p>
+        <form method="post" class="row g-2 align-items-end"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="save_failure_report">
+            <div class="col-auto"><div class="form-check form-switch"><input class="form-check-input" type="checkbox" name="failure_report_enabled" value="1" id="fre2" <?=$cfg['failure_report_enabled']?'checked':''?>><label class="form-check-label" for="fre2">Send it</label></div></div>
+            <div class="col-auto"><label class="small text-muted mb-0">After (hour, server time <?=e(date('T'))?>)</label><input class="form-control" type="number" min="0" max="23" name="failure_report_hour" value="<?=e($cfg['failure_report_hour'])?>"></div>
+            <div class="col-md-6"><label class="small text-muted mb-0">To (email addresses, separated by commas)</label><input class="form-control" name="failure_report_to" value="<?=e(implode(', ', failure_report_recipients()))?>" placeholder="hera.team@company.com, ocs.team@company.com"></div>
+            <div class="col-auto"><button class="btn btn-primary">Save</button></div>
+        </form>
     </div>
     <div class="cardx mt-3">
         <h3>Failure reasons that count toward the failure-rate alert</h3>

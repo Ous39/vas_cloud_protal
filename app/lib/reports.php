@@ -162,3 +162,92 @@ function maybe_send_daily_summary(string $schema): void {
     if ($claim->rowCount() !== 1) return;
     if (send_daily_summary($schema) !== null) $db->prepare('DELETE FROM alert_notification_log WHERE alert_key=?')->execute([$key]);
 }
+
+// ===================== Real failures =====================
+// Failed customer transactions that are NOT on the customer's side (the reasons ignored in Alert Settings, such as no
+// balance, are left out): by reason, by offer, by vendor, by channel and over time. Counts only — no numbers are shown.
+// The offer is read from the transaction id of a purchase (…-HERA-<seq>-<CHANNEL>-<number>-<offer>); other rows have none.
+const REAL_FAIL_OFFER_SQL = "CASE WHEN LENGTH(transaction_id) - LENGTH(REPLACE(transaction_id, '-', '')) = 5 AND transaction_id LIKE '%-HERA-%' THEN SUBSTRING_INDEX(transaction_id, '-', -1) ELSE '' END";
+function real_failures(...$a) { return cached('real_failures:'.md5(serialize($a)), 300, fn() => real_failures_uncached(...$a)); }
+function real_failures_uncached(string $schema, string $from, string $to, string $channel = ''): array {
+    $out = ['total' => 0, 'failed' => 0, 'real' => 0, 'reasons' => [], 'offers' => [], 'vendors' => [], 'channels' => [], 'time' => [], 'by' => 'hour'];
+    if (!table_exists($schema, AUDIT_LOG_TABLE)) return $out;
+    $db = pdo($schema); $t = ident(AUDIT_LOG_TABLE); [$cf, $cfp] = alert_counted_failure_sql();
+    $w = 'create_date >= ? AND create_date < ? AND NOT '.LOOKUPS_SQL; $p = [$from, $to];
+    if ($channel !== '') { $w .= " AND SUBSTRING_INDEX(channel,'-',1) = ?"; $p[] = $channel; }
+    $q = function (string $sql, array $extra = []) use ($db, $cfp, $p) { $st = $db->prepare($sql); $st->execute([...$cfp, ...$p, ...$extra]); return $st->fetchAll(); };
+    $r = $q("SELECT COUNT(*) n, SUM(CASE WHEN NOT ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) f, SUM(CASE WHEN $cf THEN 1 ELSE 0 END) rf FROM $t WHERE $w")[0] ?? [];
+    $out['total'] = (int)($r['n'] ?? 0); $out['failed'] = (int)($r['f'] ?? 0); $out['real'] = min($out['failed'], (int)($r['rf'] ?? 0));
+    if ($out['real'] === 0) return $out;
+    $grp = function (string $expr, int $limit) use ($q, $cf, $t, $w) {
+        return $q("SELECT $expr k, COUNT(*) n, SUM(CASE WHEN $cf THEN 1 ELSE 0 END) rf FROM $t WHERE $w GROUP BY 1 HAVING rf > 0 ORDER BY rf DESC LIMIT $limit");
+    };
+    $out['reasons'] = $q("SELECT COALESCE(NULLIF(TRIM(result_description),''),'(no reason given)') k, COUNT(*) rf FROM $t WHERE $cf AND $w GROUP BY 1 ORDER BY rf DESC LIMIT 15"); // $cf first: its parameters come first
+    $out['offers'] = $grp(REAL_FAIL_OFFER_SQL, 15);
+    $out['vendors'] = $grp("COALESCE(NULLIF(vendor_entity_name,''),'(none)')", 10);
+    $out['channels'] = $grp("COALESCE(NULLIF(SUBSTRING_INDEX(channel,'-',1),''),'(none)')", 10);
+    $days = (strtotime($to) - strtotime($from)) / 86400; $out['by'] = $days > 1.5 ? 'day' : 'hour';
+    $out['time'] = $q("SELECT ".($out['by'] === 'day' ? 'DATE(create_date)' : 'HOUR(create_date)')." k, COUNT(*) n, SUM(CASE WHEN $cf THEN 1 ELSE 0 END) rf FROM $t WHERE $w GROUP BY 1 ORDER BY 1");
+    // the top reason of each offer, so a bad offer says why
+    foreach ($out['offers'] as &$o) {
+        if ((string)$o['k'] === '') continue;
+        $tr = $q("SELECT COALESCE(NULLIF(TRIM(result_description),''),'(no reason given)') k, COUNT(*) c FROM $t WHERE $cf AND $w AND transaction_id LIKE ? GROUP BY 1 ORDER BY c DESC LIMIT 1", ['%-'.$o['k']]);
+        $o['top_reason'] = $tr[0]['k'] ?? '';
+    }
+    unset($o);
+    $codes = array_values(array_filter(array_map(fn($o) => (string)$o['k'], $out['offers']), fn($c) => $c !== ''));
+    if ($codes && table_exists($schema, 'vas_offers')) {
+        $st = $db->prepare('SELECT offer_code, name FROM vas_offers WHERE offer_code IN ('.implode(',', array_fill(0, count($codes), '?')).') ORDER BY ('.OFFER_ACTIVE_SQL.') DESC, id DESC'); $st->execute($codes);
+        $names = []; foreach ($st->fetchAll() as $n) $names[$n['offer_code']] ??= $n['name'];
+        foreach ($out['offers'] as &$o) $o['name'] = $names[(string)$o['k']] ?? ''; unset($o);
+    }
+    return $out;
+}
+function report_setting(string $name, string $default = ''): string {
+    try { $st = portal_pdo()->prepare('SELECT value FROM report_settings WHERE name=?'); $st->execute([$name]); $v = $st->fetchColumn(); return $v === false ? $default : (string)$v; } catch (Throwable $e) { return $default; }
+}
+function failure_report_recipients(): array {
+    return array_values(array_unique(array_filter(array_map(fn($a) => strtolower(trim($a)), preg_split('/[\s,;]+/', report_setting('failure_report_to'))), fn($a) => filter_var($a, FILTER_VALIDATE_EMAIL))));
+}
+function save_failure_report_settings(array $d): void {
+    $hour = filter_var($d['failure_report_hour'] ?? null, FILTER_VALIDATE_INT);
+    if ($hour === false || $hour < 0 || $hour > 23) throw new RuntimeException('Send hour must be between 0 and 23.');
+    $to = []; foreach (preg_split('/[\s,;]+/', trim((string)($d['failure_report_to'] ?? '')), -1, PREG_SPLIT_NO_EMPTY) as $a) { if (!filter_var($a, FILTER_VALIDATE_EMAIL)) throw new RuntimeException('Not an email address: '.$a); $to[] = strtolower($a); }
+    if (count($to) > 20) throw new RuntimeException('At most 20 addresses.');
+    $on = empty($d['failure_report_enabled']) ? 0 : 1; if ($on && !$to) throw new RuntimeException('Add at least one address to send the report to.');
+    $st = portal_pdo()->prepare('INSERT INTO alert_config(name,value) VALUES(?,?) ON DUPLICATE KEY UPDATE value=VALUES(value)');
+    $st->execute(['failure_report_enabled', (string)$on]); $st->execute(['failure_report_hour', (string)$hour]);
+    portal_pdo()->prepare('INSERT INTO report_settings(name,value) VALUES(?,?) ON DUPLICATE KEY UPDATE value=VALUES(value)')->execute(['failure_report_to', implode(', ', array_unique($to))]);
+    audit('failure_report_config_save', null, 'report_settings', null, json_encode(['enabled' => $on, 'hour' => $hour, 'recipients' => count($to)]));
+}
+function failure_report_text(string $schema, string $date): string {
+    $r = real_failures($schema, $date.' 00:00:00', date('Y-m-d', strtotime($date.' +1 day')).' 00:00:00');
+    $pct = fn($a, $b) => $b > 0 ? round(100 * $a / $b, 2).'%' : '0%';
+    $l = ["Real failures — $schema — ".date('l j F Y', strtotime($date)), '',
+        'Customer transactions: '.number_format($r['total']), 'Failed: '.number_format($r['failed']).' ('.$pct($r['failed'], $r['total']).')',
+        'Real failures (not the customer\'s side, e.g. not "no balance"): '.number_format($r['real']).' ('.$pct($r['real'], $r['total']).')', ''];
+    if (!$r['real']) return implode("\n", array_merge($l, ['No real failures. Good day.']));
+    $l[] = 'BY REASON'; foreach ($r['reasons'] as $x) $l[] = sprintf('  %7s  %s', number_format((int)$x['rf']), $x['k']); $l[] = '';
+    $l[] = 'BY OFFER (failed / attempts, top reason)'; foreach ($r['offers'] as $x) $l[] = sprintf('  %7s / %-7s  %s%s', number_format((int)$x['rf']), number_format((int)$x['n']), (string)$x['k'] === '' ? '(no offer recorded)' : $x['k'].' '.($x['name'] ?? ''), !empty($x['top_reason']) ? ' — '.$x['top_reason'] : ''); $l[] = '';
+    $l[] = 'BY VENDOR (failed / attempts)'; foreach ($r['vendors'] as $x) $l[] = sprintf('  %7s / %-7s  %s', number_format((int)$x['rf']), number_format((int)$x['n']), $x['k']); $l[] = '';
+    $l[] = 'BY HOUR (failed / attempts)'; foreach ($r['time'] as $x) if ((int)$x['rf'] > 0) $l[] = sprintf('  %02d:00  %6s / %s', (int)$x['k'], number_format((int)$x['rf']), number_format((int)$x['n']));
+    $l[] = ''; $l[] = 'Details: VAS Cloud portal → Monitoring → Real failures (choose "Yesterday").';
+    return implode("\n", $l);
+}
+function send_failure_report(string $schema, ?string $date = null): ?string {
+    $to = failure_report_recipients(); if (!$to) return 'no recipient for the real-failure report';
+    $c = smtp_server_settings(); if (!$c) return 'email is not configured';
+    $date = $date ?: date('Y-m-d', strtotime('yesterday')); $c['to'] = $to;
+    $err = smtp_send($c, '[VAS Cloud] Real failures '.$schema.' '.$date, failure_report_text($schema, $date));
+    audit('failure_report', $schema, null, $date, $err ?? 'sent to '.count($to));
+    return $err;
+}
+// Once a day after the chosen hour, from the 5-minute job (claimed first so two runs cannot both send it).
+function maybe_send_failure_report(string $schema): void {
+    $cfg = alert_config();
+    if (!$cfg['failure_report_enabled'] || (int)date('G') < $cfg['failure_report_hour'] || !table_exists($schema, AUDIT_LOG_TABLE)) return;
+    $key = 'failure_report:'.$schema.':'.date('Y-m-d'); $db = portal_pdo();
+    $claim = $db->prepare('INSERT IGNORE INTO alert_notification_log(alert_key,last_sent_at) VALUES(?,NOW())'); $claim->execute([$key]);
+    if ($claim->rowCount() !== 1) return;
+    if (send_failure_report($schema) !== null) $db->prepare('DELETE FROM alert_notification_log WHERE alert_key=?')->execute([$key]);
+}

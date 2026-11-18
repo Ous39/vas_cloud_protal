@@ -115,3 +115,101 @@ function monitoring_snapshot(string $schema): array {
         'alerts' => compute_alerts($schema),
     ];
 }
+
+// ===================== Built-in health checks =====================
+// What the USSD service depends on, checked every 5 minutes by the alert job with nothing to set up: each Mobius node (a
+// login, nothing is sent), Hera (a connection), the main database, and the portal's USSD endpoint (answers pushed back
+// to Mobius that failed). Two failed checks in a row raise a DOWN alert (Slack / email), and a "Resolved" when it is back.
+function health_checks_ready(): void {
+    static $done = false; if ($done) return;
+    portal_pdo()->exec("CREATE TABLE IF NOT EXISTS health_checks (
+        id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        check_key VARCHAR(80) NOT NULL,
+        label VARCHAR(120) NOT NULL,
+        checked_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        ok TINYINT(1) NOT NULL,
+        latency_ms INT NULL,
+        message VARCHAR(500) NULL,
+        KEY k (check_key, checked_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+    $done = true;
+}
+// Runs the checks and records them. Returns [key => ['label','ok','ms','msg']].
+function builtin_health_run(): array {
+    health_checks_ready(); $out = [];
+    $cfg = ussd_proxy_config_raw(); // production Mobius, whatever a user's Production / Testbed switch says
+    $timed = function (string $key, string $label, callable $fn) use (&$out): void {
+        $t0 = microtime(true); try { [$ok, $msg] = $fn(); } catch (Throwable $e) { $ok = false; $msg = $e->getMessage(); }
+        $out[$key] = ['label' => $label, 'ok' => (bool)$ok, 'ms' => (int)round((microtime(true) - $t0) * 1000), 'msg' => mb_substr((string)$msg, 0, 500)];
+    };
+    if (($cfg['mobius_user'] ?? '') !== '' && ($cfg['mobius_pass'] ?? '') !== '') {
+        $hash = decrypt_secret($cfg['mobius_pass']);
+        foreach (mobius_bases($cfg) as $base) {
+            $host = (string)(parse_url($base, PHP_URL_HOST) ?: $base);
+            $timed('mobius:'.$host, 'Mobius '.$host, function () use ($base, $cfg, $hash) { $r = mobius_login_at($base, $cfg['mobius_user'], $hash); return [$r['ok'], $r['ok'] ? 'Logged in' : (string)$r['error']]; });
+        }
+    }
+    $tcp = function (string $url): array {
+        $p = parse_url($url); $host = $p['host'] ?? ''; $port = (int)($p['port'] ?? (($p['scheme'] ?? '') === 'https' ? 443 : 80));
+        if ($host === '') return [false, 'no address saved'];
+        $c = @fsockopen($host, $port, $en, $es, 4); if (!$c) return [false, (trim((string)$es) ?: 'cannot connect').' ('.$host.':'.$port.')']; fclose($c);
+        return [true, $host.':'.$port.' answers'];
+    };
+    if (trim((string)($cfg['purchase_url'] ?? '')) !== '') $timed('hera', 'Hera (purchases)', fn() => $tcp((string)$cfg['purchase_url']));
+    $main = (string)app_config('default_schema');
+    if ($main !== '') $timed('db:'.$main, 'Database '.$main, function () use ($main) { pdo($main)->query('SELECT 1'); return [true, 'answers']; });
+    if (($cfg['enabled'] ?? '') === '1' && ($cfg['mode'] ?? '') === 'live' && ($cfg['push_enabled'] ?? '') === '1') {
+        $timed('ussd_endpoint', 'USSD endpoint (answers to Mobius)', function () {
+            $r = portal_pdo()->query("SELECT COUNT(*) n, SUM(note LIKE 'PUSH FAILED%') f FROM ussd_proxy_log WHERE created_at >= NOW() - INTERVAL 15 MINUTE")->fetch();
+            $n = (int)$r['n']; $f = (int)$r['f'];
+            $bad = $f >= 5 && $f * 2 >= $n;
+            return [!$bad, $n === 0 ? 'no requests in the last 15 minutes' : "$n requests in the last 15 minutes, $f could not be sent back to Mobius"];
+        });
+    }
+    $ins = portal_pdo()->prepare('INSERT INTO health_checks(check_key,label,ok,latency_ms,message) VALUES(?,?,?,?,?)');
+    foreach ($out as $k => $r) $ins->execute([$k, $r['label'], $r['ok'] ? 1 : 0, $r['ms'], $r['msg']]);
+    if (random_int(1, 50) === 1) { try { portal_pdo()->exec('DELETE FROM health_checks WHERE checked_at < NOW() - INTERVAL 30 DAY'); } catch (Throwable $e) {} }
+    return $out;
+}
+// The latest state of every check seen in the last day, with its uptime over 24 h and whether it is DOWN (the last two failed).
+function health_overview(): array {
+    try { health_checks_ready(); } catch (Throwable $e) { return []; }
+    $rows = portal_pdo()->query("SELECT check_key, label, checked_at, ok, latency_ms, message FROM health_checks WHERE checked_at >= NOW() - INTERVAL 1 DAY ORDER BY check_key, checked_at DESC, id DESC")->fetchAll();
+    $out = [];
+    foreach ($rows as $r) {
+        $k = $r['check_key'];
+        if (!isset($out[$k])) $out[$k] = ['key' => $k, 'label' => $r['label'], 'last' => $r, 'prev' => null, 'n' => 0, 'up' => 0, 'recent' => []];
+        elseif ($out[$k]['prev'] === null) $out[$k]['prev'] = $r;
+        $out[$k]['n']++; $out[$k]['up'] += (int)$r['ok']; if (count($out[$k]['recent']) < 12) $out[$k]['recent'][] = (int)$r['ok'];
+    }
+    foreach ($out as &$o) {
+        $fresh = time() - (int)strtotime($o['last']['checked_at']) <= 15 * 60;
+        $o['down'] = $fresh && !(int)$o['last']['ok'] && $o['prev'] !== null && !(int)$o['prev']['ok'];
+        $o['state'] = !$fresh ? 'stale' : ((int)$o['last']['ok'] ? 'up' : ($o['down'] ? 'down' : 'blip'));
+        $o['uptime'] = $o['n'] ? round(100 * $o['up'] / $o['n'], 1) : null;
+    }
+    unset($o);
+    uasort($out, fn($a, $b) => [$a['state'] !== 'down', $a['label']] <=> [$b['state'] !== 'down', $b['label']]);
+    return $out;
+}
+
+// ===================== Today hour by hour =====================
+// Customer traffic per hour today, per channel: succeeded, failed on the customer's side (the reasons ignored in Alert
+// Settings, e.g. no balance) and real failures; plus the same weekday last week, to see at a glance what is unusual.
+function hourly_today(...$a) { return cached('hourly_today:'.md5(serialize($a)), LIVE_TTL, fn() => hourly_today_uncached(...$a)); }
+function hourly_today_uncached(string $schema): array {
+    if (!table_exists($schema, AUDIT_LOG_TABLE)) return ['channels' => []];
+    $db = pdo($schema); $t = ident(AUDIT_LOG_TABLE); $ch = "SUBSTRING_INDEX(channel,'-',1)";
+    [$cf, $params] = alert_counted_failure_sql();
+    $st = $db->prepare("SELECT HOUR(create_date) h, $ch c, COUNT(*) n, SUM(CASE WHEN ".AUDIT_SUCCESS_SQL." THEN 1 ELSE 0 END) ok, SUM(CASE WHEN $cf THEN 1 ELSE 0 END) rf FROM $t WHERE create_date >= CURDATE() AND NOT ".LOOKUPS_SQL." GROUP BY 1, 2");
+    $st->execute($params); $today = $st->fetchAll();
+    $last = $db->query("SELECT HOUR(create_date) h, $ch c, COUNT(*) n FROM $t WHERE create_date >= CURDATE() - INTERVAL 7 DAY AND create_date < CURDATE() - INTERVAL 6 DAY AND NOT ".LOOKUPS_SQL." GROUP BY 1, 2")->fetchAll();
+    $tot = []; foreach ($today as $r) $tot[$r['c']] = ($tot[$r['c']] ?? 0) + (int)$r['n']; foreach ($last as $r) $tot[$r['c']] = ($tot[$r['c']] ?? 0) + 0;
+    arsort($tot); $keep = array_slice(array_keys($tot), 0, 4); $name = fn($c) => in_array($c, $keep, true) ? ((string)$c === '' ? '(none)' : (string)$c) : 'Other';
+    $blank = fn() => ['ok' => array_fill(0, 24, 0), 'cust' => array_fill(0, 24, 0), 'real' => array_fill(0, 24, 0), 'lastweek' => array_fill(0, 24, 0)];
+    $out = ['All' => $blank()];
+    foreach ($today as $r) { $h = (int)$r['h']; $n = (int)$r['n']; $ok = (int)$r['ok']; $rf = min($n - $ok, (int)$r['rf']);
+        foreach (['All', $name($r['c'])] as $k) { $out[$k] ??= $blank(); $out[$k]['ok'][$h] += $ok; $out[$k]['real'][$h] += $rf; $out[$k]['cust'][$h] += $n - $ok - $rf; } }
+    foreach ($last as $r) foreach (['All', $name($r['c'])] as $k) { $out[$k] ??= $blank(); $out[$k]['lastweek'][(int)$r['h']] += (int)$r['n']; }
+    return ['channels' => $out, 'hour' => (int)date('G'), 'lastweek_date' => date('D j M', strtotime('-7 days'))];
+}

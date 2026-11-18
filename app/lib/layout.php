@@ -15,7 +15,7 @@ function nav_can_see(string $page): bool {
     if ($page==='api_keys') return can('manage_api_keys');
     if ($page==='promotions') return can('manage_promotions');
     if (in_array($page,['alert_settings','retention','status'],true)) return can('manage_api_keys');
-    if (in_array($page,['investigate','reports','alerts','monitoring','offer_report','timeline','vendor','monthly_report'],true)) return can('view_reports');
+    if (in_array($page,['investigate','reports','alerts','monitoring','offer_report','timeline','vendor','monthly_report','failures'],true)) return can('view_reports');
     if ($page==='shortcodes') return can('manage_shortcodes');
     if ($page==='refunds') return can('manage_api_keys');
     if ($page==='projects') return can('manage_projects');
@@ -27,7 +27,7 @@ function nav_can_see(string $page): bool {
 // (Refunds is not here any more: it is under Operations. The old builder "Advanced" is under the USSD tab bar's Settings; Easy Builder replaces it.)
 // Tabs on the Monitoring pages (one entry in the main menu).
 function monitoring_subnav(string $current): void {
-    $tabs = [['monitoring','fa-heart-pulse','Monitoring'],['alerts','fa-triangle-exclamation','Alerts'],['status','fa-server','System Status'],['alert_settings','fa-bell','Alert Settings']];
+    $tabs = [['monitoring','fa-heart-pulse','Monitoring'],['failures','fa-bug','Real failures'],['alerts','fa-triangle-exclamation','Alerts'],['status','fa-server','System Status'],['alert_settings','fa-bell','Alert Settings']];
     $tabs = array_values(array_filter($tabs, fn($t) => nav_can_see($t[0]))); if (count($tabs) < 2) return;
     echo '<ul class="nav nav-pills ussd-subnav mb-3">';
     foreach ($tabs as [$p,$ic,$lb]) echo '<li class="nav-item"><a class="nav-link'.($p===$current?' active':'').'" href="?page='.$p.'"><i class="fa-solid '.$ic.' me-1"></i>'.e($lb).'</a></li>';
@@ -81,7 +81,7 @@ function layout_start(string $title): void {
     $nav = [
         ['dashboard','fa-gauge','Dashboard',['dashboard']],
         ['ussd','fa-mobile-screen-button','USSD',$ussdPages],
-        ['monitoring','fa-heart-pulse','Monitoring',['monitoring','alerts','status','vendor']],
+        ['monitoring','fa-heart-pulse','Monitoring',['monitoring','failures','alerts','status','vendor']],
         ['group','fa-layer-group','Operations',[['refunds','fa-rotate-left','Refunds'],['subscriptions','fa-user-check','Subscriptions'],['offers','fa-tags','Offer Management'],['offer_health','fa-stethoscope','Offer Health'],['ussd_schedules','fa-clock','Schedules'],['friends_family','fa-user-group','Friends & Family'],['voting','fa-square-poll-vertical','Voting Service']]],
         ['group','fa-chart-line','Reports',[['investigate','fa-headset','Complaint Investigation'],['timeline','fa-timeline','Customer Timeline'],['offer_report','fa-bullhorn','Offer Performance'],['monthly_report','fa-file-pen','Monthly Report']]],
         ['group','fa-gears','Admin',[['users','fa-users-gear','Users'],['audit','fa-shield-halved','Audit Trail'],['shortcodes','fa-hashtag','Short Codes'],['promotions','fa-bullhorn','Promotions'],['integrations','fa-plug-circle-check','Integrations'],['alert_settings','fa-bell','Alert Settings'],['retention','fa-database','Data Retention'],['tables','fa-table','Database Tables'],['sql','fa-code','SQL Console']]],

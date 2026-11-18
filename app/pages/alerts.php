@@ -13,7 +13,7 @@ declare(strict_types=1);
     $trend=hourly_transaction_trend($schema, 24);
     $alertHistory=recent_alert_history($schema, 15);
     $pct=fn($n,$d)=>$d>0?round(100*$n/$d,1):0;
-    $allOff = !$cfg['failure_rate_enabled'] && !$cfg['vendor_silent_enabled'] && !$cfg['vendor_slow_enabled'];
+    $allOff = !$cfg['failure_rate_enabled'] && !$cfg['vendor_silent_enabled'] && !$cfg['vendor_slow_enabled'] && !$cfg['traffic_drop_enabled'];
     layout_start('Alerts'); monitoring_subnav('alerts');
     ?>
     <div class="metric-grid">
@@ -25,7 +25,7 @@ declare(strict_types=1);
     <div class="cardx mt-3">
         <h3><i class="fa-solid fa-triangle-exclamation me-2"></i>Alerts</h3>
         <p class="text-muted">Checked whenever this page or the Dashboard loads, and every few minutes by the scheduled check. Emailed / sent to Slack when it starts (🔴), repeated while it goes on (🔁 every <?=ALERT_RENOTIFY_MINUTES?> minutes for the failure rate, 2 hours for a vendor, 6 hours for an integration that is down), and once when it is over (✅ Resolved).<?php if(can('manage_api_keys')):?> Choose what triggers them, and who receives them, under <a href="?page=alert_settings">Admin &rarr; Alert Settings</a>.<?php endif;?></p>
-        <?php if($allOff):?><div class="alert alert-secondary">Both alert types are switched off in Alert Settings, so nothing is being checked.</div>
+        <?php if($allOff):?><div class="alert alert-secondary">All alert types are switched off in Alert Settings, so nothing is being checked.</div>
         <?php elseif(!$alerts):?><div class="alert alert-success mb-0">No active alerts.</div>
         <?php else: foreach($alerts as $a):?><div class="alert alert-<?=e($a['level'])?> mb-2"><?=e($a['message'])?></div><?php endforeach; endif;?>
     </div>

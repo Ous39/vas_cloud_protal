@@ -409,6 +409,11 @@ function ensure_portal_runtime_schema(): void {
         // What the alerts fire on (edited on the Alert Settings page): on/off and limits per alert
         // type, plus failure reasons that shouldn't count toward the failure-rate alert (e.g. a
         // customer having no credit is not an outage).
+        // Text settings of the reports (e.g. who gets the daily real-failure report).
+        $db->exec("CREATE TABLE IF NOT EXISTS report_settings (
+            name VARCHAR(60) NOT NULL PRIMARY KEY,
+            value TEXT NOT NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
         $db->exec("CREATE TABLE IF NOT EXISTS alert_config (
             name VARCHAR(60) NOT NULL PRIMARY KEY,
             value VARCHAR(60) NOT NULL
