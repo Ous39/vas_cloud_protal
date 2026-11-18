@@ -109,7 +109,7 @@ function save_integration(array $data, ?int $id = null): int {
     audit('save_integration', null, 'integrations', (string)$id, json_encode(['name' => $name, 'type' => $data['service_type']]));
     return $id;
 }
-function test_integration(int $id): array {
+function test_integration(int $id, bool $audit = true): array {
     $row = get_integration($id) ?: throw new RuntimeException('Integration not found.');
     $start = microtime(true);
     $ok = false; $message = '';
@@ -150,7 +150,7 @@ function test_integration(int $id): array {
         ->execute([$ok ? 1 : 0, $latency, $message, $id]);
     portal_pdo()->prepare('INSERT INTO integration_checks(integration_id,ok,latency_ms,message) VALUES(?,?,?,?)')
         ->execute([$id, $ok ? 1 : 0, $latency, $message]);
-    audit('test_integration', null, 'integrations', (string)$id, "$message ({$latency}ms)");
+    if ($audit) audit('test_integration', null, 'integrations', (string)$id, "$message ({$latency}ms)");
     return ['ok' => $ok, 'latency_ms' => $latency, 'message' => $message];
 }
 function smsc_activity_today(...$a) { return cached('smsc_activity_today:'.md5(serialize($a)), 60, fn() => smsc_activity_today_uncached(...$a)); }

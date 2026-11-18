@@ -46,7 +46,7 @@ function background_integration_checks(int $budgetSeconds = 25): array {
         if ($i['status'] !== 'active') continue;
         if (!empty($i['last_check_at']) && time() - (int)strtotime($i['last_check_at']) < 240) continue;
         if (microtime(true) - $start > $budgetSeconds) break;
-        try { test_integration((int)$i['id']); $n++; } catch (Throwable $e) { error_log('integration check: '.$e->getMessage()); }
+        try { test_integration((int)$i['id'], false); $n++; } catch (Throwable $e) { error_log('integration check: '.$e->getMessage()); }
     }
     if (random_int(1, 50) === 1) { try { portal_pdo()->exec('DELETE FROM integration_checks WHERE checked_at < NOW() - INTERVAL 30 DAY'); } catch (Throwable $e) {} }
     return ['checked' => $n];

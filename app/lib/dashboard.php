@@ -61,7 +61,7 @@ function warm_live_figures(string $schema): void {
 }
 // The dashboard's "Recent Activity": what people changed or sent. Routine entries (sign-ins, the 5-minute summary job,
 // page views) stay in the Audit Trail but are left out here, so real changes are not pushed out of the list.
-const RECENT_ACTIVITY_SKIP = ['login', 'logout', 'daily_summary', 'timeline_view'];
+const RECENT_ACTIVITY_SKIP = ['login', 'logout', 'daily_summary', 'timeline_view', 'test_integration', 'integrations_check_all'];
 function recent_activity(int $limit = 10): array {
     $skip = implode(',', array_map(fn($a) => portal_pdo()->quote($a), RECENT_ACTIVITY_SKIP));
     $st = portal_pdo()->prepare("SELECT * FROM portal_audit_trail WHERE action NOT IN ($skip) AND action NOT LIKE '%\\_view' ORDER BY id DESC LIMIT ?");
@@ -71,10 +71,11 @@ function recent_activity(int $limit = 10): array {
 
 function integrations_health_summary(string $schema): array {
     $out = ['active'=>0, 'inactive'=>0, 'testing'=>0, 'last_check_ok'=>0, 'last_check_failed'=>0, 'never_checked'=>0];
-    if (!table_exists($schema, 'integrations')) return $out;
-    $rows = pdo($schema)->query('SELECT status, last_check_ok FROM integrations')->fetchAll();
+    // Integrations live in the portal's own database (like the Integrations and Monitoring pages), not in the Hera schema.
+    try { $rows = list_integrations(); } catch (Throwable $e) { return $out; }
     foreach ($rows as $r) {
-        $out[$r['status']] = ($out[$r['status']] ?? 0) + 1;
+        if ($r['status'] !== 'active') { $out[$r['status']] = ($out[$r['status']] ?? 0) + 1; continue; }
+        $out['active']++;
         if ($r['last_check_ok'] === null) $out['never_checked']++;
         elseif ((int)$r['last_check_ok'] === 1) $out['last_check_ok']++;
         else $out['last_check_failed']++;
