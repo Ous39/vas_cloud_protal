@@ -304,6 +304,35 @@ function ensure_portal_runtime_schema(): void {
             INDEX idx_expires (expires_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
 
+        // Monthly Report: each person writes, per month, what they did on each project they work on (Reports → Monthly Report).
+        $db->exec("CREATE TABLE IF NOT EXISTS monthly_reports (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            report_month CHAR(7) NOT NULL,
+            author_user_id INT NULL,
+            author_username VARCHAR(80) NOT NULL,
+            summary TEXT NULL,
+            challenges TEXT NULL,
+            next_month TEXT NULL,
+            status ENUM('draft','final') NOT NULL DEFAULT 'draft',
+            finalized_at DATETIME NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_month_author (report_month, author_username)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+        $db->exec("CREATE TABLE IF NOT EXISTS monthly_report_items (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            report_id INT NOT NULL,
+            sort_order INT NOT NULL DEFAULT 0,
+            project_id INT NULL,
+            project_name VARCHAR(180) NOT NULL,
+            status ENUM('done','in_progress','blocked','planned') NOT NULL DEFAULT 'in_progress',
+            progress TINYINT UNSIGNED NULL,
+            work_done TEXT NULL,
+            issues TEXT NULL,
+            next_steps TEXT NULL,
+            INDEX idx_report (report_id, sort_order)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
         // USSD proxy endpoint (Mobius PROXY / MS_INITIATED menus call it): settings, a short-lived request log used to
         // learn the gateway's format, and per-session reply history (the screen engine itself is stateless).
         $db->exec("CREATE TABLE IF NOT EXISTS ussd_proxy_config (
