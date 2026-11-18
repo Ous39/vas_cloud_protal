@@ -232,7 +232,12 @@ function alert_renotify_minutes(string $key): int {
     return ALERT_RENOTIFY_MINUTES;
 }
 // Does an alert key belong to this database's alerts (integration alerts are computed for the main database only)?
+// Only real alert keys: the same table also holds "sent today" markers (daily summary) that must stay, or the
+// summary would be sent again at every run.
+const ALERT_KEY_PREFIXES = ['high_failure_rate:', 'vendor_silent:', 'vendor_slow:', 'integration_down:'];
 function alert_key_in_schema(string $key, string $schema): bool {
+    $isAlert = false; foreach (ALERT_KEY_PREFIXES as $p) if (str_starts_with($key, $p)) $isAlert = true;
+    if (!$isAlert) return false;
     if (str_starts_with($key, 'integration_down:')) return $schema === app_config('default_schema');
     return str_ends_with($key, ':'.$schema) || str_contains($key, ':'.$schema.':');
 }
