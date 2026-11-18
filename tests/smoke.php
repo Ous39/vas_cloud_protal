@@ -70,7 +70,7 @@ $text = fn(string $html): string => trim(preg_replace('/\s+/', ' ', strip_tags((
 // every page the app has (found in index.php, so a new page is covered the day it is added)
 // the pages that stay in index.php (login, logout, ...) and every file in app/pages/
 preg_match_all('~\$page===?\'([a-z_]+)\'~', (string)file_get_contents($docroot.'/index.php'), $m); $pages = $m[1]; foreach (glob(dirname($docroot).'/pages/*.php') ?: [] as $pf) $pages[] = basename($pf, '.php'); $pages = array_values(array_unique($pages));
-$skip = ['login', 'logout', 'switch_schema', 'alert_cron', 'confirm', 'copy_record', 'sync', 'form', 'investigate_detail']; // these need a token or a record id
+$skip = ['login', 'logout', 'switch_schema', 'alert_cron', 'schedule_cron', 'confirm', 'copy_record', 'sync', 'form', 'investigate_detail']; // these need a token or a record id
 $pages = array_values(array_filter($pages, fn($p) => !in_array($p, $skip, true) && !str_contains($p, 'export')));
 
 $admin = browser($base); $viewer = browser($base); $anon = browser($base);
@@ -80,6 +80,7 @@ t('the public endpoints and the security headers', function () use ($anon, $base
     $l = $anon['go']('health.php?live=1'); has($l['body'], 'alive', 'liveness answers without the database');
     $u = $anon['go']('ussd.php?t=wrong&m=proxy'); eq($u['code'], 404, 'the USSD endpoint with a wrong token is not found');
     $a = $anon['go']('api.php?action=offers'); eq($a['code'], 401, 'the partner API wants a key');
+    foreach (['alert_cron', 'schedule_cron'] as $cron) { $c = $anon['go']('index.php?page='.$cron.'&token=wrong'); eq($c['code'], 403, "the $cron job endpoint refuses a wrong token"); }
     $p = $anon['go']('index.php?page=dashboard'); has($p['url'], 'page=login', 'a page without signing in goes to the login');
     foreach (['Content-Security-Policy', 'X-Frame-Options: DENY', 'X-Content-Type-Options: nosniff', 'Referrer-Policy'] as $hd) has($p['headers'], $hd, "the header $hd is sent");
     $fresh = browser($base); $fh = $fresh['go']('index.php?page=login')['headers']; ok(stripos($fh, 'httponly') !== false && stripos($fh, 'samesite=strict') !== false, 'a new session cookie is HttpOnly and SameSite=Strict');
