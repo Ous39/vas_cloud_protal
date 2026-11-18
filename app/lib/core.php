@@ -271,8 +271,12 @@ function ensure_portal_runtime_schema(): void {
         // load or per cron tick.
         $db->exec("CREATE TABLE IF NOT EXISTS alert_notification_log (
             alert_key VARCHAR(191) NOT NULL PRIMARY KEY,
-            last_sent_at DATETIME NOT NULL
+            last_sent_at DATETIME NOT NULL,
+            message VARCHAR(500) NULL,
+            alert_type VARCHAR(40) NULL
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+        // what was announced, for the "resolved" message when it is over (older databases)
+        if (!$columnExists('alert_notification_log', 'message')) $db->exec("ALTER TABLE alert_notification_log ADD COLUMN message VARCHAR(500) NULL, ADD COLUMN alert_type VARCHAR(40) NULL");
 
         // Named groups of offer codes for the Promotion Performance report — portal governance data
         // (which offer codes belong to "Summer Promo"), never Hera business data. offer_code_for_other

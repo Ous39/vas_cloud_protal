@@ -45,8 +45,8 @@ declare(strict_types=1);
             </div></div>
             <div class="col-lg-6"><div class="border rounded p-3 h-100">
                 <div class="form-check form-switch mb-2"><input class="form-check-input" type="checkbox" name="vendor_silent_enabled" value="1" id="vse" <?=$cfg['vendor_silent_enabled']?'checked':''?>><label class="form-check-label fw-semibold" for="vse">Vendor gone silent</label></div>
-                <p class="text-muted small">Alert when a vendor that was active this time yesterday sent nothing in the last hour.</p>
-                <label class="small text-muted mb-0">Vendor must have sent at least this many yesterday</label><input class="form-control" type="number" min="1" name="vendor_silent_min_baseline" value="<?=e($cfg['vendor_silent_min_baseline'])?>">
+                <p class="text-muted small">Alert when a vendor that is normally busy at this hour (traffic in this hour on at least 6 of the last 7 days) sent nothing in the last hour. Quiet vendors with a few calls an hour are not alerted.</p>
+                <label class="small text-muted mb-0">Vendor must average at least this many in this hour (last 7 days)</label><input class="form-control" type="number" min="1" name="vendor_silent_min_baseline" value="<?=e($cfg['vendor_silent_min_baseline'])?>">
             </div></div>
             <div class="col-12"><div class="border rounded p-3">
                 <div class="form-check form-switch mb-2"><input class="form-check-input" type="checkbox" name="vendor_slow_enabled" value="1" id="vsl" <?=$cfg['vendor_slow_enabled']?'checked':''?>><label class="form-check-label fw-semibold" for="vsl">Vendor responding slowly</label></div>
@@ -111,7 +111,7 @@ declare(strict_types=1);
                 <label class="form-check small mb-0"><input class="form-check-input" type="checkbox" name="notify_vendor" value="1" data-autosubmit <?=(int)$r['notify_vendor']?'checked':''?>> Vendor silent</label>
                 <label class="form-check small mb-0"><input class="form-check-input" type="checkbox" name="notify_slow" value="1" data-autosubmit <?=(int)$r['notify_slow']?'checked':''?>> Vendor slow</label>
                 <label class="form-check small mb-0"><input class="form-check-input" type="checkbox" name="notify_summary" value="1" data-autosubmit <?=(int)$r['notify_summary']?'checked':''?>> Daily summary</label>
-                <label class="form-check small mb-0"><input class="form-check-input" type="checkbox" name="notify_schedule" value="1" data-autosubmit <?=(int)($r['notify_schedule']??1)?'checked':''?>> USSD schedules</label></form></td>
+                <label class="form-check small mb-0"><input class="form-check-input" type="checkbox" name="notify_schedule" value="1" data-autosubmit <?=(int)($r['notify_schedule']??1)?'checked':''?>> Schedules (USSD &amp; offers)</label></form></td>
             <td><form method="post" class="d-inline"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="toggle_recipient"><input type="hidden" name="id" value="<?=e($r['id'])?>"><button class="btn btn-sm btn-outline-dark"><?=(int)$r['active']?'Disable':'Enable'?></button></form></td></tr><?php endforeach;?>
         <?php foreach($envTo as $addr):?><tr><td><?=e($addr)?></td><td><span class="badge bg-info text-dark">From environment</span></td><td><small class="text-muted">all alerts</small></td><td><small class="text-muted">set via ALERT_EMAIL_TO</small></td></tr><?php endforeach;?>
         </tbody></table></div>

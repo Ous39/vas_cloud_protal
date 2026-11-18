@@ -11,7 +11,7 @@ function nav_can_see(string $page): bool {
     if ($page==='ussd_sim' || $page==='ussd_quiz' || $page==='ussd_flows' || $page==='ussd_build' || $page==='ussd_new') return can('manage_ussd_menus');
     if ($page==='ussd_proxy' || $page==='mobius_menus') return can('manage_api_keys');
     if ($page==='ussd_trace') return can('view_reports');
-    if ($page==='ussd_schedules') return can('manage_ussd_menus') || can('manage_api_keys');
+    if ($page==='ussd_schedules') return can('manage_ussd_menus') || can('manage_api_keys') || can('edit_records');
     if ($page==='api_keys') return can('manage_api_keys');
     if ($page==='promotions') return can('manage_promotions');
     if (in_array($page,['alert_settings','retention','status'],true)) return can('manage_api_keys');
@@ -82,7 +82,7 @@ function layout_start(string $title): void {
         ['dashboard','fa-gauge','Dashboard',['dashboard']],
         ['ussd','fa-mobile-screen-button','USSD',$ussdPages],
         ['monitoring','fa-heart-pulse','Monitoring',['monitoring','alerts','status','vendor']],
-        ['group','fa-layer-group','Operations',[['refunds','fa-rotate-left','Refunds'],['subscriptions','fa-user-check','Subscriptions'],['offers','fa-tags','Offer Management'],['offer_health','fa-stethoscope','Offer Health'],['friends_family','fa-user-group','Friends & Family'],['voting','fa-square-poll-vertical','Voting Service']]],
+        ['group','fa-layer-group','Operations',[['refunds','fa-rotate-left','Refunds'],['subscriptions','fa-user-check','Subscriptions'],['offers','fa-tags','Offer Management'],['offer_health','fa-stethoscope','Offer Health'],['ussd_schedules','fa-clock','Schedules'],['friends_family','fa-user-group','Friends & Family'],['voting','fa-square-poll-vertical','Voting Service']]],
         ['group','fa-chart-line','Reports',[['investigate','fa-headset','Complaint Investigation'],['timeline','fa-timeline','Customer Timeline'],['offer_report','fa-bullhorn','Offer Performance'],['monthly_report','fa-file-pen','Monthly Report']]],
         ['group','fa-gears','Admin',[['users','fa-users-gear','Users'],['audit','fa-shield-halved','Audit Trail'],['shortcodes','fa-hashtag','Short Codes'],['promotions','fa-bullhorn','Promotions'],['integrations','fa-plug-circle-check','Integrations'],['alert_settings','fa-bell','Alert Settings'],['retention','fa-database','Data Retention'],['tables','fa-table','Database Tables'],['sql','fa-code','SQL Console']]],
     ];

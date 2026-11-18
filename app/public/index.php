@@ -11,6 +11,7 @@ function run_due_schedules(): string {
     $out = [];
     try { $mc = ussd_proxy_config(); if ($mc['mobius_user'] !== '') { $r = mobius_sched_apply($mc); $out[] = 'mobius started='.$r['started'].' ended='.$r['ended'].' failed='.$r['failed']; } } catch (Throwable $e) { error_log('mobius schedule: '.$e->getMessage()); $out[] = 'mobius error'; }
     try { $r = menu_apply_schedules(); $out[] = 'portal on='.$r['on'].' off='.$r['off']; } catch (Throwable $e) { error_log('menu schedule: '.$e->getMessage()); $out[] = 'portal error'; }
+    try { $r = offer_sched_apply(); $out[] = 'offers started='.$r['started'].' ended='.$r['ended'].' failed='.$r['failed']; } catch (Throwable $e) { error_log('offer schedule: '.$e->getMessage()); $out[] = 'offers error'; }
     return implode('; ', $out);
 }
 if ($page==='schedule_cron') {

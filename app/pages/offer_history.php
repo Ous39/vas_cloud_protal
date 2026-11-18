@@ -12,6 +12,8 @@ declare(strict_types=1);
         <h3 class="mt-2"><?=e($offer['name'])?> <small class="text-muted"><?=e($offer['offer_code'])?></small></h3>
         <p class="text-muted mb-0">Who changed this offer, when, and what changed. Only changes made through this portal are recorded; entries made before change-tracking was added show the submitted values without the previous ones.</p>
     </div>
+    <?php $os=[]; try { $os=offer_sched_list(false,$schema,$id); } catch (Throwable $e) {} if($os):?><div class="cardx mt-3"><h3>Scheduled changes</h3><div class="table-scroll"><table class="table table-sm mb-0"><thead><tr><th>From</th><th>Until</th><th>What</th><th>Status</th></tr></thead><tbody>
+        <?php foreach(array_slice($os,0,20) as $o): [$sl,$sc]=OFFER_SCHED_STATES[$o['state']]??[$o['state'],'secondary'];?><tr><td class="text-nowrap"><?=e(substr($o['start_at'],0,16))?></td><td class="text-nowrap"><?=e($o['end_at']?substr($o['end_at'],0,16):'—')?></td><td class="small"><?=e(offer_sched_describe($o))?></td><td><span class="badge bg-<?=$sc?><?=$sc==='light'?' text-dark border':''?>"><?=e($sl)?></span></td></tr><?php endforeach;?></tbody></table></div><a class="small" href="?page=ussd_schedules&offer_id=<?=e($id)?>#offer-form">Schedule another change →</a></div><?php endif;?>
     <div class="cardx mt-3">
         <?php if(!$hist):?><p class="text-muted mb-0">No changes recorded for this offer in this portal yet.</p><?php else:?>
         <div class="table-scroll"><table class="table table-sm align-middle mb-0"><thead><tr><th>When</th><th>Who</th><th>What</th><th>Changes</th></tr></thead><tbody>

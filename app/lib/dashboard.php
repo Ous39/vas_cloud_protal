@@ -190,15 +190,19 @@ function compute_alerts_uncached(string $schema): array {
     }
 
     if ($cfg['vendor_silent_enabled']) {
-        $st = $db->prepare("SELECT vendor_entity_name, COUNT(*) c FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL 1 HOUR - INTERVAL 1 DAY AND create_date < NOW() - INTERVAL 1 DAY GROUP BY vendor_entity_name HAVING c >= ?");
-        $st->execute([$cfg['vendor_silent_min_baseline']]);
-        $baseline = array_column($st->fetchAll(), 'c', 'vendor_entity_name');
+        // The same hour on each of the last 7 days, not only yesterday: a vendor with a few calls an hour (e.g. CorePgw)
+        // is often silent for an hour, which is not an outage. Alert only for a vendor that had traffic in this hour on at
+        // least 6 of the last 7 days, with an average of at least the baseline.
+        $ranges = []; for ($d = 1; $d <= 7; $d++) $ranges[] = "(create_date >= NOW() - INTERVAL 1 HOUR - INTERVAL $d DAY AND create_date < NOW() - INTERVAL $d DAY)";
+        $st = $db->query("SELECT vendor_entity_name v, COUNT(*) c, COUNT(DISTINCT DATE(create_date - INTERVAL 1 HOUR + INTERVAL 1 SECOND)) d FROM ".ident(AUDIT_LOG_TABLE)." WHERE (".implode(' OR ', $ranges).") GROUP BY vendor_entity_name");
+        $baseline = [];
+        foreach ($st->fetchAll() as $r) { $avg = (int)$r['c'] / 7; if ((string)$r['v'] !== '' && (int)$r['d'] >= 6 && $avg >= $cfg['vendor_silent_min_baseline']) $baseline[$r['v']] = (int)round($avg); }
         if ($baseline) {
             $st = $db->query("SELECT DISTINCT vendor_entity_name FROM ".ident(AUDIT_LOG_TABLE)." WHERE create_date >= NOW() - INTERVAL 1 HOUR");
             $activeNow = array_column($st->fetchAll(), 'vendor_entity_name');
-            foreach ($baseline as $vendor => $count) {
+            foreach ($baseline as $vendor => $avg) {
                 if (!in_array($vendor, $activeNow, true)) {
-                    $alerts[] = ['key'=>'vendor_silent:'.$schema.':'.$vendor, 'type'=>'vendor_silent', 'level'=>'warning', 'message'=>sprintf('%s sent %d transactions in this hour yesterday but none in the last hour — may be down.', $vendor, $count)];
+                    $alerts[] = ['key'=>'vendor_silent:'.$schema.':'.$vendor, 'type'=>'vendor_silent', 'level'=>'warning', 'message'=>sprintf('%s usually sends about %d transactions in this hour (average of the last 7 days) but sent none in the last hour — may be down.', $vendor, $avg)];
                 }
             }
         }
@@ -220,6 +224,18 @@ function compute_alerts_uncached(string $schema): array {
 }
 
 const ALERT_RENOTIFY_MINUTES = 30;
+// How often an alert that is still going on is sent again: an outage (failure rate) every 30 minutes, a vendor every
+// 2 hours, an integration that is down every 6 hours (it usually needs another team, and repeating it is only noise).
+function alert_renotify_minutes(string $key): int {
+    if (str_starts_with($key, 'integration_down:')) return 360;
+    if (str_starts_with($key, 'vendor_silent:') || str_starts_with($key, 'vendor_slow:')) return 120;
+    return ALERT_RENOTIFY_MINUTES;
+}
+// Does an alert key belong to this database's alerts (integration alerts are computed for the main database only)?
+function alert_key_in_schema(string $key, string $schema): bool {
+    if (str_starts_with($key, 'integration_down:')) return $schema === app_config('default_schema');
+    return str_ends_with($key, ':'.$schema) || str_contains($key, ':'.$schema.':');
+}
 
 function alert_cron_token(): string {
     static $token = null;
@@ -383,9 +399,9 @@ function smtp_send(array $c, string $subject, string $body): ?string {
 }
 // A USSD schedule went live, ended or failed: Slack and email (recipients with "USSD schedules" ticked in Alert Settings).
 // Never throws: a schedule must not fail because a message could not be sent.
-function ussd_schedule_notify(string $text): void {
-    try { send_slack_alert('', '[USSD schedule] '.$text); } catch (Throwable $e) { error_log('schedule slack: '.$e->getMessage()); }
-    try { if (smtp_settings('ussd_schedule')) send_email_alert('[VAS Cloud] USSD schedule', $text."\n\nPortal: USSD → Schedules", 'ussd_schedule'); } catch (Throwable $e) { error_log('schedule email: '.$e->getMessage()); }
+function ussd_schedule_notify(string $text, string $what = 'USSD schedule'): void {
+    try { send_slack_alert('', '['.$what.'] '.$text); } catch (Throwable $e) { error_log('schedule slack: '.$e->getMessage()); }
+    try { if (smtp_settings('ussd_schedule')) send_email_alert('[VAS Cloud] '.$what, $text."\n\nPortal: Schedules", 'ussd_schedule'); } catch (Throwable $e) { error_log('schedule email: '.$e->getMessage()); }
     try { audit('ussd_schedule_notified', null, 'mobius', null, mb_substr($text, 0, 480)); } catch (Throwable $e) {}
 }
 function send_email_alert(string $subject, string $body, ?string $type = null): ?string {
@@ -398,18 +414,29 @@ function send_email_alert(string $subject, string $body, ?string $type = null): 
 // alerts go out even if nobody has the app open) — see deploy/k8s/05-alert-cronjob.yaml.
 function dispatch_pending_alert_notifications(string $schema): void {
     $alerts = compute_alerts($schema);
-    if (!$alerts) return;
-    $db = portal_pdo();
+    $db = portal_pdo(); $activeKeys = [];
     foreach ($alerts as $a) {
-        if (empty($a['key'])) continue;
+        if (empty($a['key'])) continue; $activeKeys[$a['key']] = true;
         $st = $db->prepare('SELECT last_sent_at FROM alert_notification_log WHERE alert_key=?');
         $st->execute([$a['key']]);
         $row = $st->fetch();
-        if ($row && strtotime($row['last_sent_at']) > time() - ALERT_RENOTIFY_MINUTES * 60) continue;
-        send_slack_alert($schema, '['.$schema.'] '.$a['message']);
-        if (smtp_settings($a['type'] ?? null)) { try { send_email_alert('[VAS Cloud] '.$schema.' alert', '['.$schema.'] '.$a['message'], $a['type'] ?? null); } catch (Throwable $e) {} }
-        audit('alert_fired', $schema, null, $a['key'], $a['message']);
-        $db->prepare('INSERT INTO alert_notification_log(alert_key,last_sent_at) VALUES(?,NOW()) ON DUPLICATE KEY UPDATE last_sent_at=NOW()')->execute([$a['key']]);
+        if ($row && strtotime($row['last_sent_at']) > time() - alert_renotify_minutes($a['key']) * 60) continue;
+        $msg = ($row ? '🔁 Still: ' : '🔴 ').$a['message'];
+        send_slack_alert($schema, '['.$schema.'] '.$msg);
+        if (smtp_settings($a['type'] ?? null)) { try { send_email_alert('[VAS Cloud] '.$schema.' alert', '['.$schema.'] '.$msg, $a['type'] ?? null); } catch (Throwable $e) {} }
+        audit('alert_fired', $schema, null, $a['key'], $msg);
+        $db->prepare('INSERT INTO alert_notification_log(alert_key,last_sent_at,message,alert_type) VALUES(?,NOW(),?,?) ON DUPLICATE KEY UPDATE last_sent_at=NOW(), message=VALUES(message), alert_type=VALUES(alert_type)')->execute([$a['key'], mb_substr((string)$a['message'], 0, 500), (string)($a['type'] ?? '')]);
+    }
+    // Problems that were announced and are over now: one "resolved" message, so nobody wonders whether it is still going on.
+    foreach ($db->query('SELECT alert_key, message, alert_type, last_sent_at FROM alert_notification_log')->fetchAll() as $row) {
+        $key = (string)$row['alert_key']; if (isset($activeKeys[$key]) || !alert_key_in_schema($key, $schema)) continue;
+        $db->prepare('DELETE FROM alert_notification_log WHERE alert_key=?')->execute([$key]);
+        if (trim((string)$row['message']) === '') continue; // announced before messages were kept: just forget it
+        $msg = '✅ Resolved: '.$row['message'];
+        send_slack_alert($schema, '['.$schema.'] '.$msg);
+        $type = (string)$row['alert_type'] !== '' ? (string)$row['alert_type'] : null;
+        if (smtp_settings($type)) { try { send_email_alert('[VAS Cloud] '.$schema.' resolved', '['.$schema.'] '.$msg, $type); } catch (Throwable $e) {} }
+        audit('alert_resolved', $schema, null, $key, $msg);
     }
 }
 
