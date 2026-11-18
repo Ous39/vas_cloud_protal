@@ -142,7 +142,11 @@ function test_integration(int $id, bool $audit = true): array {
             $err = curl_error($ch);
             curl_close($ch);
             if ($err) { $message = "HTTP request failed: $err"; }
-            else { $ok = $httpCode >= 200 && $httpCode < 400; $message = "HTTP $httpCode"; }
+            else {
+                $ok = $httpCode >= 200 && $httpCode < 400; $message = "HTTP $httpCode";
+                // a Slack webhook only accepts a POSTed message: a plain GET gets 400/405, which still proves it is reachable
+                if (!$ok && in_array($httpCode, [400, 405], true) && preg_match('/(^|\.)hooks\.slack\.com$/i', (string)parse_url($url, PHP_URL_HOST))) { $ok = true; $message = "Slack webhook reachable (HTTP $httpCode to a GET is normal)"; }
+            }
         }
     }
     $latency = (int)round((microtime(true) - $start) * 1000);

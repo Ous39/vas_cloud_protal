@@ -1259,6 +1259,19 @@ function mobius_sched_add(array $cfg, string $menuId, string $liveCode, string $
     audit('mobius_schedule_add', null, 'mobius', $liveCode, json_encode(['menu' => $menuId, 'from' => $from, 'until' => $until]));
     return $id;
 }
+function mobius_sched_get(int $id): ?array { mobius_sched_ready(); $st = portal_pdo()->prepare('SELECT * FROM mobius_schedules WHERE id=?'); $st->execute([$id]); return $st->fetch() ?: null; }
+// The Slack / email message for a schedule that went live, ended or failed (see ussd_schedule_notify).
+function mobius_sched_notify(int $id, string $what): void {
+    if (!function_exists('ussd_schedule_notify') || !($s = mobius_sched_get($id))) return;
+    $name = '“'.$s['menu_name'].'”'; $note = trim((string)$s['note']);
+    $text = match ($what) {
+        'live' => '✅ '.$name.' is LIVE on '.$s['live_code'].'. '.($s['end_at'] ? 'It ends '.substr($s['end_at'], 0, 16).'.' : 'No end time.').($note !== '' ? ' ('.$note.')' : ''),
+        'ended' => '⏹ '.$name.' schedule on '.$s['live_code'].' has ENDED. '.$note,
+        'ended_now' => '⏹ '.$name.' on '.$s['live_code'].' was ended by hand ('.(user()['username'] ?? 'someone').'). '.$note,
+        default => '❌ '.$name.' on '.$s['live_code'].' FAILED: '.$note.' — check it in USSD → Schedules now; customers may see the wrong menu.',
+    };
+    ussd_schedule_notify($text);
+}
 function mobius_sched_set(int $id, array $f): void {
     $k = array_keys($f); portal_pdo()->prepare('UPDATE mobius_schedules SET '.implode(',', array_map(fn($x) => "$x=?", $k)).' WHERE id=?')->execute([...array_values($f), $id]);
 }
@@ -1303,9 +1316,9 @@ function mobius_sched_apply(array $cfg, ?string $now = null): array {
     foreach ($due->fetchAll() as $s) {
         try {
             if ($s['state'] === 'waiting') { if ($s['end_at'] !== null && $s['end_at'] <= $now) { mobius_sched_set((int)$s['id'], ['state' => 'ended', 'note' => 'Start and end both passed before it could run; nothing was changed.']); continue; }
-                mobius_sched_start($cfg, $s); $r['started']++; }
-            else { mobius_sched_end($cfg, $s); $r['ended']++; }
-        } catch (Throwable $e) { $r['failed']++; mobius_sched_set((int)$s['id'], ['state' => 'failed', 'note' => mb_substr(($s['state'] === 'waiting' ? 'Could not go live: ' : 'Could not end: ').$e->getMessage(), 0, 500)]); error_log('mobius schedule '.$s['id'].': '.$e->getMessage()); }
+                mobius_sched_start($cfg, $s); $r['started']++; mobius_sched_notify((int)$s['id'], 'live'); }
+            else { mobius_sched_end($cfg, $s); $r['ended']++; mobius_sched_notify((int)$s['id'], 'ended'); }
+        } catch (Throwable $e) { $r['failed']++; mobius_sched_set((int)$s['id'], ['state' => 'failed', 'note' => mb_substr(($s['state'] === 'waiting' ? 'Could not go live: ' : 'Could not end: ').$e->getMessage(), 0, 500)]); error_log('mobius schedule '.$s['id'].': '.$e->getMessage()); mobius_sched_notify((int)$s['id'], 'failed'); }
     }
     if ($r['started'] + $r['ended'] + $r['failed']) audit('mobius_schedule_applied', null, 'mobius', null, json_encode($r));
     return $r;
@@ -1320,6 +1333,17 @@ function mobius_sched_stop(array $cfg, int $id): string {
     $cfg = mobius_prod_cfg($cfg);
     mobius_sched_ready(); $st = portal_pdo()->prepare('SELECT * FROM mobius_schedules WHERE id=?'); $st->execute([$id]); $s = $st->fetch() ?: throw new RuntimeException('That schedule no longer exists.');
     if ($s['state'] === 'waiting') { mobius_sched_set($id, ['state' => 'cancelled', 'note' => 'Cancelled '.date('Y-m-d H:i')]); audit('mobius_schedule_cancel', null, 'mobius', $s['live_code'], (string)$id); return 'cancelled'; }
-    if ($s['state'] === 'live') { mobius_sched_end($cfg, $s); audit('mobius_schedule_end_now', null, 'mobius', $s['live_code'], (string)$id); return 'ended'; }
+    if ($s['state'] === 'live') { mobius_sched_end($cfg, $s); audit('mobius_schedule_end_now', null, 'mobius', $s['live_code'], (string)$id); mobius_sched_notify($id, 'ended_now'); return 'ended'; }
     throw new RuntimeException('That schedule has already finished.');
+}
+// Try a failed schedule again: one that could not go live goes back to waiting (it starts now if its time is past);
+// one that could not end goes back to live (it ends now if its end time is past). Runs the due work at once.
+function mobius_sched_retry(array $cfg, int $id): array {
+    $cfg = mobius_prod_cfg($cfg);
+    $s = mobius_sched_get($id) ?? throw new RuntimeException('That schedule no longer exists.');
+    if ($s['state'] !== 'failed') throw new RuntimeException('Only a failed schedule can be tried again.');
+    $wasEnding = str_starts_with((string)$s['note'], 'Could not end');
+    mobius_sched_set($id, ['state' => $wasEnding ? 'live' : 'waiting', 'note' => 'Tried again '.date('Y-m-d H:i').' by '.(user()['username'] ?? '?')]);
+    audit('mobius_schedule_retry', null, 'mobius', $s['live_code'], (string)$id);
+    return mobius_sched_apply($cfg);
 }

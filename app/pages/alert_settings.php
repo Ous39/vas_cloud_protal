@@ -11,7 +11,7 @@ declare(strict_types=1);
         elseif ($_POST['do']==='rotate_token') { rotate_alert_cron_token(); flash('warning','Cron token rotated. The scheduled alert job is now rejected until you update its secret — run the kubectl command shown under "Scheduled alerts".'); }
         elseif ($_POST['do']==='save_summary') { save_summary_config($_POST); flash('success','Daily summary settings saved.'); }
         elseif ($_POST['do']==='save_ignored') { save_alert_ignored_reasons((array)($_POST['ignored']??[])); flash('success','Ignored failure reasons saved.'); }
-        elseif ($_POST['do']==='update_prefs') { update_alert_recipient_prefs((int)($_POST['id']??0), !empty($_POST['notify_failure']), !empty($_POST['notify_vendor']), !empty($_POST['notify_slow']), !empty($_POST['notify_summary'])); flash('success','Recipient preferences saved.'); }
+        elseif ($_POST['do']==='update_prefs') { update_alert_recipient_prefs((int)($_POST['id']??0), !empty($_POST['notify_failure']), !empty($_POST['notify_vendor']), !empty($_POST['notify_slow']), !empty($_POST['notify_summary']), !empty($_POST['notify_schedule'])); flash('success','Recipient preferences saved.'); }
         else { toggle_alert_recipient((int)($_POST['id']??0)); flash('success','Recipient updated.'); }
         redirect('?page=alert_settings');
     }
@@ -110,7 +110,8 @@ declare(strict_types=1);
                 <label class="form-check small mb-0"><input class="form-check-input" type="checkbox" name="notify_failure" value="1" data-autosubmit <?=(int)$r['notify_failure']?'checked':''?>> Failure rate</label>
                 <label class="form-check small mb-0"><input class="form-check-input" type="checkbox" name="notify_vendor" value="1" data-autosubmit <?=(int)$r['notify_vendor']?'checked':''?>> Vendor silent</label>
                 <label class="form-check small mb-0"><input class="form-check-input" type="checkbox" name="notify_slow" value="1" data-autosubmit <?=(int)$r['notify_slow']?'checked':''?>> Vendor slow</label>
-                <label class="form-check small mb-0"><input class="form-check-input" type="checkbox" name="notify_summary" value="1" data-autosubmit <?=(int)$r['notify_summary']?'checked':''?>> Daily summary</label></form></td>
+                <label class="form-check small mb-0"><input class="form-check-input" type="checkbox" name="notify_summary" value="1" data-autosubmit <?=(int)$r['notify_summary']?'checked':''?>> Daily summary</label>
+                <label class="form-check small mb-0"><input class="form-check-input" type="checkbox" name="notify_schedule" value="1" data-autosubmit <?=(int)($r['notify_schedule']??1)?'checked':''?>> USSD schedules</label></form></td>
             <td><form method="post" class="d-inline"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="toggle_recipient"><input type="hidden" name="id" value="<?=e($r['id'])?>"><button class="btn btn-sm btn-outline-dark"><?=(int)$r['active']?'Disable':'Enable'?></button></form></td></tr><?php endforeach;?>
         <?php foreach($envTo as $addr):?><tr><td><?=e($addr)?></td><td><span class="badge bg-info text-dark">From environment</span></td><td><small class="text-muted">all alerts</small></td><td><small class="text-muted">set via ALERT_EMAIL_TO</small></td></tr><?php endforeach;?>
         </tbody></table></div>

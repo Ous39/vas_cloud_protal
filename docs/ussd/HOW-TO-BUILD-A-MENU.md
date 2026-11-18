@@ -130,6 +130,18 @@ Build the items as **Drafts**, then tell the portal when they should appear — 
 - **Change your mind:** press the on/off button on the item (or edit it and clear the times) — that cancels the schedule. Every change is in **History**, including "Schedule: items went live".
 - **Times are the portal's clock, which is UTC** (the Gambia is on UTC, so it is local time). The form shows the current time.
 - **How it happens on time:** the portal checks the schedule at most every 15 seconds while the USSD endpoint is being called, every 5 minutes from the alert cron, and whenever the Menus or Builder pages are opened. A customer dialling after the time sees the new menu; there is no gap to wait for.
+
+### All schedules in one place: USSD → Schedules
+
+**USSD → Schedules** lists every schedule: Mobius menus put live on a short code at a time (from a menu's 🕑 **Schedule** tab, or the **Schedule a Mobius menu** form on this page) and portal items with a go-live or switch-off time.
+
+- The tiles count what is **Live now**, **Waiting**, **Failed** and **Ended** in the last 30 days.
+- **Live now and coming up** lists them with their start and end ("in 3 h"). Use **Cancel** for a waiting one and **End now** for a live one (the short codes go back as they were).
+- **The next 7 days** lists every start and end day by day.
+- A **Failed** schedule (for example, Mobius could not be reached at that time) is shown in red at the top, with **Try again**: one that could not go live waits again (it starts now if its time has passed), and one that could not end ends now.
+- **History** lists the finished ones, with what happened.
+
+**Alerts:** when a schedule goes live, ends or fails, the portal sends a message: by **email** to the recipients with **USSD schedules** ticked in **Alert Settings**, and to **Slack** through an active integration of type *Monitoring* whose URL is a Slack incoming webhook.
 - Schedules work for menu items. Service flows, offers in the catalogue and refunds are not scheduled by this (ask if you need that).
 
 ## Direct codes

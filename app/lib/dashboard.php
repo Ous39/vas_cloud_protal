@@ -235,11 +235,11 @@ function alert_cron_token(): string {
     return $token;
 }
 
+// Slack: every active "Monitoring" integration with a URL (a Slack incoming webhook) gets the message. The integrations live
+// in the portal's own database (it used to look in the Hera schema, where there are none, so nothing was ever sent).
 function send_slack_alert(string $schema, string $message): void {
-    if (!table_exists($schema, 'integrations')) return;
-    $st = pdo($schema)->prepare("SELECT base_url FROM integrations WHERE service_type='monitoring' AND status='active' AND base_url IS NOT NULL AND base_url != ''");
-    $st->execute();
-    foreach ($st->fetchAll() as $row) {
+    try { $hooks = array_filter(list_integrations('monitoring'), fn($i) => $i['status'] === 'active' && trim((string)$i['base_url']) !== ''); } catch (Throwable $e) { return; }
+    foreach ($hooks as $row) {
         $ch = curl_init($row['base_url']);
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 5, CURLOPT_CONNECTTIMEOUT => 5, CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
@@ -257,7 +257,7 @@ function send_slack_alert(string $schema, string $message): void {
 // fallback when nothing is saved there. Recipients live in alert_recipients (plus optional
 // ALERT_EMAIL_TO).
 function alert_recipients(): array {
-    try { return portal_pdo()->query('SELECT id,email,active,notify_failure,notify_vendor,notify_slow,notify_summary FROM alert_recipients ORDER BY email')->fetchAll(); }
+    try { return portal_pdo()->query('SELECT id,email,active,notify_failure,notify_vendor,notify_slow,notify_summary,notify_schedule FROM alert_recipients ORDER BY email')->fetchAll(); }
     catch (Throwable $e) { return []; }
 }
 function save_alert_recipient(string $email): void {
@@ -266,9 +266,9 @@ function save_alert_recipient(string $email): void {
     portal_pdo()->prepare('INSERT INTO alert_recipients(email,created_by) VALUES(?,?) ON DUPLICATE KEY UPDATE active=1')->execute([$email, user()['username'] ?? null]);
     audit('alert_recipient_add', null, 'alert_recipients', $email, 'enabled');
 }
-function update_alert_recipient_prefs(int $id, bool $failure, bool $vendor, bool $slow, bool $summary): void {
-    portal_pdo()->prepare('UPDATE alert_recipients SET notify_failure=?, notify_vendor=?, notify_slow=?, notify_summary=? WHERE id=?')->execute([$failure ? 1 : 0, $vendor ? 1 : 0, $slow ? 1 : 0, $summary ? 1 : 0, $id]);
-    audit('alert_recipient_prefs', null, 'alert_recipients', (string)$id, 'failure='.(int)$failure.' vendor='.(int)$vendor.' slow='.(int)$slow.' summary='.(int)$summary);
+function update_alert_recipient_prefs(int $id, bool $failure, bool $vendor, bool $slow, bool $summary, bool $schedule = true): void {
+    portal_pdo()->prepare('UPDATE alert_recipients SET notify_failure=?, notify_vendor=?, notify_slow=?, notify_summary=?, notify_schedule=? WHERE id=?')->execute([$failure ? 1 : 0, $vendor ? 1 : 0, $slow ? 1 : 0, $summary ? 1 : 0, $schedule ? 1 : 0, $id]);
+    audit('alert_recipient_prefs', null, 'alert_recipients', (string)$id, 'failure='.(int)$failure.' vendor='.(int)$vendor.' slow='.(int)$slow.' summary='.(int)$summary.' schedule='.(int)$schedule);
 }
 function toggle_alert_recipient(int $id): void {
     $st = portal_pdo()->prepare('UPDATE alert_recipients SET active = 1 - active WHERE id=?');
@@ -327,7 +327,7 @@ function smtp_settings(?string $type = null): ?array {
     $c = smtp_server_settings();
     if (!$c) return null;
     $env = array_map('trim', explode(',', (string)getenv('ALERT_EMAIL_TO')));
-    $want = ['failure_rate' => 'notify_failure', 'vendor_silent' => 'notify_vendor', 'vendor_slow' => 'notify_slow', 'daily_summary' => 'notify_summary'][$type ?? ''] ?? null;
+    $want = ['failure_rate' => 'notify_failure', 'vendor_silent' => 'notify_vendor', 'vendor_slow' => 'notify_slow', 'daily_summary' => 'notify_summary', 'ussd_schedule' => 'notify_schedule'][$type ?? ''] ?? null;
     $db = array_column(array_filter(alert_recipients(), fn($r) => (int)$r['active'] === 1 && ($want === null || (int)$r[$want] === 1)), 'email');
     $to = array_values(array_unique(array_filter(array_map('strtolower', array_merge($db, $env)), fn($a) => filter_var($a, FILTER_VALIDATE_EMAIL))));
     if (!$to) return null;
@@ -380,6 +380,13 @@ function smtp_send(array $c, string $subject, string $body): ?string {
         return null;
     } catch (Throwable $e) { return $e->getMessage(); }
     finally { @fclose($fp); }
+}
+// A USSD schedule went live, ended or failed: Slack and email (recipients with "USSD schedules" ticked in Alert Settings).
+// Never throws: a schedule must not fail because a message could not be sent.
+function ussd_schedule_notify(string $text): void {
+    try { send_slack_alert('', '[USSD schedule] '.$text); } catch (Throwable $e) { error_log('schedule slack: '.$e->getMessage()); }
+    try { if (smtp_settings('ussd_schedule')) send_email_alert('[VAS Cloud] USSD schedule', $text."\n\nPortal: USSD → Schedules", 'ussd_schedule'); } catch (Throwable $e) { error_log('schedule email: '.$e->getMessage()); }
+    try { audit('ussd_schedule_notified', null, 'mobius', null, mb_substr($text, 0, 480)); } catch (Throwable $e) {}
 }
 function send_email_alert(string $subject, string $body, ?string $type = null): ?string {
     $c = smtp_settings($type);

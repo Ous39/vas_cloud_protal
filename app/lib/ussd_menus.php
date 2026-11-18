@@ -174,6 +174,7 @@ function menu_apply_schedules(?string $now = null): array {
     if ($r['on'] + $r['off'] === 0) return $r;
     foreach ($r['codes'] as $c) menu_snapshot($c, 'Schedule: '.($r['on'] ? 'items went live' : '').($r['on'] && $r['off'] ? ', ' : '').($r['off'] ? 'items switched off' : ''));
     try { audit('menu_schedule_applied', null, 'ussd_menu_nodes', null, json_encode($r)); } catch (Throwable $e) {}
+    if (function_exists('ussd_schedule_notify') && $r['codes']) ussd_schedule_notify('🕒 Portal menu '.implode(', ', $r['codes']).': '.($r['on'] ? $r['on'].' item(s) went live' : '').($r['on'] && $r['off'] ? ', ' : '').($r['off'] ? $r['off'].' item(s) switched off' : '').' on schedule.');
     return $r;
 }
 // The USSD endpoint calls this on every request; the work itself is done at most once every 15 seconds.

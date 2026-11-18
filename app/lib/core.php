@@ -385,6 +385,7 @@ function ensure_portal_runtime_schema(): void {
             notify_vendor TINYINT(1) NOT NULL DEFAULT 1,
             notify_slow TINYINT(1) NOT NULL DEFAULT 1,
             notify_summary TINYINT(1) NOT NULL DEFAULT 1,
+            notify_schedule TINYINT(1) NOT NULL DEFAULT 1,
             created_by VARCHAR(80) NULL,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE KEY uq_alert_recipient_email (email)
@@ -396,6 +397,9 @@ function ensure_portal_runtime_schema(): void {
 
         if (!$columnExists('alert_recipients', 'notify_slow')) {
             $db->exec("ALTER TABLE alert_recipients ADD COLUMN notify_slow TINYINT(1) NOT NULL DEFAULT 1, ADD COLUMN notify_summary TINYINT(1) NOT NULL DEFAULT 1");
+        }
+        if (!$columnExists('alert_recipients', 'notify_schedule')) {
+            $db->exec("ALTER TABLE alert_recipients ADD COLUMN notify_schedule TINYINT(1) NOT NULL DEFAULT 1");
         }
 
         // What the alerts fire on (edited on the Alert Settings page): on/off and limits per alert
