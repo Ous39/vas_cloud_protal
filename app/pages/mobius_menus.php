@@ -282,8 +282,11 @@ declare(strict_types=1);
         <?php if(!$pd['ok']):?><div class="alert alert-danger py-2">Mobius refused: <?=e($pd['error'])?></div>
         <?php elseif(!$pd['steps']):?><p class="text-muted mb-0">This menu has no steps in Mobius yet<?=$am['shortcodeType']==='PROXY'?' (it takes its screens from its address)':''?>. Build it first in the Builder tab.</p>
         <?php else: $mn=[]; foreach($menus as $mm) $mn[$mm['menuID']]=$mm['name'].($mm['shortcode']!==''?' ('.$mm['shortcode'].')':'');
-            $sim=[]; foreach($pd['steps'] as $st) $sim[$st['id']]=['t'=>$st['type'],'c'=>$st['code'],'p'=>$st['parent'],'n'=>$st['next'],'m'=>$st['message'],'e'=>$st['error'],'v'=>$st['props'][0]['name']??'',
-                'reads'=>array_values(array_filter(array_map(fn($x)=>$x['value']!==''?$x['value']:'',$st['resp']))),'u'=>preg_replace('~^https?://~','',$st['url']),'g'=>$st['type']==='GO_TO_MENU'?($mn[$st['next']]??''):''];?>
+            // "Go to menu" continues in another Mobius menu: load those menus too (up to 8 in all), so Try it carries on there like a phone does
+            $simMenus=[(string)$am['menuID']=>$pd]; $todo=[(string)$am['menuID']]; $simM=[];
+            while($todo && count($simMenus)<8){ $mid=array_shift($todo); foreach($simMenus[$mid]['steps'] as $st) if($st['type']==='GO_TO_MENU' && $st['next']!=='' && !isset($simMenus[$st['next']]) && count($simMenus)<8){ $rr=mobius_menu_steps($cfg,$st['next']); if($rr['ok']){ $simMenus[$st['next']]=$rr; $todo[]=$st['next']; } } }
+            $sim=[]; foreach($simMenus as $mid=>$md){ $w=''; foreach($md['steps'] as $st){ if($w==='' && in_array($st['type'],['WELCOME','WELCOME_INCOMING'],true)) $w=$st['id']; $sim[$st['id']]=['k'=>$mid,'t'=>$st['type'],'c'=>$st['code'],'p'=>$st['parent'],'n'=>$st['next'],'m'=>$st['message'],'e'=>$st['error'],'v'=>$st['props'][0]['name']??'',
+                'reads'=>array_values(array_filter(array_map(fn($x)=>$x['value']!==''?$x['value']:'',$st['resp']))),'u'=>preg_replace('~^https?://~','',$st['url']),'g'=>$st['type']==='GO_TO_MENU'?($mn[$st['next']]??''):'']; } $simM[$mid]=['w'=>$w,'name'=>$mn[$mid]??$mid]; }?>
         <div class="row g-3"><div class="col-md-5 col-lg-4">
             <div class="mbt-phone mbt-sim" id="simScreen" aria-live="polite"></div>
             <form class="d-flex gap-2 mt-2" id="simForm" autocomplete="off"><input class="form-control font-monospace" id="simIn" placeholder="Type a key, then Send" inputmode="numeric"><button class="btn btn-primary">Send</button></form>
@@ -292,7 +295,7 @@ declare(strict_types=1);
             <div class="small text-muted mb-1">What happens, step by step (services are <b>not</b> called here; you choose their answer)</div>
             <ol class="small mb-0" id="simLog"></ol>
         </div></div>
-        <script type="application/json" id="simData"><?=json_encode(['steps'=>$sim],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_HEX_TAG|JSON_HEX_AMP)?></script>
+        <script type="application/json" id="simData"><?=json_encode(['steps'=>$sim,'menus'=>$simM,'root'=>(string)$am['menuID']],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_HEX_TAG|JSON_HEX_AMP)?></script>
         <?php endif;?>
     <?php elseif($act==='schedule'): $scheds=mobius_sched_list($am['menuID']); $ownLive=false; foreach($scheds as $x) if(in_array($x['state'],['waiting','live'],true)) $ownLive=true;?>
         <p class="small text-muted mb-2">Mobius has no schedule, so the portal does it with the short codes. <b>At the start</b> this menu gets the live short code; if another menu has that code now (for example the old version), it is parked on a spare code. <b>At the end</b> both go back as they were. It runs by itself within about 5 minutes of the time. Every change is in History. All menus' schedules: <a href="?page=ussd_schedules">USSD → Schedules</a>.</p>
@@ -401,7 +404,7 @@ declare(strict_types=1);
       const thDefault=t=>{ if(!th||thTouched) return; th.value=t==='COLLECT'?'Thank you'+(vn&&vn.value?' {'+vn.value+'}':'')+'!':(t==='EXTERNAL_SERVICE'?'{resultDescription}':''); if(thl) thl.textContent=t==='EXTERNAL_SERVICE'?'Message after the service (what it answered: {variable} from Reads back)':'Reply after the answer (shown to the customer next)'; };
       vn&&vn.addEventListener('input',()=>{ if(ty) thDefault(ty.value); });
       if(ty){ const sync=()=>{const t=ty.value; thDefault(t); document.querySelectorAll('#mbsForm [data-for]').forEach(x=>{const on=x.dataset.for.split(' ').includes(t); x.hidden=!on; x.querySelectorAll('input,select,textarea').forEach(i=>i.disabled=!on);});}; ty.addEventListener('change',sync); sync(); }
-      const sd=document.getElementById('simData'); if(sd){ const S=JSON.parse(sd.textContent).steps, scr=document.getElementById('simScreen'), log=document.getElementById('simLog'), inp=document.getElementById('simIn'); let cur=null, wait=null, vars={}, hops=0;
+      const sd=document.getElementById('simData'); if(sd){ const SD=JSON.parse(sd.textContent), S=SD.steps, M=SD.menus||{}, ROOT=SD.root, scr=document.getElementById('simScreen'), log=document.getElementById('simLog'), inp=document.getElementById('simIn'); let cur=null, wait=null, vars={}, hops=0;
         const esc=t=>String(t??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])), fill=t=>String(t||'').replace(/\{([^}]+)\}/g,(m,k)=>k in vars?vars[k]:'‹'+k+'›');
         const kids=id=>Object.entries(S).filter(([k,x])=>x.p===id&&x.c!=='').map(([k,x])=>[k,x]);
         const say=(h)=>{ const li=document.createElement('li'); li.innerHTML=h; log.appendChild(li); };
@@ -417,13 +420,14 @@ declare(strict_types=1);
             case 'MESSAGE': screen(x.m,true); say('Shows a message and ends'); return;
             case 'COLLECT': screen(x.m); wait='collect'; say('Asks the customer to type something (kept in <code>'+esc(x.v)+'</code>)'); return;
             case 'GO_TO_STEP': say('Jumps to another step'); if(x.n) go(x.n); else screen('(Go to step: no step chosen)',true); return;
-            case 'GO_TO_MENU': screen('→ Continues in the menu '+(x.g||'(not found)'),true); say('Goes to the menu <b>'+esc(x.g||'?')+'</b>'); return;
+            case 'GO_TO_MENU': { const tm=M[x.n]; if(tm&&tm.w){ say('Goes to the menu <b>'+esc(x.g||tm.name)+'</b> and carries on there'); go(tm.w); }
+              else { screen('→ Continues in the menu '+(x.g||'(not found)')+'\n(its steps could not be loaded here — try that menu on its own)',true); say('Goes to the menu <b>'+esc(x.g||'?')+'</b> — not loaded'); } return; }
             case 'EXTERNAL_SERVICE': say('Calls the service <code>'+esc(x.u)+'</code> (not called in Try it)'); const nx=()=>{ if(x.n) go(x.n); else screen('(nothing after the service yet)',true); };
               if(x.reads&&x.reads.length){ scr.innerHTML='<div class="mb-1">Service: '+esc(x.u)+'</div><div class="small mb-1">Type what it would answer (or leave empty):</div>'; x.reads.slice(0,6).forEach(r=>{ const l=document.createElement('label'); l.className='d-block small'; l.textContent=r; const i=document.createElement('input'); i.className='form-control form-control-sm mb-1'; i.dataset.k=r; i.value=vars[r]??''; l.appendChild(i); scr.appendChild(l); }); const b=document.createElement('button'); b.type='button'; b.className='btn btn-sm btn-warning mt-1'; b.textContent='Continue'; b.onclick=()=>{ scr.querySelectorAll('input[data-k]').forEach(i=>{ if(i.value!=='') vars[i.dataset.k]=i.value; }); nx(); }; scr.appendChild(b); return; }
               nx(); return;
             default: screen('('+x.t+' is not shown in Try it)',true);
           } };
-        const start=()=>{ log.innerHTML=''; vars={}; hops=0; const w=Object.entries(S).find(([k,x])=>x.t==='WELCOME'||x.t==='WELCOME_INCOMING'); if(w) go(w[0]); else screen('This menu has no Welcome step.',true); inp&&inp.focus(); };
+        const start=()=>{ log.innerHTML=''; vars={}; hops=0; const w=Object.entries(S).find(([k,x])=>x.k===ROOT&&(x.t==='WELCOME'||x.t==='WELCOME_INCOMING')); if(w) go(w[0]); else screen('This menu has no Welcome step.',true); inp&&inp.focus(); };
         document.getElementById('simForm').addEventListener('submit',e=>{ e.preventDefault(); const v=inp.value.trim(); inp.value=''; if(!cur||!wait) return; const x=S[cur];
           if(wait==='menu'){ say('Customer presses <b>'+esc(v)+'</b>'); const hit=kids(cur).find(([k,c])=>c.c===v); if(hit){ hops=0; go(hit[0]); } else { scr.innerHTML=esc(fill(x.e||'Invalid option'))+'\n\n'+esc(fill(x.m)); say('No option '+esc(v)+' — shows the invalid option message'); } }
           else if(wait==='collect'){ vars[x.v]=v; say('Customer types <b>'+esc(v)+'</b>'); hops=0; if(x.n) go(x.n); else screen('(nothing after this question yet)',true); } });
