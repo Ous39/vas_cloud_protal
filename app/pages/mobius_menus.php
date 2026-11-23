@@ -26,8 +26,10 @@ declare(strict_types=1);
                 else { flash('success','Put back as it was: '.($r['menu']['shortcode']??'').' — “'.($r['menu']['name']??'').'”.'); if (!empty($r['menu']['menuID'])) $back.='&view='.urlencode((string)$r['menu']['menuID']); }
             } elseif ($do==='copy') {
                 $id=(string)($_POST['menu_id']??''); $r=mobius_copy_menu($cfg,$id,(string)($_POST['shortcode']??''),(string)($_POST['name']??''),(string)($_POST['confirm']??''));
-                flash('success','Copied into a new menu: '.($r['menu']['shortcode']??'').' — “'.($r['menu']['name']??'').'”. Put back in History removes the copy again.');
-                $back.=!empty($r['menu']['menuID'])?'&view='.urlencode((string)$r['menu']['menuID']):'';
+                $what='Copied into a new menu: '.($r['menu']['shortcode']??'').' — “'.($r['menu']['name']??'').'”';
+                if ($r['note']!=='') flash('warning',$what.', but its steps (screens) were NOT copied: '.$r['note'].' Open the new menu and add them in the Builder, or remove it with Put back in History.');
+                else flash('success',$what.($r['steps']>0?' with all '.$r['steps'].' steps (screens).':' (it has no steps of its own: it calls a service).').' Put back in History removes the copy again.');
+                $back.=!empty($r['menu']['menuID'])?'&'.($r['steps']>0?'steps':'view').'='.urlencode((string)$r['menu']['menuID']):'';
             } elseif ($do==='delete') {
                 $r=mobius_delete_menu($cfg,(string)($_POST['menu_id']??''),(string)($_POST['confirm']??''));
                 flash($r['gone']===false?'warning':'success',($r['gone']===false?'Mobius said yes, but the menu is still listed — check it in Mobius: ':'Deleted from Mobius: ').($r['menu']['shortcode']??'').' — “'.($r['menu']['name']??'').'”. Put back in History creates it again with the same settings.');
@@ -309,7 +311,7 @@ declare(strict_types=1);
             <td class="text-end"><?php if(in_array($x['state'],['waiting','live'],true)):?><form method="post" class="d-inline" data-confirm="<?=$x['state']==='live'?'End it now and put the short codes back?':'Cancel this schedule?'?>"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="sched_stop"><input type="hidden" name="menu_id" value="<?=e($am['menuID'])?>"><input type="hidden" name="id" value="<?=(int)$x['id']?>"><button class="btn btn-sm <?=$x['state']==='live'?'btn-outline-danger':'btn-outline-secondary'?>"><?=$x['state']==='live'?'End now':'Cancel'?></button></form><?php endif;?></td></tr>
         <?php endforeach;?></tbody></table></div><?php endif;?>
     <?php elseif($act==='copy'):?>
-        <p class="small">Makes a <b>new</b> menu in Mobius with every setting of <code><?=e($am['shortcode'])?></code> (type, address, destination, Extendable). The original is not changed. Put back in History removes the copy.</p>
+        <p class="small">Makes a <b>new</b> menu in Mobius with every setting of <code><?=e($am['shortcode'])?></code> (type, address, destination, Extendable) <b>and all of its steps (screens)</b>, linked the same way. The original is not changed. Put back in History removes the copy.</p>
         <form method="post" class="row g-2" data-confirm="Create the copy in Mobius now?"><input type="hidden" name="csrf" value="<?=e(csrf_token())?>"><input type="hidden" name="do" value="copy"><input type="hidden" name="menu_id" value="<?=e($am['menuID'])?>">
             <div class="col-md-3"><label class="small text-muted mb-0">New short code</label><input class="form-control font-monospace" name="shortcode" required placeholder="*7998#"></div>
             <div class="col-md-4"><label class="small text-muted mb-0">Name of the copy</label><input class="form-control" name="name" value="<?=e($am['name'].' (copy)')?>" maxlength="150"></div>

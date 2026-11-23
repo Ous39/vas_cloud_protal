@@ -611,6 +611,7 @@ t('Mobius menus: Copy, Delete (with Put back), Calls, Stats and Builder steps - 
     $cfg = $cfgFor(['mobius_base' => "$stub/mobius/rest/", 'mobius_user' => 'u', 'mobius_pass' => encrypt_secret(md5('p')), 'token' => 'ZT-TOKEN', 'shortcode_proxy' => '*8800#', 'mobius_session' => '', 'mobius_variant' => '0']);
     try {
         $c = mobius_copy_menu($cfg, 'aa0000000000000000000002', '*7998#', 'TEST COPY'); eq([$c['menu']['shortcode'] ?? null, $c['menu']['destinationID'] ?? null], ['*7998#', ['dd01']], 'Copy makes a new menu with the same settings');
+        eq([$c['steps'], $c['note']], [0, ''], 'a menu that calls the portal has no steps: the settings are the whole copy');
         thrown(fn() => mobius_copy_menu($cfg, 'aa0000000000000000000002', '*7999#', 'x'), 'own short code', 'a copy needs its own code');
         thrown(fn() => mobius_delete_menu($cfg, 'aa0000000000000000000002', '*7998#'), 'type its short code *7999#', 'Delete needs the exact short code typed');
         $d = mobius_delete_menu($cfg, 'aa0000000000000000000002', '*7999'); ok($d['gone'] === true, 'Delete removes it from Mobius');
@@ -722,6 +723,9 @@ t('Create a menu: a Mobius-built menu with a ready example, a question, a copy o
       $c = mobius_create_built($cfg, 'Copy of main', '*7779#', 'copy', 'aa0000000000000000000002'); $S = mobius_menu_steps($cfg, $c['menu']['menuID']); $x = array_values(array_filter($S['steps'], fn($s) => $s['type'] === 'EXTERNAL_SERVICE'))[0];
       ok(count($S['steps']) === 3 && $x['_raw']['headers'][0]['defaultValue'] === 'secret-9' && !in_array($x['id'], ['s2'], true) && $S['steps'][$x['next']]['message'] === '{resultDescription}', 'copy: same steps, new ids, linked, headers kept');
       ok(count(mobius_menu_steps($cfg, 'aa0000000000000000000002')['steps']) === 3, 'the original is untouched');
+      $k = mobius_copy_menu($cfg, 'aa0000000000000000000002', '*7782#', 'Main Menu copy', '*7782#'); $S = mobius_menu_steps($cfg, $k['menu']['menuID']); $x = array_values(array_filter($S['steps'], fn($s) => $s['type'] === 'EXTERNAL_SERVICE'))[0];
+      ok($k['steps'] === 3 && $k['note'] === '' && count($S['steps']) === 3 && $x['_raw']['headers'][0]['defaultValue'] === 'secret-9' && $x['id'] !== 's2' && $S['steps'][$x['next']]['message'] === '{resultDescription}' && ($k['menu']['shortcodeType'] ?? '') === 'MS_INITIATED', 'Copy of a Mobius-built menu: all steps copied, new ids, linked, headers kept');
+      ok(count(mobius_menu_steps($cfg, 'aa0000000000000000000002')['steps']) === 3 && mobius_steps_unlocked($k['menu']['menuID']), 'the original keeps its steps; editing is on for the copy');
       $e = mobius_create_built($cfg, 'Empty', '*7780#', 'empty'); ok($e['steps'] === false && $e['note'] === '' && count(mobius_menu_steps($cfg, $e['menu']['menuID'])['steps']) === 0, 'empty menu');
       thrown(fn() => mobius_create_built($cfg, 'Dup', '*7777', 'empty'), 'already used', 'a code in use is refused');
       file_put_contents($tmp.'/zt_stub_mobius_nocreate.txt', '1'); $n = mobius_create_built($cfg, 'No steps', '*7781#', 'options'); ok($n['steps'] === false && str_contains($n['note'], MOBIUS_NO_CREATE) && $n['menu'], 'if Mobius refuses the steps: menu made, clear note'); @unlink($tmp.'/zt_stub_mobius_nocreate.txt');

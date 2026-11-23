@@ -451,13 +451,28 @@ function mobius_confirm_ok(array $m, string $typed): bool {
 }
 
 // ---- Copy, delete, calls, stats and steps (Mobius REST API 2.1: ussdmenues/delete, ussdcalls/*_by_menu, ussdmenusteps/list_by_menu) ----
-// Copy: a new menu with every setting of the original and a new short code (and name). The original is not touched.
+// Copy: a new menu with every setting of the original, a new short code (and name), AND all of its steps (screens) —
+// new ids, the same links, everything else the same (service headers included; they stay on the server). The
+// original is not touched. Returns the new menu plus 'steps' (how many were copied) and 'note' (why not, if not).
 function mobius_copy_menu(array $cfg, string $menuId, string $newCode, string $newName, string $confirm = ''): array {
     $l = mobius_list_menus($cfg); if (!$l['ok']) throw new RuntimeException('Could not read Mobius: '.$l['error']);
     $cur = mobius_find_menu($l['menus'], $menuId); if (!$cur) throw new RuntimeException('That menu is no longer in Mobius.');
     $in = mobius_menu_public($cur); $in['shortcode'] = preg_replace('/\s+/', '', $newCode); $in['name'] = trim($newName) !== '' ? trim($newName) : $cur['name'].' (copy)';
     if ($in['shortcode'] === '' || mobius_bare_code($in['shortcode']) === mobius_bare_code((string)$cur['shortcode'])) throw new RuntimeException('Give the copy its own short code.');
-    return mobius_save_menu($cfg, null, $in, $confirm, 'copy');
+    // read the original's steps first: if they cannot be read, nothing is created (no half copy)
+    $src = mobius_menu_steps($cfg, $menuId); if (!$src['ok']) throw new RuntimeException('Could not read the steps of the menu to copy: '.$src['error'].' Nothing was created.');
+    $r = mobius_save_menu($cfg, null, $in, $confirm, 'copy'); $r['steps'] = 0; $r['note'] = '';
+    if (!$src['raw']) return $r; // a menu without steps (it calls the portal or another service): the settings are the whole menu
+    $newId = (string)($r['menu']['menuID'] ?? '');
+    if ($newId === '') { $r['note'] = 'Mobius created the copy but the portal could not read it back, so its steps were not copied.'; return $r; }
+    try {
+        $steps = mobius_copied_steps($cfg, $menuId, $newId); mobius_steps_create($cfg, $steps, []);
+        $_SESSION['mobius_unlock'][$newId] = time() + 1800; // just made by this user: editing is on
+        $hid = mobius_record_change($newId, (string)$r['menu']['shortcode'], 'step-add', null, null, 'Copied '.count($steps).' steps from '.(trim((string)$cur['shortcode']) !== '' ? $cur['shortcode'] : $cur['name']));
+        mobius_step_backup_put($hid, ['step' => mobius_id_text($steps[0]['_id'] ?? ''), 'how' => 'first', 'anchor' => '']);
+        $r['steps'] = count($steps);
+    } catch (RuntimeException $e) { $r['note'] = $e->getMessage(); }
+    return $r;
 }
 // Delete a menu in Mobius. Always needs its short code (or name) typed; the menu is kept in History so "Put back" creates it again.
 function mobius_delete_menu(array $cfg, string $menuId, string $confirm, string $action = 'delete'): array {
