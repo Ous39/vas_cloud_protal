@@ -118,18 +118,27 @@ function mobius_cfg_for_caller(array $cfg, string $ip): array {
         $cfg['mobius_base'] = $cfg['tb_mobius_base']; $cfg['mobius_user'] = $cfg['tb_mobius_user']; $cfg['mobius_pass'] = $cfg['tb_mobius_pass']; $cfg['env'] = 'test'; break; }
     return $cfg;
 }
+// An address that did not answer at all (no connection) is skipped for 2 minutes, so pages do not wait 3 seconds on it
+// every time (e.g. the testbed while the network blocks it). Kept per server in a small temp file; the connection
+// tests (mobius_test) always really try, and an answer from the address clears it at once.
+const MOBIUS_DOWN_SECONDS = 120;
+function mobius_down_file(string $base): string { return sys_get_temp_dir().'/vascloud_mobius_down_'.md5($base); }
+function mobius_down_age(string $base): int { $t = @filemtime(mobius_down_file($base)); return ($t && time() - $t < MOBIUS_DOWN_SECONDS) ? max(0, time() - $t) : -1; }
+function mobius_mark(string $base, bool $down): void { if ($down) @touch(mobius_down_file($base)); else @unlink(mobius_down_file($base)); }
 function mobius_rest(array $cfg, string $path, array $data = []): array {
     if (preg_match('~^ussdmenues/(set|delete)~', $path)) { mobius_list_forget(); register_shutdown_function('mobius_list_forget'); } // a menu changed: the kept menu list is out of date
     $errors = []; $pref = max(0, min(1, (int)$cfg['mobius_variant'])); $order = array_values(array_unique([$pref, 0, 1]));
     foreach (mobius_bases($cfg) as $base) {
+        if (($age = mobius_down_age($base)) >= 0) { $errors[] = $base.' did not answer '.$age.' s ago (not tried again for '.(MOBIUS_DOWN_SECONDS - $age).' s)'; continue; }
         $r = ['code' => 0, 'json' => null, 'raw' => '', 'error' => ''];
         foreach ($order as $n => $variant) {
             $r = mobius_call_variant($cfg, $base, $path, $data, $variant, $n > 0);
             $bad = $r['json'] !== null && (strtoupper((string)($r['json']['status'] ?? '')) === 'ERROR' || trim((string)($r['json']['errorMessage'] ?? '')) !== '');
-            if ($r['code'] === 200 && !$bad) { if ($variant !== $pref) { try { ussd_proxy_set(['mobius_variant' => (string)$variant]); } catch (Throwable $e) {} } return ['ok' => true, 'json' => (array)$r['json'], 'raw' => (string)$r['raw'], 'base' => $base]; }
+            if ($r['code'] === 200 && !$bad) { mobius_mark($base, false); if ($variant !== $pref) { try { ussd_proxy_set(['mobius_variant' => (string)$variant]); } catch (Throwable $e) {} } return ['ok' => true, 'json' => (array)$r['json'], 'raw' => (string)$r['raw'], 'base' => $base]; }
             $errors[] = $base.' HTTP '.$r['code'].' '.($r['error'] !== '' ? $r['error'] : mb_substr(html_entity_decode((string)($r['json']['errorMessage'] ?? $r['raw']), ENT_QUOTES | ENT_HTML5, 'UTF-8'), 0, 160));
             if (!mobius_is_auth_error($r)) break;
         }
+        mobius_mark($base, $r['code'] === 0); // no answer at all: skip it for a while; any answer: it is up
         if ($r['code'] > 0) break; // this node answered: do not ask the other one to do the same
     }
     return ['ok' => false, 'error' => $errors ? implode(' | ', array_slice($errors, -3)) : 'no Mobius address configured'];
@@ -1127,7 +1136,7 @@ function mobius_probe_base(array $cfg, string $base): array {
 function mobius_test(array $cfg): array {
     $out = []; $hash = decrypt_secret($cfg['mobius_pass']);
     if ($cfg['mobius_user'] === '' || $hash === '') return [['base' => '', 'ok' => false, 'msg' => 'Enter the Mobius API user name and password first.']];
-    foreach (mobius_bases($cfg) as $base) { $t = microtime(true); $r = mobius_login_at($base, $cfg['mobius_user'], $hash); $out[] = ['base' => $base, 'ok' => $r['ok'], 'msg' => $r['ok'] ? 'Logged in ('.round((microtime(true) - $t) * 1000).' ms).' : $r['error']]; }
+    foreach (mobius_bases($cfg) as $base) { $t = microtime(true); $r = mobius_login_at($base, $cfg['mobius_user'], $hash); if ($r['ok']) mobius_mark($base, false); $out[] = ['base' => $base, 'ok' => $r['ok'], 'msg' => $r['ok'] ? 'Logged in ('.round((microtime(true) - $t) * 1000).' ms).' : $r['error']]; }
     return $out ?: [['base' => '', 'ok' => false, 'msg' => 'No valid Mobius address saved.']];
 }
 function save_mobius_config(array $d): void {

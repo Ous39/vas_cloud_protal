@@ -65,6 +65,8 @@ function ussd_subnav(string $current): void {
         echo '<form method="post" action="?page=mobius_env" class="mobius-env mb-2"><input type="hidden" name="csrf" value="'.e(csrf_token()).'"><input type="hidden" name="back" value="'.e($back).'"><span class="small text-muted me-1">Mobius:</span>'
             .'<span class="btn-group btn-group-sm" role="group"><button class="btn '.($tb ? 'btn-outline-secondary' : 'btn-success').'" name="env" value="prod"'.($tb ? '' : ' disabled').'><i class="fa-solid fa-tower-broadcast me-1"></i>Production</button>'
             .'<button class="btn '.($tb ? 'btn-warning' : 'btn-outline-secondary').'" name="env" value="test"'.($tb ? ' disabled' : '').'><i class="fa-solid fa-flask me-1"></i>Testbed</button></span></form>';
+        if ($tb) { $raw = ussd_proxy_config_raw(); $tbb = mobius_bases(['mobius_base' => $raw['tb_mobius_base']]); $down = array_filter($tbb, fn($x) => mobius_down_age($x) >= 0);
+            if ($tbb && count($down) === count($tbb)) echo '<div class="alert alert-warning py-1 px-2 small mb-2"><i class="fa-solid fa-plug-circle-xmark me-1"></i>The testbed Mobius is not answering (network), so these pages show no testbed data. Switch to <b>Production</b> to work normally; the testbed is tried again every 2 minutes.</div>'; }
     }
     if ($switch) {
         echo '<div class="btn-group btn-group-sm ussd-switch mb-3" role="group">';
