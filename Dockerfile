@@ -1,4 +1,6 @@
-FROM php:8.2-apache
+# Pinned to Debian 12 (bookworm): the plain php:8.2-apache tag moved to Debian 13 (trixie) in Nov 2026 and the
+# extension build failed there. Change deliberately, and test, when moving to a newer Debian.
+FROM php:8.2-apache-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev && rm -rf /var/lib/apt/lists/*
 RUN docker-php-ext-install mysqli pdo pdo_mysql curl && a2enmod rewrite headers expires
 COPY app/public/ /var/www/html/
